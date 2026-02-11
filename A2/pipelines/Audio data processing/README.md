@@ -23,7 +23,7 @@ This tool creates validation datasets by:
    ```powershell
    cd "c:\Users\abell\Desktop\Audio data processing"
    python -m venv venv
-   .\venv\Scripts\Activate
+   .\venv\Scripts\Activate  # or ./venv/bin/activate on Linux/Mac
    ```
 
 2. **Install dependencies:**
