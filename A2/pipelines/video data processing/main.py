@@ -81,11 +81,11 @@ def generate(input_dir: str, output_dir: str, to_s3: bool):
         click.echo("\nS3 upload mode enabled. Videos will be uploaded directly to S3.")
         click.echo("Output directory will be ignored.\n")
         
-        access_key, secret_key, region, bucket_name = prompt_credentials()
+        access_key, secret_key, session_token, region, bucket_name = prompt_credentials()
         
         # Validate credentials before processing
         click.echo("\nValidating AWS credentials...")
-        is_valid, message = validate_all(access_key, secret_key, region, bucket_name)
+        is_valid, message = validate_all(access_key, secret_key, session_token, region, bucket_name)
         
         if not is_valid:
             click.echo(f"\n✗ {message}", err=True)
@@ -93,7 +93,7 @@ def generate(input_dir: str, output_dir: str, to_s3: bool):
             sys.exit(1)
         
         click.echo(f"\n✓ {message}")
-        s3_client = get_s3_client(access_key, secret_key, region)
+        s3_client = get_s3_client(access_key, secret_key, session_token, region)
     else:
         # Create output directory for local saves
         output_path = Path(output_dir)
@@ -312,11 +312,11 @@ def stream():
     click.echo("=" * 50)
     
     # Get AWS credentials
-    access_key, secret_key, region, bucket_name = prompt_credentials()
+    access_key, secret_key, session_token, region, bucket_name = prompt_credentials()
     
     # Validate credentials
     click.echo("\nValidating AWS credentials...")
-    is_valid, message = validate_all(access_key, secret_key, region, bucket_name)
+    is_valid, message = validate_all(access_key, secret_key, session_token, region, bucket_name)
     
     if not is_valid:
         click.echo(f"\n✗ {message}", err=True)
@@ -324,7 +324,7 @@ def stream():
     
     click.echo(f"✓ {message}")
     
-    s3_client = get_s3_client(access_key, secret_key, region)
+    s3_client = get_s3_client(access_key, secret_key, session_token, region)
     
     # List available videos
     click.echo("\nScanning bucket for video pairs...")
