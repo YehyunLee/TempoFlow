@@ -1,0 +1,14 @@
+*.pyc
+venv
+venv/*
+package-lock.json
+.DS_Store
+.env.local
+.env
+.env.production
+bin
+bin/*
+.venv
+.venv/*
+lib
+lib/*
