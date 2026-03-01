@@ -49,7 +49,13 @@ logger = logging.getLogger(__name__)
 
 def get_base_dir():
     # co-locate nanochat intermediates with other cached data in ~/.cache (by default)
-    if os.environ.get("NANOCHAT_BASE_DIR"):
+    # if --modal is in sys.argv, override to /vol/nanochat_cache
+    import sys
+    if "--modal" in sys.argv or os.environ.get("NANOCHAT_MODAL") == "1":
+        nanochat_dir = "/vol/nanochat_cache"
+        os.environ["NANOCHAT_BASE_DIR"] = nanochat_dir
+        os.environ["HF_HOME"] = "/vol/huggingface_cache"
+    elif os.environ.get("NANOCHAT_BASE_DIR"):
         nanochat_dir = os.environ.get("NANOCHAT_BASE_DIR")
     else:
         home_dir = os.path.expanduser("~")

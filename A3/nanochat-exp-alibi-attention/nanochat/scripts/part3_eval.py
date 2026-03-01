@@ -12,6 +12,7 @@ def main():
     parser.add_argument('--step1', type=int, default=1000, help='Step of Checkpoint 1 (Short Context)')
     parser.add_argument('--step2', type=int, default=2000, help='Step of Checkpoint 2 (Long Context)')
     parser.add_argument('--device-type', type=str, default='', help='cuda|cpu|mps')
+    parser.add_argument('--modal', action='store_true', help='enable Modal-specific path configuration')
     args = parser.parse_args()
 
     device_type = autodetect_device_type() if args.device_type == '' else args.device_type
