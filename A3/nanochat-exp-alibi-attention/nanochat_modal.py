@@ -142,9 +142,9 @@ image = (
         uv_project_dir="./nanochat", 
         extra_options="--extra gpu"
     )
-    .run_commands(
-        "bash -c 'source .venv/bin/activate'"
-    )
+    # .run_commands(
+    #     "bash -c 'source .venv/bin/activate'"
+    # )
     # Environment variables
     .env({
         "OMP_NUM_THREADS": "1",
