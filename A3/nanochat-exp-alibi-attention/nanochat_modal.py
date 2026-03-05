@@ -510,6 +510,28 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
     print("SFT complete.")
 
 
+
+# =============================================================================
+# STAGE 5: INTERACTIVE CHAT SAMPLE
+# =============================================================================
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    volumes={VOLUME_MOUNT: volume},
+    gpu="H100:1",
+    timeout=60 * 30,
+)
+def stage_chat_sample(identity: str = "base", prompt: str | None = None) -> None:
+    """Launch scripts.chat_cli against a checkpoint (default = latest base pretrain)."""
+    _setup_cache()
+    args = ["-i", identity]
+    if prompt:
+        args.extend(["-p", prompt])
+    print(f"Starting chat_cli with identity={identity} ...")
+    _python("scripts.chat_cli", args)
+
+
 # =============================================================================
 # FULL SPEEDRUN PIPELINE (main entrypoint)
 # =============================================================================
