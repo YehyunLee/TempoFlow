@@ -28,6 +28,7 @@ Notes
 """
 
 import os
+import shlex
 import subprocess
 import modal
 from modal import App, Image as ModalImage, Volume, Secret
@@ -162,7 +163,8 @@ def _python(module: str, args: list | None = None, *, cwd: str = "/root/nanochat
     # Always add --modal to ensure persistent paths are used on Modal
     if "--modal" not in args:
         args.append("--modal")
-    cmd = f"cd {cwd} && python -m {module} {' '.join(args)}"
+    arg_str = " ".join(shlex.quote(arg) for arg in args)
+    cmd = f"cd {cwd} && python -m {module} {arg_str}"
     _run(cmd)
 
 
@@ -508,6 +510,28 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
 
     volume.commit()
     print("SFT complete.")
+
+
+# =============================================================================
+# STAGE 5: INTERACTIVE CHAT SAMPLE
+# =============================================================================
+
+@app.function(
+    image=image,
+    secrets=[secret],
+    volumes={VOLUME_MOUNT: volume},
+    gpu="H100:1",
+    timeout=60 * 30,
+)
+def stage_chat_sample(identity: str = "base", prompt: str | None = None) -> None:
+    """Launch scripts.chat_cli against a checkpoint (default = latest base pretrain)."""
+    _setup_cache()
+    args = ["-i", identity]
+    if prompt:
+        args.extend(["-p", prompt])
+    print(f"Starting chat_cli with identity={identity} ...")
+    _python("scripts.chat_cli", args)
+
 
 # =============================================================================
 # FULL SPEEDRUN PIPELINE (main entrypoint)
