@@ -513,7 +513,78 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
 
 
 # =============================================================================
-# STAGE 5: INTERACTIVE CHAT SAMPLE
+# STAGE 5: UPLOAD CHECKPOINT
+# =============================================================================
+
+@app.function(
+    image=image,
+    volumes={VOLUME_MOUNT: volume},
+    timeout=60 * 30,
+)
+def stage_upload_checkpoint(
+    local_path: str,
+    model_tag: str,
+    identity: str = "base",
+    step: int | None = None,
+) -> None:
+    """Upload a local checkpoint directory to Modal volume.
+    
+    Args:
+        local_path: Path to local checkpoint directory
+        model_tag: Model tag to use (e.g., 'nano-p4')
+        identity: Checkpoint type ('base', 'sft', 'rl')
+        step: Optional step number for the checkpoint
+    """
+    import shutil
+    from pathlib import Path
+    
+    _setup_cache()
+    
+    # Determine target directory based on identity
+    identity_dirs = {
+        "base": "base_checkpoints",
+        "sft": "chatsft_checkpoints",
+        "rl": "chatrl_checkpoints",
+    }
+    
+    if identity not in identity_dirs:
+        raise ValueError(f"Invalid identity: {identity}. Must be one of {list(identity_dirs.keys())}")
+    
+    target_base = Path("/vol/nanochat_cache") / identity_dirs[identity] / model_tag
+    
+    # If step is provided, upload to specific step directory
+    if step is not None:
+        target_dir = target_base / f"step_{step:07d}"
+    else:
+        target_dir = target_base
+    
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Copy all files from local_path to target_dir
+    local_path_obj = Path(local_path)
+    if not local_path_obj.exists():
+        raise FileNotFoundError(f"Local path does not exist: {local_path}")
+    
+    print(f"Uploading checkpoint from {local_path} to {target_dir}...")
+    
+    if local_path_obj.is_dir():
+        for item in local_path_obj.iterdir():
+            if item.is_file():
+                shutil.copy2(item, target_dir / item.name)
+                print(f"  Copied {item.name}")
+            elif item.is_dir():
+                shutil.copytree(item, target_dir / item.name, dirs_exist_ok=True)
+                print(f"  Copied directory {item.name}")
+    else:
+        shutil.copy2(local_path_obj, target_dir / local_path_obj.name)
+        print(f"  Copied {local_path_obj.name}")
+    
+    volume.commit()
+    print(f"✓ Checkpoint uploaded to {target_dir}")
+
+
+# =============================================================================
+# STAGE 6: INTERACTIVE CHAT SAMPLE
 # =============================================================================
 
 @app.function(
