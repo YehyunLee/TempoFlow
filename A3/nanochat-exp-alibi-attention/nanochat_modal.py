@@ -28,6 +28,7 @@ Notes
 """
 
 import os
+import shlex
 import subprocess
 import modal
 from modal import App, Image as ModalImage, Volume, Secret
@@ -162,7 +163,8 @@ def _python(module: str, args: list | None = None, *, cwd: str = "/root/nanochat
     # Always add --modal to ensure persistent paths are used on Modal
     if "--modal" not in args:
         args.append("--modal")
-    cmd = f"cd {cwd} && python -m {module} {' '.join(args)}"
+    arg_str = " ".join(shlex.quote(arg) for arg in args)
+    cmd = f"cd {cwd} && python -m {module} {arg_str}"
     _run(cmd)
 
 
