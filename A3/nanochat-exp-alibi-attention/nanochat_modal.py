@@ -524,12 +524,16 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
     gpu="H100:1",
     timeout=60 * 30,
 )
-def stage_chat_sample(identity: str = "base", prompt: str | None = None) -> None:
+def stage_chat_sample(identity: str = "base", prompt: str | None = None, model_tag: str | None = None, step: int | None = None) -> None:
     """Launch scripts.chat_cli against a checkpoint (default = latest base pretrain)."""
     _setup_cache()
     args = ["-i", identity]
     if prompt:
         args.extend(["-p", prompt])
+    if model_tag:
+        args.extend(["-g", model_tag])
+    if step:
+        args.extend(["-s", str(step)])
     print(f"Starting chat_cli with identity={identity} ...")
     _python("scripts.chat_cli", args)
 
