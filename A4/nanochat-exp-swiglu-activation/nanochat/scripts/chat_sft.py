@@ -45,6 +45,7 @@ parser.add_argument("--run", type=str, default="dummy", help="wandb run name ('d
 parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (empty = autodetect)")
 # Model loading
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
+parser.add_argument("--save-tag", type=str, default=None, help="model tag to save SFT checkpoint as (default: same as --model-tag)")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 parser.add_argument("--load-optimizer", type=int, default=1, help="warm-start optimizer from pretrained checkpoint (0=no, 1=yes)")
 # Training horizon
@@ -70,6 +71,7 @@ parser.add_argument("--chatcore-max-sample", type=int, default=24, help="max pro
 # Data mixture
 parser.add_argument("--mmlu-epochs", type=int, default=3, help="number of epochs of MMLU in training mixture (teaches Multiple Choice)")
 parser.add_argument("--gsm8k-epochs", type=int, default=4, help="number of epochs of GSM8K in training mixture (teaches Math and Tool Use)")
+parser.add_argument("--modal", action="store_true", help="enable Modal-specific path configuration")
 args = parser.parse_args()
 user_config = vars(args).copy()
 # -----------------------------------------------------------------------------
@@ -388,7 +390,7 @@ while True:
 
     # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
     if last_step:
-        output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
+        output_dirname = args.save_tag or args.model_tag or f"d{depth}" # e.g. d12
         checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
         save_checkpoint(
             checkpoint_dir,

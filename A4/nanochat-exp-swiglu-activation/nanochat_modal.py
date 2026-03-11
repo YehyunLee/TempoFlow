@@ -43,19 +43,19 @@ from modal import App, Image as ModalImage, Volume, Secret
 #   d24  ~768M params   3 hr on 8xH100     
 #   d26  ~1B params     6 hr on 8xH100 
 #   d32  ~1.9B params   41 hr on 8xH100
-DEPTH = 12
+DEPTH = 24
 
 # ── Data shards ───────────────────────────────────────────────────────────────
 # FineWeb-EDU is split into 1822 parquet shards, each ~250M chars / ~100MB.
 # 240 shards is enough for d24. Use 450 for d26 and 800 for d32.
-NUM_SHARDS = 40
+NUM_SHARDS = 240
 
 # ── GPU configuration ─────────────────────────────────────────────────────────
 # "H100:8" = 8 H100s, the reference configuration for the speedrun leaderboard.
 # "H100:4" = 4 H100s, half the speed, same cost per GPU-hour.
 # "A100:8" = 8 A100 80GBs, ~10-20% slower than H100s but sometimes cheaper.
 # Single GPU works too — code auto-compensates with gradient accumulation.
-GPU_PRETRAIN = "H100:4"
+GPU_PRETRAIN = "H100:8"
 GPU_FINETUNE = "H100:4"   # SFT and RL don't need all 8 GPUs
 
 # ── Device batch size ─────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ GPU_FINETUNE = "H100:4"   # SFT and RL don't need all 8 GPUs
 #   H100 80GB: 32 fits for d24, 16 for d26, 8 for d32
 #   A100 80GB: same as H100
 #   A100 40GB: use 16 for d24
-DEVICE_BATCH_SIZE = 32    # d24 at 16 is safe; 32 may OOM on some H100 configs
+DEVICE_BATCH_SIZE = 16    # lowered to 16 since SwiGLU takes more VRAM than default ReLU²
 
 # ── WandB ─────────────────────────────────────────────────────────────────────
 # Set to "dummy" to disable WandB logging
@@ -108,7 +108,7 @@ app = modal.App("nanochat-speedrun")
 # Persistent network volume: survives container shutdowns.
 # Stores downloaded shards (~24GB), tokenizer, checkpoints, eval bundle.
 # First time you run, Modal creates this automatically.
-volume = Volume.from_name("nanochat-vol", create_if_missing=True)
+volume = Volume.from_name("nano_p4", create_if_missing=True)
 
 # Secret: injects WANDB_API_KEY and HF_TOKEN as env vars inside containers.
 # Create once with:
@@ -436,7 +436,7 @@ def stage_post_pretrain_eval() -> None:
 
     # speedrun.sh: torchrun ... -m scripts.base_loss
     print("Computing bits-per-byte on train/val data...")
-    _torchrun("scripts.base_loss", nproc=_N_PRETRAIN_GPUS)
+    _torchrun("scripts.base_eval", nproc=_N_PRETRAIN_GPUS)
 
     # speedrun.sh: torchrun ... -m scripts.base_eval
     print("Running CORE evaluation (22 benchmarks, ~20-40 min)...")
@@ -457,7 +457,7 @@ def stage_post_pretrain_eval() -> None:
     gpu=GPU_FINETUNE,
     timeout=FINETUNE_TIMEOUT_SEC,
 )
-def stage_sft(wandb_run: str = WANDB_RUN) -> None:
+def stage_sft(wandb_run: str = WANDB_RUN, save_tag: str = "") -> None:
     """
     Supervised fine-tuning: teach the model to follow chat instructions.
 
@@ -497,9 +497,12 @@ def stage_sft(wandb_run: str = WANDB_RUN) -> None:
 
     # speedrun.sh: torchrun ... -m scripts.chat_sft -- --run=$WANDB_RUN
     print("Running SFT...")
+    sft_args = [f"--run={wandb_run}", "--load-optimizer=0"]
+    if save_tag:
+        sft_args.append(f"--save-tag={save_tag}")
     _torchrun(
         "scripts.chat_sft",
-        [f"--run={wandb_run}"],
+        sft_args,
         nproc=_N_FINETUNE_GPUS,
     )
 
