@@ -22,7 +22,7 @@ modal run nanochat_modal.py::stage_rl \
   --save-tag=model-and-sft/reward-a \
   --reward-answer-format \
   --reward-environment=answer_format
-=
+
 modal run nanochat_modal.py::stage_eval \
   --identity=rl \
   --task-name=GSM8K \
