@@ -11,7 +11,7 @@ torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 import argparse
 from functools import partial
 from contextlib import nullcontext
-import json,os
+import json, os
 import torch
 import torch.distributed as dist
 
@@ -50,12 +50,24 @@ def run_generative_eval(task_object, tokenizer, model, engine, num_samples, max_
         prefix_length = len(encoded_prompt)
         completions = [tokenizer.decode(result_tokens[prefix_length:]) for result_tokens in results]
         outcomes = [task_object.evaluate(conversation, completion) for completion in completions]
-        # Extract question text logic
+        passed = any(outcomes)
         raw_messages = conversation['messages']
-        question_parts = [msg['content'] if isinstance(msg['content'], str) else "".join([p.get('text', '') for p in msg['content'] if p.get('type') == 'text']) for msg in raw_messages if msg['role'] == 'user']
+        # Extract only the text from the user parts
+        question_parts = []
+        for msg in raw_messages:
+            if isinstance(msg['content'], list):
+                for part in msg['content']:
+                    if part.get('type') == 'text':
+                        question_parts.append(part.get('text', ''))
+            else:
+                question_parts.append(msg['content'])
+        #these are used to generate more readable questions and responses
         question_text = " ".join(question_parts).strip()
-        # Simple formatting for readability
-        clean_completion = completions[0].replace('<|python_start|>', '[CALC] ').replace('<|python_end|>', '').replace('<|output_start|>', ' -> ')
+        clean_completion = completions[0].replace('<|python_start|>', '[CALC] ') \
+                                         .replace('<|python_end|>', '') \
+                                         .replace('<|output_start|>', ' -> ') \
+                                         .replace('<|output_end|>', '') \
+                                         .replace('<|assistant_end|>', '')
         # Only keeping the requested fields
         review_records.append({
             "index": i,
