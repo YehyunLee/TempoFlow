@@ -11,7 +11,7 @@ torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 import argparse
 from functools import partial
 from contextlib import nullcontext
-import json
+import json,os
 import torch
 import torch.distributed as dist
 
@@ -36,12 +36,10 @@ def run_generative_eval(task_object, tokenizer, model, engine, num_samples, max_
     num_problems = len(task_object) if max_problems is None else min(len(task_object), max_problems)
     review_records = []
 
-    # Run the evaluation
     num_passed, total = 0, 0
     for i in range(ddp_rank, num_problems, ddp_world_size):
         conversation = task_object[i]
         encoded_prompt = tokenizer.render_for_completion(conversation)
-        
         results, _ = engine.generate_batch(
             encoded_prompt,
             num_samples=num_samples,
@@ -49,70 +47,53 @@ def run_generative_eval(task_object, tokenizer, model, engine, num_samples, max_
             temperature=temperature,
             top_k=top_k,
         )
-        
         prefix_length = len(encoded_prompt)
         completions = [tokenizer.decode(result_tokens[prefix_length:]) for result_tokens in results]
         outcomes = [task_object.evaluate(conversation, completion) for completion in completions]
-        passed = any(outcomes)
+        # Extract question text logic
         raw_messages = conversation['messages']
-        # Extract only the text from the user parts
-        question_parts = []
-        for msg in raw_messages:
-            if isinstance(msg['content'], list):
-                for part in msg['content']:
-                    if part.get('type') == 'text':
-                        question_parts.append(part.get('text', ''))
-            else:
-                question_parts.append(msg['content'])
-        #these are used to generate more readable questions and responses
+        question_parts = [msg['content'] if isinstance(msg['content'], str) else "".join([p.get('text', '') for p in msg['content'] if p.get('type') == 'text']) for msg in raw_messages if msg['role'] == 'user']
         question_text = " ".join(question_parts).strip()
-        clean_completion = completions[0].replace('<|python_start|>', '[CALC] ') \
-                                         .replace('<|python_end|>', '') \
-                                         .replace('<|output_start|>', ' -> ') \
-                                         .replace('<|output_end|>', '') \
-                                         .replace('<|assistant_end|>', '')
+        # Simple formatting for readability
+        clean_completion = completions[0].replace('<|python_start|>', '[CALC] ').replace('<|python_end|>', '').replace('<|output_start|>', ' -> ')
+        # Only keeping the requested fields
         review_records.append({
             "index": i,
             "question": question_text,
             "completion": clean_completion, 
             "is_correct": outcomes[0]
         })
-
         total += 1
-        num_passed += int(passed)
-        print(f"\r\033[KRank {ddp_rank} | {num_passed}/{total} ({100*num_passed/total:.2f}%)", end='', flush=True)
+        num_passed += int(any(outcomes))
+        if i % 5 == 0:
+            print(f"\rRank {ddp_rank} | {num_passed}/{total} ({100*num_passed/total:.2f}%)", end='', flush=True)
 
-    print()
-
-    # --- NEW: Print a review section for your analysis ---
-    
-    if ddp_rank == 0:
-        output_path = "/vol/nanochat_cache/report/gsm8k_results.json" #or wherever you want to put it on modal
+    if ddp:
+        all_ranks_records = [None] * ddp_world_size
+        dist.all_gather_object(all_ranks_records, review_records)
         
-        # We save the entire list of records
-        with open(output_path, "w") as f:
-            json.dump(review_records, f, indent=4)
+        # Aggregate global accuracy for final printout
+        num_passed_tensor = torch.tensor([num_passed], device=device)
+        total_tensor = torch.tensor([total], device=device)
+        dist.all_reduce(num_passed_tensor, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
         
-        print(f"\n[FILE SAVED] All results written to {output_path}")
-        print(f"Total problems captured: {len(review_records)}")
-        
-        # Keep a small "Preview" in the console so you know it worked
-        print("\n" + "="*15 + " PREVIEW (First 3) " + "="*15)
-        for rec in review_records[:3]:
-            status = "✅" if rec['is_correct'] else "❌"
-            print(f"{status} Prob {rec['index']}: {rec['question'][:100]}...")
-        # this is for if you wanted to just see a couple
-        # print("\n" + "="*20 + " ERROR REVIEW " + "="*20)
-        # for rec in review_records[:20]: # Pulling from the stored list
-        #     status = "✅ CORRECT" if rec['is_correct'] else "❌ INCORRECT"
-        #     # Use rec[...] to access the specific data for each individual problem
-        #     print(f"\n[{status}] Problem {rec['index']}:")
-        #     print(f"Q: {rec['question']}")
-        #     print(f"A: {rec['completion']}")
-        #     print("-" * 50)
-    print0("=" * 50)
-    print0(f"Final: {num_passed}/{total} ({100*num_passed/total:.2f}%)")
-
+        if ddp_rank == 0:
+            combined_records = [item for sublist in all_ranks_records for item in sublist]
+            
+            # Prevent overwrites using step and source in the filename
+            step_label = f"step{args.step}" if args.step else "final"
+            output_dir = "/vol/nanochat_cache/report"
+            os.makedirs(output_dir, exist_ok=True)
+            output_path = f"{output_dir}/gsm8k_{args.source}_{step_label}.json"
+            
+            with open(output_path, "w") as f:
+                json.dump(combined_records, f, indent=4)
+            
+            print0("\n" + "="*50)
+            print0(f"[SUCCESS] Report saved to: {output_path}")
+            print0(f"Final Accuracy: {num_passed_tensor.item()}/{total_tensor.item()} ({100*num_passed_tensor.item()/total_tensor.item():.2f}%)")
+            print0("="*50)
     # Return the accuracy
     return num_passed/total
 
