@@ -87,7 +87,7 @@ def run_generative_eval(task_object, tokenizer, model, engine, num_samples, max_
     # --- NEW: Print a review section for your analysis ---
     
     if ddp_rank == 0:
-        output_path = "/vol/nanochat_cache/report/gsm8k_eda_results.json" #or wherever you want to put it on modal
+        output_path = "/vol/nanochat_cache/report/gsm8k_results.json" #or wherever you want to put it on modal
         
         # We save the entire list of records
         with open(output_path, "w") as f:
