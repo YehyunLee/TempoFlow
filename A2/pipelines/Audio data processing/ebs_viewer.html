@@ -360,7 +360,7 @@
     </div>
   </div>
 
-  <div class="setup-section">
+  <!-- <div class="setup-section">
     <h2>Step 2 — Load or Generate EBS JSON</h2>
     <div class="json-zone" id="drop-json">
       <input type="file" accept=".json,application/json" id="file-json">
@@ -375,7 +375,7 @@
   </div>
 
   <button class="launch-btn" id="btn-launch">Open Viewer</button>
-</div>
+</div> -->
 
 <!-- ===== VIEWER SCREEN ===== -->
 <div class="video-container" id="viewer">
@@ -468,6 +468,7 @@
         <button class="transport-btn" id="btn-prev-move" title="Previous move">&#9664;&#9664;</button>
         <button class="transport-btn play-btn" id="btn-play-practice" title="Play / Pause">&#9654;</button>
         <button class="transport-btn" id="btn-next-move" title="Next move">&#9654;&#9654;</button>
+        <button class="transport-btn" id="btn-speed-practice" title="Toggle 0.25x / 0.5x speed" style="font-size:11px;font-weight:700;background:var(--accent);border-color:var(--accent)">0.5x</button>
         <button class="transport-btn" id="btn-loop-practice" title="Loop segment" style="font-size:11px;font-weight:700;background:var(--accent);border-color:var(--accent)">Loop</button>
         <div class="transport-info">
           <div class="current-segment" id="move-label">Move <span>&mdash;</span></div>
@@ -515,6 +516,7 @@ let practiceMoves = [];
 let currentMoveIdx = -1;
 let practiceLoop = true;
 let pauseAtMoveEnd = true;
+let practicePlaybackRate = 0.5;
 
 // Elements
 const vidRef  = document.getElementById('vid-ref');
@@ -929,6 +931,7 @@ function openPracticeMode(segIdx) {
   practiceSegIdx = segIdx;
   practiceMoves = moves;
   currentMoveIdx = -1;
+  practicePlaybackRate = 0.5;
 
   document.getElementById('main-transport').style.display = 'none';
   document.getElementById('main-timeline').style.display = 'none';
@@ -938,20 +941,22 @@ function openPracticeMode(segIdx) {
 
   document.getElementById('practice-seg-num').textContent = segIdx;
 
-  vidRef.playbackRate = 0.5;
-  vidUser.playbackRate = 0.5;
+  vidRef.playbackRate = practicePlaybackRate;
+  vidUser.playbackRate = practicePlaybackRate;
   const slowBtn = document.getElementById('btn-slow');
   slowBtn.textContent = '0.5x';
   slowBtn.style.background = 'var(--accent)';
   slowBtn.style.borderColor = 'var(--accent)';
+  const practiceSpeedBtn = document.getElementById('btn-speed-practice');
+  practiceSpeedBtn.textContent = '0.5x';
+  practiceSpeedBtn.style.background = 'var(--accent)';
+  practiceSpeedBtn.style.borderColor = 'var(--accent)';
+  document.querySelector('.speed-badge').textContent = '0.5x';
 
   buildMoveTimeline();
   buildMoveList();
 
-  const seg = SEGS[segIdx];
-  const dur = seg.shared_end_sec - seg.shared_start_sec;
-  document.getElementById('practice-bpm-info').textContent =
-    `${moves.length} moves \u00b7 ${dur.toFixed(1)}s segment \u00b7 plays ${(dur / 0.5).toFixed(1)}s at 0.5x`;
+  updatePracticeSpeedInfo();
 
   seekToShared(moves[0].startSec);
   updateMoveHighlights();
@@ -972,6 +977,15 @@ function closePracticeMode() {
   practiceSegIdx = -1;
   practiceMoves = [];
   currentMoveIdx = -1;
+}
+
+function updatePracticeSpeedInfo() {
+  const seg = SEGS[practiceSegIdx];
+  if (!seg) return;
+  const dur = seg.shared_end_sec - seg.shared_start_sec;
+  const speedText = `${practicePlaybackRate.toFixed(2).replace(/\.00$/, '')}x`;
+  document.getElementById('practice-bpm-info').textContent =
+    `${practiceMoves.length} moves \u00b7 ${dur.toFixed(1)}s segment \u00b7 plays ${(dur / practicePlaybackRate).toFixed(1)}s at ${speedText}`;
 }
 
 function buildMoveTimeline() {
@@ -1146,6 +1160,21 @@ document.getElementById('btn-loop-practice').addEventListener('click', () => {
   const btn = document.getElementById('btn-loop-practice');
   btn.style.background = practiceLoop ? 'var(--accent)' : '';
   btn.style.borderColor = practiceLoop ? 'var(--accent)' : '';
+});
+
+document.getElementById('btn-speed-practice').addEventListener('click', () => {
+  if (!practiceMode) return;
+  practicePlaybackRate = practicePlaybackRate === 0.5 ? 0.25 : 0.5;
+  vidRef.playbackRate = practicePlaybackRate;
+  vidUser.playbackRate = practicePlaybackRate;
+
+  const speedText = `${practicePlaybackRate.toFixed(2).replace(/\.00$/, '')}x`;
+  const btn = document.getElementById('btn-speed-practice');
+  btn.textContent = speedText;
+  btn.style.background = 'var(--accent)';
+  btn.style.borderColor = 'var(--accent)';
+  document.querySelector('.speed-badge').textContent = speedText;
+  updatePracticeSpeedInfo();
 });
 
 document.getElementById('chk-pause-move').addEventListener('change', e => {
