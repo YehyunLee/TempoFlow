@@ -20,10 +20,10 @@ function getMaxVideoBytes() {
 
 export async function POST(request: Request) {
   try {
-    const backend = process.env.SAM3_BACKEND?.trim() || 'modal';
+    const backend = process.env.SAM3_BACKEND?.trim() || 'roboflow';
     if (backend !== 'modal') {
       return NextResponse.json(
-        { error: 'TempoFlow is currently configured for a non-Modal SAM 3 backend.' },
+        { error: 'TempoFlow is currently configured for Roboflow SAM 3 frame overlay. Use /api/sam3/frame.' },
         { status: 400 },
       );
     }

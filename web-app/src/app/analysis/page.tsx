@@ -15,32 +15,13 @@ import {
   TempoFlowSession,
   updateSession,
 } from '../../lib/sessionStorage';
-import { getSessionVideo, storeSessionVideo } from '../../lib/videoStorage';
+import { getSessionVideo } from '../../lib/videoStorage';
+import { loadSam3OverlayFrames, saveSam3OverlayFrames } from '../../lib/sam3OverlayStorage';
+import { generateYoloOverlayFrames } from '../../lib/yoloOverlayGenerator';
+import { loadYoloOverlayFrames, saveYoloOverlayFrames } from '../../lib/yoloOverlayStorage';
 
 const PoseOverlay = dynamic(() => import('../../components/PoseOverlay'), { ssr: false });
-const DEFAULT_SAM3_MAX_VIDEO_MB = 40;
-const DEFAULT_SAM3_MAX_DURATION_SEC = 12;
-
-function getSam3MaxVideoMb() {
-  const value = Number.parseInt(process.env.NEXT_PUBLIC_SAM3_MAX_VIDEO_MB ?? `${DEFAULT_SAM3_MAX_VIDEO_MB}`, 10);
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_SAM3_MAX_VIDEO_MB;
-}
-
-function getSam3MaxDurationSec() {
-  const value = Number.parseFloat(process.env.NEXT_PUBLIC_SAM3_MAX_DURATION_SEC ?? `${DEFAULT_SAM3_MAX_DURATION_SEC}`);
-  return Number.isFinite(value) && value > 0 ? value : DEFAULT_SAM3_MAX_DURATION_SEC;
-}
-
-async function readErrorMessage(response: Response) {
-  const contentType = response.headers.get('content-type') ?? '';
-  if (contentType.includes('application/json')) {
-    const data = (await response.json()) as { error?: string };
-    return data.error || 'SAM 3 processing failed.';
-  }
-
-  const text = await response.text();
-  return text || 'SAM 3 processing failed.';
-}
+const RoboflowVideoOverlay = dynamic(() => import('../../components/RoboflowVideoOverlay'), { ssr: false });
 
 function AnalysisPageContent() {
   const searchParams = useSearchParams();
@@ -49,23 +30,43 @@ function AnalysisPageContent() {
   const [duration, setDuration] = useState(0);
   const [referenceVideoUrl, setReferenceVideoUrl] = useState<string | null>(null);
   const [userVideoUrl, setUserVideoUrl] = useState<string | null>(null);
-  const [sam3ReferenceUrl, setSam3ReferenceUrl] = useState<string | null>(null);
-  const [sam3PracticeUrl, setSam3PracticeUrl] = useState<string | null>(null);
   const [session, setSession] = useState<TempoFlowSession | null>(null);
   const [loadingSession, setLoadingSession] = useState(true);
   const [analysisStatus, setAnalysisStatus] = useState('Loading your local session...');
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [pageError, setPageError] = useState<string | null>(null);
-  const [overlayMethod, setOverlayMethod] = useState<'pose-fill' | 'sam3-experimental'>('pose-fill');
-  const [sam3Processing, setSam3Processing] = useState(false);
-  const [sam3Status, setSam3Status] = useState('');
-  const [sam3Error, setSam3Error] = useState<string | null>(null);
+  const [overlayMethod, setOverlayMethod] = useState<'pose-fill' | 'yolo-seg' | 'sam3-roboflow'>('pose-fill');
 
+  // YOLO local overlay generation state
+  type YoloGenStatus = 'idle' | 'processing-ref' | 'processing-practice' | 'ready' | 'error';
+  const [yoloStatus, setYoloStatus] = useState<YoloGenStatus>('idle');
+  const [yoloStatusMsg, setYoloStatusMsg] = useState('');
+  const [yoloRefFrames, setYoloRefFrames] = useState(0);
+  const [yoloPracFrames, setYoloPracFrames] = useState(0);
+  const [yoloRefTotal, setYoloRefTotal] = useState(0);
+  const [yoloPracTotal, setYoloPracTotal] = useState(0);
+  const yoloRefFrameCacheRef = useRef<string[]>([]);
+  const yoloPracFrameCacheRef = useRef<string[]>([]);
+  const [yoloFrameVersion, setYoloFrameVersion] = useState(0);
+
+  // SAM 3 WebRTC video-file processing state
+  type Sam3GenStatus = 'idle' | 'processing-ref' | 'processing-practice' | 'ready' | 'error';
+  const [sam3Status,        setSam3Status]        = useState<Sam3GenStatus>('idle');
+  const [sam3StatusMsg,     setSam3StatusMsg]      = useState('');
+  const [sam3RefProgress,   setSam3RefProgress]    = useState(0);   // upload %
+  const [sam3PracProgress,  setSam3PracProgress]   = useState(0);
+  const [sam3RefFrames,     setSam3RefFrames]      = useState(0);   // frames received
+  const [sam3PracFrames,    setSam3PracFrames]     = useState(0);
+  const refFrameCacheRef    = useRef<string[]>([]);
+  const pracFrameCacheRef   = useRef<string[]>([]);
+  // bump this to re-render the overlay components after generation
+  const [sam3FrameVersion,  setSam3FrameVersion]   = useState(0);
+  
   const referenceVideoRef = useRef<HTMLVideoElement>(null);
   const userVideoRef = useRef<HTMLVideoElement>(null);
   const progressInterval = useRef<NodeJS.Timeout | null>(null);
   const analysisMode = getAnalysisMode();
-
+  
   useEffect(() => {
     const sessionId = searchParams.get('session') ?? getCurrentSessionId();
     if (!sessionId) {
@@ -76,8 +77,6 @@ function AnalysisPageContent() {
 
     let referenceUrlToCleanup: string | null = null;
     let practiceUrlToCleanup: string | null = null;
-    let sam3ReferenceUrlToCleanup: string | null = null;
-    let sam3PracticeUrlToCleanup: string | null = null;
 
     const loadSession = async () => {
       try {
@@ -88,11 +87,9 @@ function AnalysisPageContent() {
           return;
         }
 
-        const [referenceFile, practiceFile, sam3ReferenceFile, sam3PracticeFile] = await Promise.all([
+        const [referenceFile, practiceFile] = await Promise.all([
           getSessionVideo(sessionId, 'reference'),
           getSessionVideo(sessionId, 'practice'),
-          getSessionVideo(sessionId, 'reference-sam3'),
-          getSessionVideo(sessionId, 'practice-sam3'),
         ]);
 
         if (!referenceFile || !practiceFile) {
@@ -108,18 +105,42 @@ function AnalysisPageContent() {
         setReferenceVideoUrl(referenceUrlToCleanup);
         setUserVideoUrl(practiceUrlToCleanup);
 
-        if (sam3ReferenceFile) {
-          sam3ReferenceUrlToCleanup = URL.createObjectURL(sam3ReferenceFile);
-          setSam3ReferenceUrl(sam3ReferenceUrlToCleanup);
-        } else {
-          setSam3ReferenceUrl(null);
+        try {
+          const [savedYoloRef, savedYoloPrac] = await Promise.all([
+            loadYoloOverlayFrames({ sessionId, role: 'reference' }),
+            loadYoloOverlayFrames({ sessionId, role: 'practice' }),
+          ]);
+          if (savedYoloRef && savedYoloPrac) {
+            yoloRefFrameCacheRef.current = savedYoloRef;
+            yoloPracFrameCacheRef.current = savedYoloPrac;
+            setYoloRefFrames(savedYoloRef.length);
+            setYoloPracFrames(savedYoloPrac.length);
+            setYoloRefTotal(savedYoloRef.length);
+            setYoloPracTotal(savedYoloPrac.length);
+            setYoloStatus('ready');
+            setYoloFrameVersion((v) => v + 1);
+          }
+        } catch (err) {
+          console.warn('Failed to restore saved YOLO overlay frames:', err);
         }
 
-        if (sam3PracticeFile) {
-          sam3PracticeUrlToCleanup = URL.createObjectURL(sam3PracticeFile);
-          setSam3PracticeUrl(sam3PracticeUrlToCleanup);
-        } else {
-          setSam3PracticeUrl(null);
+        // Attempt to restore previously generated SAM 3 overlay frames from IndexedDB.
+        // These are stored as Blob URLs and can be replayed without re-running Roboflow.
+        try {
+          const [refFrames, pracFrames] = await Promise.all([
+            loadSam3OverlayFrames({ sessionId, role: 'reference' }),
+            loadSam3OverlayFrames({ sessionId, role: 'practice' }),
+          ]);
+          if (refFrames && pracFrames) {
+            refFrameCacheRef.current = refFrames;
+            pracFrameCacheRef.current = pracFrames;
+            setSam3RefFrames(refFrames.length);
+            setSam3PracFrames(pracFrames.length);
+            setSam3Status('ready');
+            setSam3FrameVersion((v) => v + 1);
+        }
+      } catch (err) {
+          console.warn('Failed to restore saved SAM 3 overlays:', err);
         }
       } catch (error) {
         console.error('Failed to load local session:', error);
@@ -134,8 +155,6 @@ function AnalysisPageContent() {
     return () => {
       if (referenceUrlToCleanup?.startsWith('blob:')) URL.revokeObjectURL(referenceUrlToCleanup);
       if (practiceUrlToCleanup?.startsWith('blob:')) URL.revokeObjectURL(practiceUrlToCleanup);
-      if (sam3ReferenceUrlToCleanup?.startsWith('blob:')) URL.revokeObjectURL(sam3ReferenceUrlToCleanup);
-      if (sam3PracticeUrlToCleanup?.startsWith('blob:')) URL.revokeObjectURL(sam3PracticeUrlToCleanup);
     };
   }, [searchParams]);
 
@@ -254,15 +273,15 @@ function AnalysisPageContent() {
   const togglePlayPause = () => {
     const nextState = !isPlaying;
     setIsPlaying(nextState);
-
+    
     if (referenceVideoRef.current && userVideoRef.current) {
-      if (nextState) {
+        if (nextState) {
         referenceVideoRef.current.play().catch((error) => console.error('Play error:', error));
         userVideoRef.current.play().catch((error) => console.error('Play error:', error));
-      } else {
-        referenceVideoRef.current.pause();
-        userVideoRef.current.pause();
-      }
+        } else {
+            referenceVideoRef.current.pause();
+            userVideoRef.current.pause();
+        }
     }
   };
 
@@ -291,6 +310,221 @@ function AnalysisPageContent() {
     referenceVideoRef.current.currentTime = timeSec;
     userVideoRef.current.currentTime = timeSec;
     setCurrentTime(timeSec);
+  };
+
+  /** Process both videos through Roboflow SAM 3 WebRTC pipeline */
+  const generateSam3Overlays = async () => {
+    if (!referenceVideoUrl || !userVideoUrl) return;
+    if (sam3Status === 'processing-ref' || sam3Status === 'processing-practice') return;
+    if (!session?.id) return;
+
+    refFrameCacheRef.current  = [];
+    pracFrameCacheRef.current = [];
+    setSam3RefFrames(0);
+    setSam3PracFrames(0);
+    setSam3RefProgress(0);
+    setSam3PracProgress(0);
+
+    const VIDEO_OUTPUT = 'label_visualization';
+
+    const processVideo = async (
+      blobUrl: string,
+      onFrame: (src: string) => void,
+      onUpload: (pct: number) => void,
+    ) => {
+      const { connectors, webrtc } = await import('@roboflow/inference-sdk');
+
+      // Fetch the blob: URL → File object so the SDK can handle upload
+      const resp = await fetch(blobUrl);
+      const blob = await resp.blob();
+      const file = new File([blob], 'video.mp4', { type: blob.type || 'video/mp4' });
+
+      const connector = connectors.withProxyUrl('/api/init-webrtc');
+
+      await new Promise<void>((resolve, reject) => {
+        let framesSeen = 0;
+        let lastActivity = performance.now();
+        let loggedKeys = false;
+        const IDLE_MS = 8000;
+        const pollId = window.setInterval(() => {
+          const quietFor = performance.now() - lastActivity;
+          if (framesSeen > 0 && quietFor >= IDLE_MS) {
+            window.clearInterval(pollId);
+            resolve();
+          }
+        }, 1000);
+
+        webrtc
+          .useVideoFile({
+            file,
+            connector,
+            wrtcParams: {
+              // workspace / workflowId are injected server-side by /api/init-webrtc
+              workspaceName: '__proxy__',
+              workflowId: '__proxy__',
+              streamOutputNames: [],
+              dataOutputNames: [VIDEO_OUTPUT, 'model_predictions'],
+              processingTimeout: 3600,
+              realtimeProcessing: false,
+            },
+            onData: (data: Record<string, unknown>) => {
+              lastActivity = performance.now();
+              const serialized = data.serialized_output_data as
+                | Record<string, { value?: string }>
+                | undefined;
+              if (!loggedKeys) {
+                loggedKeys = true;
+                // Helpful single log to inspect workflow outputs.
+                // eslint-disable-next-line no-console
+                console.log(
+                  'SAM3 onData serialized_output_data keys:',
+                  Object.keys(serialized ?? {}),
+                );
+              }
+              const viz = serialized?.[VIDEO_OUTPUT];
+              if (viz?.value) {
+                framesSeen += 1;
+                onFrame(`data:image/jpeg;base64,${viz.value}`);
+              }
+            },
+            onUploadProgress: (sent: number, total: number) => {
+              lastActivity = performance.now();
+              onUpload(Math.round((sent / total) * 100));
+            },
+            onComplete: () => {
+              window.clearInterval(pollId);
+              resolve();
+            },
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          } as any)
+          .catch((err: unknown) => {
+            window.clearInterval(pollId);
+            reject(err);
+          });
+      });
+    };
+
+    try {
+      // ── Reference video ───────────────────────────────────────────────────
+      setSam3Status('processing-ref');
+      setSam3StatusMsg('Uploading reference video…');
+
+      await processVideo(
+        referenceVideoUrl,
+        (src) => {
+          refFrameCacheRef.current.push(src);
+          setSam3RefFrames(refFrameCacheRef.current.length);
+        },
+        (pct) => {
+          setSam3RefProgress(pct);
+          if (pct === 100) setSam3StatusMsg('Roboflow processing reference…');
+        },
+      );
+
+      // Persist reference overlay frames for revisit.
+      try {
+        await saveSam3OverlayFrames({
+          sessionId: session.id,
+          role: 'reference',
+          framesDataUrl: refFrameCacheRef.current,
+        });
+      } catch (err) {
+        console.warn('Failed to save reference SAM 3 overlay frames:', err);
+      }
+
+      // ── Practice video ────────────────────────────────────────────────────
+      setSam3Status('processing-practice');
+      setSam3StatusMsg('Uploading practice video…');
+
+      await processVideo(
+        userVideoUrl,
+        (src) => {
+          pracFrameCacheRef.current.push(src);
+          setSam3PracFrames(pracFrameCacheRef.current.length);
+        },
+        (pct) => {
+          setSam3PracProgress(pct);
+          if (pct === 100) setSam3StatusMsg('Roboflow processing practice…');
+        },
+      );
+
+      // Persist practice overlay frames for revisit.
+      try {
+        await saveSam3OverlayFrames({
+          sessionId: session.id,
+          role: 'practice',
+          framesDataUrl: pracFrameCacheRef.current,
+        });
+      } catch (err) {
+        console.warn('Failed to save practice SAM 3 overlay frames:', err);
+      }
+
+      setSam3Status('ready');
+      setSam3StatusMsg('');
+      setSam3FrameVersion(v => v + 1);
+    } catch (err) {
+      console.error('SAM 3 generation error:', err);
+      setSam3Status('error');
+      setSam3StatusMsg(err instanceof Error ? err.message : 'SAM 3 overlay generation failed.');
+    }
+  };
+
+  const generateYoloOverlays = async () => {
+    if (!referenceVideoUrl || !userVideoUrl || !session?.id) return;
+    if (yoloStatus === 'processing-ref' || yoloStatus === 'processing-practice') return;
+
+    yoloRefFrameCacheRef.current = [];
+    yoloPracFrameCacheRef.current = [];
+    setYoloRefFrames(0);
+    setYoloPracFrames(0);
+    setYoloRefTotal(0);
+    setYoloPracTotal(0);
+
+    try {
+      setYoloStatus('processing-ref');
+      setYoloStatusMsg('Generating reference YOLO overlay locally…');
+
+      const referenceFrames = await generateYoloOverlayFrames({
+        videoUrl: referenceVideoUrl,
+        color: '#00FF00',
+        onProgress: (completed, total) => {
+          setYoloRefFrames(completed);
+          setYoloRefTotal(total);
+        },
+      });
+      yoloRefFrameCacheRef.current = referenceFrames;
+      await saveYoloOverlayFrames({
+        sessionId: session.id,
+        role: 'reference',
+        framesDataUrl: referenceFrames,
+      });
+
+      setYoloStatus('processing-practice');
+      setYoloStatusMsg('Generating practice YOLO overlay locally…');
+
+      const practiceFrames = await generateYoloOverlayFrames({
+        videoUrl: userVideoUrl,
+        color: '#FF0000',
+        onProgress: (completed, total) => {
+          setYoloPracFrames(completed);
+          setYoloPracTotal(total);
+        },
+      });
+      yoloPracFrameCacheRef.current = practiceFrames;
+      await saveYoloOverlayFrames({
+        sessionId: session.id,
+        role: 'practice',
+        framesDataUrl: practiceFrames,
+      });
+
+      setYoloStatus('ready');
+      setYoloStatusMsg('');
+      setYoloFrameVersion((v) => v + 1);
+    } catch (err) {
+      console.error('YOLO overlay generation error:', err);
+      setYoloStatus('error');
+      setYoloStatusMsg(err instanceof Error ? err.message : 'YOLO overlay generation failed.');
+    }
   };
 
   const handleLoadedMetadata = () => {
@@ -390,115 +624,8 @@ function AnalysisPageContent() {
   const summary = session?.analysis;
   const scores = summary?.scores;
   const worstSegment = summary?.segments.slice().sort((a, b) => a.score - b.score)[0];
-  const sam3Result = session?.sam3Result;
-  const sam3Ready = Boolean(sam3ReferenceUrl && sam3PracticeUrl && sam3Result);
-  const sam3StateLabel = sam3Processing ? 'Processing on Modal GPU' : sam3Error ? 'Failed' : sam3Ready ? 'Ready' : 'Idle';
-  const referenceDisplayUrl =
-    overlayMethod === 'sam3-experimental' && sam3ReferenceUrl
-      ? sam3ReferenceUrl
-      : referenceVideoUrl;
-  const practiceDisplayUrl =
-    overlayMethod === 'sam3-experimental' && sam3PracticeUrl
-      ? sam3PracticeUrl
-      : userVideoUrl;
-
-  const generateSam3Video = async (kind: 'reference' | 'practice', sourceUrl: string, fileName: string) => {
-    const sourceResponse = await fetch(sourceUrl);
-    const blob = await sourceResponse.blob();
-    const maxVideoBytes = getSam3MaxVideoMb() * 1024 * 1024;
-
-    if (blob.size > maxVideoBytes) {
-      throw new Error(`Keep SAM 3 clips under ${getSam3MaxVideoMb()} MB for fast processing.`);
-    }
-
-    const body = new FormData();
-    body.append('video', new File([blob], fileName, { type: blob.type || 'video/webm' }));
-    body.append('kind', kind);
-
-    const response = await fetch('/api/sam3/video', {
-      method: 'POST',
-      body,
-    });
-
-    if (!response.ok) {
-      throw new Error(await readErrorMessage(response));
-    }
-
-    const outputBlob = await response.blob();
-    const prompt = response.headers.get('x-sam3-prompt') || 'person';
-
-    return {
-      provider: 'modal' as const,
-      prompt,
-      file: new File([outputBlob], `${kind}-sam3.mp4`, { type: outputBlob.type || 'video/mp4' }),
-    };
-  };
-
-  const handleGenerateSam3 = async () => {
-    if (!session || !referenceVideoUrl || !userVideoUrl) {
-      return;
-    }
-
-    try {
-      const maxDurationSec = getSam3MaxDurationSec();
-      const referenceDuration = referenceVideoRef.current?.duration ?? 0;
-      const practiceDuration = userVideoRef.current?.duration ?? 0;
-      if (referenceDuration > maxDurationSec || practiceDuration > maxDurationSec) {
-        throw new Error(`Keep each clip under ${maxDurationSec} seconds for fast SAM 3 mode.`);
-      }
-
-      setSam3Processing(true);
-      setSam3Error(null);
-      setSam3Status('Queued reference clip on Modal...');
-
-      const referenceResult = await generateSam3Video(
-        'reference',
-        referenceVideoUrl,
-        session.referenceName || 'reference.mp4',
-      );
-
-      setSam3Status('Queued practice clip on Modal...');
-      const practiceResult = await generateSam3Video(
-        'practice',
-        userVideoUrl,
-        session.practiceName || 'practice.mp4',
-      );
-
-      await Promise.all([
-        storeSessionVideo(session.id, 'reference-sam3', referenceResult.file),
-        storeSessionVideo(session.id, 'practice-sam3', practiceResult.file),
-      ]);
-
-      const nextReferenceUrl = URL.createObjectURL(referenceResult.file);
-      const nextPracticeUrl = URL.createObjectURL(practiceResult.file);
-
-      const updatedSession = updateSession(session.id, {
-        sam3Result: {
-          provider: 'modal',
-          prompt: practiceResult.prompt || referenceResult.prompt,
-          generatedAt: new Date().toISOString(),
-        },
-      });
-
-      setSession(updatedSession ?? session);
-      setSam3ReferenceUrl((currentUrl) => {
-        if (currentUrl?.startsWith('blob:')) URL.revokeObjectURL(currentUrl);
-        return nextReferenceUrl;
-      });
-      setSam3PracticeUrl((currentUrl) => {
-        if (currentUrl?.startsWith('blob:')) URL.revokeObjectURL(currentUrl);
-        return nextPracticeUrl;
-      });
-      setOverlayMethod('sam3-experimental');
-      setSam3Status('Segmented videos are ready.');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'SAM 3 overlay generation failed.';
-      setSam3Error(message);
-      setSam3Status('');
-    } finally {
-      setSam3Processing(false);
-    }
-  };
+  const referenceDisplayUrl = referenceVideoUrl;
+  const practiceDisplayUrl = userVideoUrl;
 
   return (
     <div className="min-h-screen bg-white">
@@ -536,7 +663,7 @@ function AnalysisPageContent() {
             <div>
               <h2 className="text-lg font-semibold text-gray-900">Overlay method</h2>
               <p className="text-sm text-gray-600">
-                Switch between the current local pose-fill overlay and a Modal-hosted SAM 3 segmentation pass.
+                Choose how the dancer&apos;s body is highlighted. YOLO runs entirely in your browser — no server needed.
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
@@ -548,81 +675,192 @@ function AnalysisPageContent() {
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
               >
-                Local Pose Fill
+                Pose Fill
               </button>
               <button
-                onClick={() => setOverlayMethod('sam3-experimental')}
+                onClick={() => setOverlayMethod('yolo-seg')}
                 className={`rounded-full px-4 py-2 text-sm font-medium transition-all ${
-                  overlayMethod === 'sam3-experimental'
+                  overlayMethod === 'yolo-seg'
+                    ? 'bg-emerald-600 text-white'
+                    : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'
+                }`}
+              >
+                YOLO Seg ✦ local
+              </button>
+              <button
+                onClick={() => setOverlayMethod('sam3-roboflow')}
+                className={`rounded-full px-4 py-2 text-sm font-medium transition-all ${
+                  overlayMethod === 'sam3-roboflow'
                     ? 'bg-purple-600 text-white'
                     : 'bg-purple-50 text-purple-700 hover:bg-purple-100'
                 }`}
               >
-                SAM 3 Experimental
+                SAM 3 (Roboflow)
               </button>
             </div>
           </div>
-          <p className="mt-3 text-xs text-gray-500">
-            SAM 3 can detect, segment, and track objects in images and videos using prompts. TempoFlow sends short clips to a Modal GPU worker, then stores the segmented results back on this device so the app stays local-first after generation. See{' '}
-            <a
-              href="https://ai.meta.com/research/sam3/"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              Meta SAM 3
-            </a>
-            {' '}and{' '}
-            <a
-              href="https://modal.com/"
-              target="_blank"
-              rel="noreferrer"
-              className="underline underline-offset-2"
-            >
-              Modal
-            </a>
-            .
-          </p>
-          {overlayMethod === 'sam3-experimental' && (
-            <div className="mt-4 rounded-2xl border border-purple-100 bg-purple-50 px-4 py-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+
+          {overlayMethod === 'yolo-seg' && (
+            <div className="mt-4 rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4">
                 <div>
-                  <p className="text-sm font-semibold text-purple-700">SAM 3 experimental video segmentation</p>
-                  <p className="text-sm text-gray-700">
-                    {sam3Ready
-                      ? `Ready. Prompt used: "${sam3Result?.prompt}".`
-                      : `Generate segmented videos for both panels on Modal. Fast mode works best for clips under ${getSam3MaxDurationSec()} seconds and ${getSam3MaxVideoMb()} MB.`}
+                  <p className="text-sm font-semibold text-emerald-700">YOLO11s-seg — pre-generated local overlay</p>
+                  <p className="mt-1 text-sm text-gray-700">
+                    Runs entirely in your browser with the higher-quality YOLO11s segmentation model, generates overlay frames once, then replays them in sync with no live inference lag.
                   </p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-purple-700">
-                    {sam3StateLabel}
-                  </span>
+                {yoloStatus === 'idle' || yoloStatus === 'error' ? (
                   <button
-                    onClick={handleGenerateSam3}
-                    disabled={sam3Processing || !referenceVideoUrl || !userVideoUrl}
-                    className="rounded-full bg-purple-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={generateYoloOverlays}
+                    disabled={!referenceVideoUrl || !userVideoUrl}
+                    className="flex-shrink-0 rounded-full bg-emerald-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-emerald-700 disabled:opacity-50"
                   >
-                    {sam3Processing ? 'Processing...' : sam3Ready ? 'Regenerate SAM 3 Videos' : 'Generate SAM 3 Videos'}
+                    Generate overlays
                   </button>
-                  {sam3Error && !sam3Processing ? (
-                    <button
-                      onClick={handleGenerateSam3}
-                      className="rounded-full bg-white px-4 py-2 text-sm font-medium text-purple-700 transition-all hover:bg-purple-100"
-                    >
-                      Retry
-                    </button>
-                  ) : null}
-                </div>
+                ) : yoloStatus === 'ready' ? (
+                  <button
+                    onClick={generateYoloOverlays}
+                    className="flex-shrink-0 rounded-full bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200"
+                  >
+                    Regenerate
+                  </button>
+                ) : null}
               </div>
-              {(sam3Processing || sam3Status) && (
-                <p className="mt-3 text-sm text-gray-700">{sam3Status}</p>
+
+              {(yoloStatus === 'processing-ref' || yoloStatus === 'processing-practice') && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-emerald-700">{yoloStatusMsg}</p>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs text-gray-600">
+                      <span>Reference</span>
+                      <span>{yoloRefFrames}/{yoloRefTotal || '…'} frames</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-emerald-100">
+                      <div
+                        className="h-full rounded-full bg-emerald-500 transition-all"
+                        style={{ width: `${yoloRefTotal > 0 ? (yoloRefFrames / yoloRefTotal) * 100 : 5}%` }}
+                      />
+                    </div>
+                    {yoloStatus === 'processing-practice' && (
+                      <>
+                        <div className="flex items-center justify-between text-xs text-gray-600">
+                          <span>Practice</span>
+                          <span>{yoloPracFrames}/{yoloPracTotal || '…'} frames</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-emerald-100">
+                          <div
+                            className="h-full rounded-full bg-emerald-500 transition-all"
+                            style={{ width: `${yoloPracTotal > 0 ? (yoloPracFrames / yoloPracTotal) * 100 : 5}%` }}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
               )}
-              {sam3Error && (
-                <p className="mt-3 text-sm text-red-700">{sam3Error}</p>
+
+              {yoloStatus === 'error' && (
+                <p className="mt-2 text-xs text-red-600">{yoloStatusMsg}</p>
+              )}
+
+              {yoloStatus === 'ready' && (
+                <p className="mt-2 text-xs text-emerald-600">
+                  ✓ {yoloRefFrameCacheRef.current.length} reference frames · {yoloPracFrameCacheRef.current.length} practice frames cached
+                </p>
               )}
             </div>
           )}
+
+          {overlayMethod === 'sam3-roboflow' && (
+            <div className="mt-4 rounded-2xl border border-purple-100 bg-purple-50 px-4 py-3">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-purple-700">SAM 3 (Roboflow) — pre-rendered video overlay</p>
+                  <p className="mt-1 text-sm text-gray-700">
+                    Sends both videos to Roboflow&apos;s GPU (SAM 3, <code className="text-xs">webrtc-gpu-large</code>), receives rendered frames, then plays them in sync.
+                    Uses API credits. Requires <code className="text-xs">ROBOFLOW_WORKSPACE_NAME</code> + <code className="text-xs">ROBOFLOW_WORKFLOW_ID</code> in{' '}
+                    <code className="text-xs">.env.local</code>.
+                  </p>
+                </div>
+
+                {sam3Status === 'idle' || sam3Status === 'error' ? (
+                  <button
+                    onClick={generateSam3Overlays}
+                    disabled={!referenceVideoUrl || !userVideoUrl}
+                    className="flex-shrink-0 rounded-full bg-purple-600 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    Generate overlays
+                  </button>
+                ) : sam3Status === 'ready' ? (
+                  <button
+                    onClick={generateSam3Overlays}
+                    className="flex-shrink-0 rounded-full bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 transition-all hover:bg-gray-200"
+                  >
+                    Regenerate
+                  </button>
+                ) : null}
+              </div>
+
+              {/* Progress while generating */}
+              {(sam3Status === 'processing-ref' || sam3Status === 'processing-practice') && (
+                <div className="mt-3 space-y-2">
+                  <p className="text-xs text-purple-600">{sam3StatusMsg}</p>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-xs text-gray-600">
+                      <span>Reference</span>
+                      <span>{sam3RefProgress < 100 ? `Upload ${sam3RefProgress}%` : `${sam3RefFrames} frames`}</span>
+                    </div>
+                    <div className="h-1.5 overflow-hidden rounded-full bg-purple-100">
+                      <div
+                        className="h-full rounded-full bg-purple-500 transition-all"
+                        style={{ width: `${sam3Status === 'processing-ref' ? Math.max(5, sam3RefProgress) : 100}%` }}
+                      />
+                    </div>
+                    {sam3Status === 'processing-practice' && (
+                      <>
+                        <div className="flex items-center justify-between text-xs text-gray-600">
+                          <span>Practice</span>
+                          <span>{sam3PracProgress < 100 ? `Upload ${sam3PracProgress}%` : `${sam3PracFrames} frames`}</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-purple-100">
+                          <div
+                            className="h-full rounded-full bg-purple-500 transition-all"
+                            style={{ width: `${Math.max(5, sam3PracProgress)}%` }}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {sam3Status === 'error' && (
+                <p className="mt-2 text-xs text-red-600">{sam3StatusMsg}</p>
+              )}
+
+              {sam3Status === 'ready' && (
+                <p className="mt-2 text-xs text-emerald-600">
+                  ✓ {refFrameCacheRef.current.length} reference frames · {pracFrameCacheRef.current.length} practice frames cached
+                </p>
+              )}
+            </div>
+          )}
+
+          <p className="mt-3 text-xs text-gray-500">
+            YOLO Seg runs{' '}
+            <a href="https://docs.ultralytics.com/models/yolo11/" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+              YOLO11s-seg
+            </a>{' '}
+            locally via{' '}
+            <a href="https://onnxruntime.ai/docs/get-started/with-javascript/web.html" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+              ONNX Runtime Web
+            </a>
+            . SAM 3 uses{' '}
+            <a href="https://inference.roboflow.com/foundation/sam3/" target="_blank" rel="noreferrer" className="underline underline-offset-2">
+              Roboflow serverless
+            </a>
+            .
+          </p>
         </div>
 
         {!summary && (
@@ -656,58 +894,84 @@ function AnalysisPageContent() {
             <div className="space-y-3">
               <p className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Reference</p>
               <div className="relative aspect-video bg-gray-900 rounded-3xl overflow-hidden group">
-                {overlayMethod === 'sam3-experimental' && sam3Ready ? (
+                {overlayMethod === 'yolo-seg' && yoloStatus === 'ready' && (
                   <div className="absolute left-3 top-3 z-10 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
-                    Modal SAM 3 output
+                    YOLO overlay
                   </div>
-                ) : null}
+                )}
+                {overlayMethod === 'sam3-roboflow' && sam3Status === 'ready' && (
+                  <div className="absolute left-3 top-3 z-10 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
+                    SAM 3 overlay
+                  </div>
+                )}
                 <video
-                  ref={referenceVideoRef}
+                    ref={referenceVideoRef}
                   src={referenceDisplayUrl ?? undefined}
-                  className="w-full h-full object-cover"
-                  loop
-                  muted
-                  playsInline
-                  crossOrigin="anonymous"
+                    className="w-full h-full object-cover"
+                    loop
+                    muted
+                    playsInline
+                    crossOrigin="anonymous"
                   onLoadedMetadata={handleLoadedMetadata}
                   onError={(error) => console.error('Reference video error:', error)}
                 />
-                {overlayMethod !== 'sam3-experimental' || !sam3ReferenceUrl ? (
-                  <PoseOverlay
+                {overlayMethod === 'pose-fill' && (
+                  <PoseOverlay videoRef={referenceVideoRef} color="#00FF00" method="pose-fill" />
+                )}
+                {overlayMethod === 'yolo-seg' && yoloStatus === 'ready' && yoloFrameVersion > 0 && (
+                  <RoboflowVideoOverlay
+                    frames={yoloRefFrameCacheRef.current}
                     videoRef={referenceVideoRef}
-                    color="#00FF00"
-                    method={overlayMethod}
                   />
-                ) : null}
+                )}
+                {overlayMethod === 'sam3-roboflow' && sam3Status === 'ready' && sam3FrameVersion > 0 && (
+                  <RoboflowVideoOverlay
+                    frames={refFrameCacheRef.current}
+                    videoRef={referenceVideoRef}
+                  />
+                )}
               </div>
             </div>
 
             <div className="space-y-3">
               <p className="text-sm font-semibold text-gray-400 uppercase tracking-wider">Your Practice</p>
               <div className="relative aspect-video bg-gray-900 rounded-3xl overflow-hidden group">
-                {overlayMethod === 'sam3-experimental' && sam3Ready ? (
+                {overlayMethod === 'yolo-seg' && yoloStatus === 'ready' && (
                   <div className="absolute left-3 top-3 z-10 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
-                    Modal SAM 3 output
+                    YOLO overlay
                   </div>
-                ) : null}
+                )}
+                {overlayMethod === 'sam3-roboflow' && sam3Status === 'ready' && (
+                  <div className="absolute left-3 top-3 z-10 rounded-full bg-black/60 px-3 py-1 text-xs font-medium text-white">
+                    SAM 3 overlay
+                  </div>
+                )}
                 <video
-                  ref={userVideoRef}
+                    ref={userVideoRef}
                   src={practiceDisplayUrl ?? undefined}
-                  className="w-full h-full object-cover grayscale opacity-80"
-                  loop
-                  muted
-                  playsInline
-                  crossOrigin="anonymous"
+                    className="w-full h-full object-cover grayscale opacity-80"
+                    loop
+                    muted
+                    playsInline
+                    crossOrigin="anonymous"
                   onLoadedMetadata={handleLoadedMetadata}
                   onError={(error) => console.error('User video error:', error)}
                 />
-                {overlayMethod !== 'sam3-experimental' || !sam3PracticeUrl ? (
-                  <PoseOverlay
+                {overlayMethod === 'pose-fill' && (
+                  <PoseOverlay videoRef={userVideoRef} color="#FF0000" method="pose-fill" />
+                )}
+                {overlayMethod === 'yolo-seg' && yoloStatus === 'ready' && yoloFrameVersion > 0 && (
+                  <RoboflowVideoOverlay
+                    frames={yoloPracFrameCacheRef.current}
                     videoRef={userVideoRef}
-                    color="#FF0000"
-                    method={overlayMethod}
                   />
-                ) : null}
+                )}
+                {overlayMethod === 'sam3-roboflow' && sam3Status === 'ready' && sam3FrameVersion > 0 && (
+                  <RoboflowVideoOverlay
+                    frames={pracFrameCacheRef.current}
+                    videoRef={userVideoRef}
+                  />
+                )}
               </div>
             </div>
           </div>
@@ -797,7 +1061,7 @@ function AnalysisPageContent() {
                   <p className="font-medium text-gray-900">{insight.title}</p>
                   <p className="text-gray-700">{insight.body}</p>
                 </div>
-              </li>
+            </li>
             ))}
             {pageError && (
               <li className="text-sm text-red-700">{pageError}</li>

@@ -1,12 +1,12 @@
 "use client";
 
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
 import type { Keypoint, PoseDetector } from '@tensorflow-models/pose-detection';
 
 interface PoseOverlayProps {
   videoRef: React.RefObject<HTMLVideoElement | null>;
   color?: string;
-  method?: 'pose-fill' | 'sam3-experimental';
+  method?: 'pose-fill' | 'sam3-experimental' | 'sam3-roboflow';
 }
 
 function getVisiblePoint(keypoints: Keypoint[], index: number, threshold = 0.3) {
@@ -210,6 +210,9 @@ const PoseOverlay: React.FC<PoseOverlayProps> = ({
   const [detector, setDetector] = useState<PoseDetector | null>(null);
   const [status, setStatus] = useState<string>('Loading TensorFlow...');
   const [error, setError] = useState<string | null>(null);
+  const [roboflowPolygons, setRoboflowPolygons] = useState<number[][][] | null>(null);
+  const lastRoboflowFetchRef = useRef<number>(0);
+  const roboflowAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -256,6 +259,85 @@ const PoseOverlay: React.FC<PoseOverlayProps> = ({
   }, []);
 
   useEffect(() => {
+    return () => {
+      roboflowAbortRef.current?.abort();
+    };
+  }, []);
+
+  const fetchRoboflowMask = async (video: HTMLVideoElement) => {
+    const now = performance.now();
+    if (now - lastRoboflowFetchRef.current < 650) return;
+    lastRoboflowFetchRef.current = now;
+
+    const w = Math.max(2, Math.round((video.videoWidth || 640) * 0.4));
+    const h = Math.max(2, Math.round((video.videoHeight || 480) * 0.4));
+
+    const offscreen = document.createElement('canvas');
+    offscreen.width = w;
+    offscreen.height = h;
+    const offCtx = offscreen.getContext('2d');
+    if (!offCtx) return;
+
+    offCtx.drawImage(video, 0, 0, w, h);
+    const dataUrl = offscreen.toDataURL('image/jpeg', 0.75);
+    const base64 = dataUrl.split(',')[1] || '';
+    if (!base64) return;
+
+    roboflowAbortRef.current?.abort();
+    roboflowAbortRef.current = new AbortController();
+
+    const response = await fetch('/api/sam3/frame', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        imageBase64: base64,
+        prompt: 'person',
+        outputProbThresh: 0.5,
+      }),
+      signal: roboflowAbortRef.current.signal,
+    });
+
+    if (!response.ok) return;
+    const json = (await response.json()) as { polygons?: number[][][] };
+    if (Array.isArray(json.polygons)) {
+      setRoboflowPolygons(json.polygons);
+    }
+  };
+
+  const drawRoboflowPolygons = useCallback((
+    ctx: CanvasRenderingContext2D,
+    polygons: number[][][],
+    scaleX: number,
+    scaleY: number,
+  ) => {
+    if (polygons.length === 0) return;
+
+    ctx.save();
+    ctx.scale(scaleX, scaleY);
+    ctx.fillStyle = withAlpha(color, 0.35);
+    ctx.strokeStyle = withAlpha(color, 0.75);
+    ctx.lineWidth = 2;
+
+    for (const poly of polygons.slice(0, 4)) {
+      if (!Array.isArray(poly) || poly.length < 3) continue;
+      const [x0, y0] = poly[0] ?? [];
+      if (typeof x0 !== 'number' || typeof y0 !== 'number') continue;
+
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      for (const [x, y] of poly.slice(1)) {
+        if (typeof x !== 'number' || typeof y !== 'number') continue;
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  }, [color]);
+
+  useEffect(() => {
     let animationFrameId: number;
 
     const detectPose = async () => {
@@ -277,14 +359,23 @@ const PoseOverlay: React.FC<PoseOverlayProps> = ({
 
         if (ctx && video.videoWidth > 0) {
           try {
-            const poses = await detector.estimatePoses(video);
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-            if (poses.length > 0 && poses[0].keypoints) {
-              if (method === 'sam3-experimental') {
-                drawSam3StyleOverlay(poses[0].keypoints, ctx, color);
-              } else {
-                drawBodyOverlay(poses[0].keypoints, ctx, color);
+            if (method === 'sam3-roboflow') {
+              await fetchRoboflowMask(video);
+              if (roboflowPolygons) {
+                const baseW = Math.max(2, Math.round((video.videoWidth || 640) * 0.4));
+                const baseH = Math.max(2, Math.round((video.videoHeight || 480) * 0.4));
+                drawRoboflowPolygons(ctx, roboflowPolygons, canvas.width / baseW, canvas.height / baseH);
+              }
+            } else {
+              const poses = await detector.estimatePoses(video);
+              if (poses.length > 0 && poses[0].keypoints) {
+                if (method === 'sam3-experimental') {
+                  drawSam3StyleOverlay(poses[0].keypoints, ctx, color);
+                } else {
+                  drawBodyOverlay(poses[0].keypoints, ctx, color);
+                }
               }
             }
           } catch (error: unknown) {
@@ -301,7 +392,7 @@ const PoseOverlay: React.FC<PoseOverlayProps> = ({
     }
 
     return () => cancelAnimationFrame(animationFrameId);
-  }, [color, detector, method, videoRef]);
+  }, [color, detector, drawRoboflowPolygons, method, roboflowPolygons, videoRef]);
 
   if (status !== 'Ready') {
     return (
