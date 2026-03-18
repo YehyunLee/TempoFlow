@@ -18,6 +18,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+import uuid
+import asyncio
+import threading
 import subprocess
 import tempfile
 from pathlib import Path
@@ -48,6 +51,9 @@ app.add_middleware(
 
 SESSION_STATUS: dict[str, str] = {}
 SESSION_RESULTS: dict[str, dict[str, Any]] = {}
+
+# Overlay job tracking for real-time progress polling
+OVERLAY_JOBS: dict[str, dict[str, Any]] = {}
 
 
 def _sanitize_json(obj: Any) -> Any:
@@ -220,6 +226,7 @@ async def overlay_yolo(
     _ = side  # reserved for logging/caching later
     _ = backend  # reserved for future GPU selection
 
+    # Dependency check happens once in the request thread; the heavy lifting is done in a worker thread.
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
@@ -231,138 +238,132 @@ async def overlay_yolo(
         )
 
     # Resolve weights from repo (web-app/public/models/yolo26n-seg.pt)
-    weights = (Path(__file__).resolve().parents[3] / "web-app" / "public" / "models" / "yolo26n-seg.pt").resolve()
+    weights = (
+        Path(__file__).resolve().parents[3] / "web-app" / "public" / "models" / "yolo26n-seg.pt"
+    ).resolve()
     if not weights.exists():
         return JSONResponse({"error": f"YOLO weights not found at {weights}"}, status_code=500)
 
     tmp_in = _save_upload(video, "overlay")
     tmp_out = tempfile.NamedTemporaryFile(prefix="overlay_", suffix=".webm", delete=False).name
 
-    try:
+    def worker() -> None:
         cap = cv2.VideoCapture(tmp_in)
         if not cap.isOpened():
-            return JSONResponse({"error": "Failed to open video."}, status_code=400)
+            raise RuntimeError("Failed to open video.")
 
         src_fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
         h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
 
-        out_fps = max(1, int(fps))
-        # We used to sample via `frame_idx % step`, but that drifts on VFR/non-integer FPS.
-        # Instead, we sample by timestamps (seconds) to keep overlay aligned.
-        out_dt = 1.0 / float(out_fps)
+        out_fps_local = max(1, int(fps))
+        out_dt_local = 1.0 / float(out_fps_local)
 
-        # Compute expected output length so the overlay video doesn't stop early.
-        # We use ffprobe-derived duration (more reliable than rounding CAP_PROP_*).
         try:
             meta = probe_video_metadata(tmp_in)
             duration_sec = float(meta.get("duration_sec") or 0.0)
         except Exception:
             duration_sec = 0.0
-        expected_frames = None
+
+        expected_frames_local = None
         if duration_sec > 0:
-            expected_frames = max(1, int(math.ceil(duration_sec * out_fps)))
+            expected_frames_local = max(1, int(math.ceil(duration_sec * out_fps_local)))
 
         logger.info(
-            "YOLO overlay (session=%s) %dx%d src_fps=%.2f → out_fps=%d out_dt=%.6f",
+            "YOLO overlay (session=%s) %dx%d src_fps=%.2f → out_fps=%d",
             sid,
             w,
             h,
             src_fps,
-            out_fps,
-            out_dt,
+            out_fps_local,
         )
 
         model = YOLO(str(weights))
-        r, g, b = _hex_to_rgb(color)
+        r0, g0, b0 = _hex_to_rgb(color)
 
         fourcc = cv2.VideoWriter_fourcc(*"VP90")
-        writer = cv2.VideoWriter(tmp_out, fourcc, out_fps, (w, h))
+        writer = cv2.VideoWriter(tmp_out, fourcc, out_fps_local, (w, h))
         if not writer.isOpened():
-            return JSONResponse({"error": "Failed to open VideoWriter for overlay."}, status_code=500)
+            raise RuntimeError("Failed to open VideoWriter for overlay.")
 
-        frame_idx = 0
-        written_frames = 0
-        last_overlay = None
+        written_frames_local = 0
+        last_overlay_local = None
 
-        # Target presentation timestamps for output frames.
-        next_out_time = 0.0
-        last_frame_time = 0.0
+        next_out_time_local = 0.0
+        last_frame_time_local = 0.0
+
         while True:
             ok, frame_bgr = cap.read()
             if not ok:
                 break
-            # OpenCV timestamp for the *current* decoded frame.
-            # This is much more stable than CAP_PROP_* frame indexing.
-            try:
-                frame_time_sec = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
-            except Exception:
-                frame_time_sec = last_frame_time + out_dt
-            last_frame_time = frame_time_sec
 
-            # Sample frames when we reach/past the next desired output timestamp.
-            # Allow small slack for rounding.
-            if frame_time_sec + (out_dt * 0.25) < next_out_time:
-                frame_idx += 1
+            try:
+                frame_time_sec_local = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+            except Exception:
+                frame_time_sec_local = last_frame_time_local + out_dt_local
+            last_frame_time_local = frame_time_sec_local
+
+            if frame_time_sec_local + (out_dt_local * 0.25) < next_out_time_local:
                 continue
 
-            results = model.predict(frame_bgr, imgsz=640, conf=0.25, iou=0.5, classes=[0], verbose=False)
-            mask = np.zeros((h, w), dtype=np.uint8)
+            results = model.predict(
+                frame_bgr, imgsz=640, conf=0.25, iou=0.5, classes=[0], verbose=False
+            )
+
+            alpha_u8 = np.zeros((h, w), dtype=np.uint8)
             if results and results[0].masks is not None:
                 m = results[0].masks.data
                 mm = m.detach().cpu().numpy()  # type: ignore[attr-defined]
-                comb = (np.max(mm, axis=0) > 0.5).astype(np.uint8) * 255
-                if comb.shape[0] != h or comb.shape[1] != w:
-                    comb = cv2.resize(comb, (w, h), interpolation=cv2.INTER_LINEAR)
-                mask = comb
+                alpha = np.max(mm, axis=0).astype(np.float32)
+                alpha = np.clip(alpha, 0.0, 1.0)
+                if alpha.shape[0] != h or alpha.shape[1] != w:
+                    alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC)
+                alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.4, sigmaY=1.4)
+                alpha_u8 = (alpha * 255.0).astype(np.uint8)
 
-            # Build a BGR overlay with black background and colored dancer.
             overlay = np.zeros((h, w, 3), dtype=np.uint8)
-            overlay[..., 0] = (mask > 0) * b
-            overlay[..., 1] = (mask > 0) * g
-            overlay[..., 2] = (mask > 0) * r
+            overlay[..., 0] = (alpha_u8.astype(np.uint16) * b0 // 255).astype(np.uint8)
+            overlay[..., 1] = (alpha_u8.astype(np.uint16) * g0 // 255).astype(np.uint8)
+            overlay[..., 2] = (alpha_u8.astype(np.uint16) * r0 // 255).astype(np.uint8)
 
-            # If this decoded frame spans multiple output timestamps (VFR / coarse POS_MSEC),
-            # write the same overlay multiple times to keep time->frame mapping aligned.
-            # Example: if frame_time_sec is far ahead of next_out_time, we may need to "catch up".
-            slack = out_dt * 0.25
-            remaining = None
-            if expected_frames is not None:
-                remaining = expected_frames - written_frames
-                if remaining <= 0:
+            slack_local = out_dt_local * 0.25
+            dup_count_local = 1
+            if frame_time_sec_local + slack_local > next_out_time_local:
+                dup_count_local = int(
+                    math.floor(
+                        (frame_time_sec_local + slack_local - next_out_time_local) / out_dt_local
+                    )
+                ) + 1
+                dup_count_local = max(1, dup_count_local)
+
+            if expected_frames_local is not None:
+                remaining_local = expected_frames_local - written_frames_local
+                if remaining_local <= 0:
                     break
+                dup_count_local = min(dup_count_local, remaining_local)
 
-            dup_count = 1
-            if frame_time_sec + slack > next_out_time:
-                dup_count = int(math.floor((frame_time_sec + slack - next_out_time) / out_dt)) + 1
-                dup_count = max(1, dup_count)
-            if remaining is not None:
-                dup_count = min(dup_count, remaining)
-
-            for _ in range(dup_count):
+            for _ in range(dup_count_local):
                 writer.write(overlay)
-                last_overlay = overlay
-                written_frames += 1
-                next_out_time += out_dt
-                if expected_frames is not None and written_frames >= expected_frames:
+                last_overlay_local = overlay
+                written_frames_local += 1
+                next_out_time_local += out_dt_local
+                if expected_frames_local is not None and written_frames_local >= expected_frames_local:
                     break
-
-            frame_idx += 1
 
         cap.release()
 
-        # If our frame sampling ended up slightly shorter than the base duration,
-        # pad by repeating the last computed overlay frame.
-        if expected_frames is not None and written_frames < expected_frames:
-            if last_overlay is None:
-                last_overlay = np.zeros((h, w, 3), dtype=np.uint8)
-            pad_count = expected_frames - written_frames
-            for _ in range(pad_count):
-                writer.write(last_overlay)
-            written_frames = expected_frames
+        if expected_frames_local is not None and written_frames_local < expected_frames_local:
+            if last_overlay_local is None:
+                last_overlay_local = np.zeros((h, w, 3), dtype=np.uint8)
+            pad_count_local = expected_frames_local - written_frames_local
+            for _ in range(pad_count_local):
+                writer.write(last_overlay_local)
+            written_frames_local = expected_frames_local
 
         writer.release()
 
+    try:
+        await asyncio.to_thread(worker)
         background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
         background_tasks.add_task(lambda: Path(tmp_out).unlink(missing_ok=True))
 
@@ -371,8 +372,214 @@ async def overlay_yolo(
             media_type="video/webm",
             filename=f"{sid}_yolo_overlay.webm",
         )
-
     except Exception as exc:
         logger.exception("YOLO overlay error")
         return JSONResponse({"error": str(exc)}, status_code=500)
+
+def _expected_frames(duration_sec: float, out_fps: int) -> int:
+    if duration_sec and duration_sec > 0:
+        return max(1, int(math.ceil(duration_sec * out_fps)))
+    return 1
+
+
+def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str, fps: int) -> None:
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+        from ultralytics import YOLO  # type: ignore
+    except Exception as exc:
+        OVERLAY_JOBS[job_id]["status"] = "error"
+        OVERLAY_JOBS[job_id]["error"] = f"Missing overlay deps: {exc}"
+        return
+
+    weights = (
+        Path(__file__).resolve().parents[3] / "web-app" / "public" / "models" / "yolo26n-seg.pt"
+    ).resolve()
+    if not weights.exists():
+        OVERLAY_JOBS[job_id]["status"] = "error"
+        OVERLAY_JOBS[job_id]["error"] = f"YOLO weights not found at {weights}"
+        return
+
+    cap = cv2.VideoCapture(tmp_in)
+    if not cap.isOpened():
+        OVERLAY_JOBS[job_id]["status"] = "error"
+        OVERLAY_JOBS[job_id]["error"] = "Failed to open video."
+        return
+
+    out_fps_local = max(1, int(fps))
+    out_dt_local = 1.0 / float(out_fps_local)
+
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+
+    try:
+        meta = probe_video_metadata(tmp_in)
+        duration_sec = float(meta.get("duration_sec") or 0.0)
+    except Exception:
+        duration_sec = 0.0
+
+    expected = _expected_frames(duration_sec, out_fps_local)
+
+    OVERLAY_JOBS[job_id]["frames_expected"] = expected
+    OVERLAY_JOBS[job_id]["frames_written"] = 0
+    OVERLAY_JOBS[job_id]["progress"] = 0.0
+    OVERLAY_JOBS[job_id]["status"] = "processing"
+
+    model = YOLO(str(weights))
+    r0, g0, b0 = _hex_to_rgb(color)
+
+    fourcc = cv2.VideoWriter_fourcc(*"VP90")
+    writer = cv2.VideoWriter(tmp_out, fourcc, out_fps_local, (w, h))
+    if not writer.isOpened():
+        OVERLAY_JOBS[job_id]["status"] = "error"
+        OVERLAY_JOBS[job_id]["error"] = "Failed to open VideoWriter."
+        return
+
+    written = 0
+    next_out_time = 0.0
+    last_frame_time = 0.0
+    last_overlay = None
+
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+
+        try:
+            t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+        except Exception:
+            t = last_frame_time + out_dt_local
+        last_frame_time = t
+
+        if t + (out_dt_local * 0.25) < next_out_time:
+            continue
+
+        results = model.predict(frame_bgr, imgsz=640, conf=0.25, iou=0.5, classes=[0], verbose=False)
+
+        alpha_u8 = np.zeros((h, w), dtype=np.uint8)
+        if results and results[0].masks is not None:
+            m = results[0].masks.data
+            mm = m.detach().cpu().numpy()  # type: ignore[attr-defined]
+            alpha = np.max(mm, axis=0).astype(np.float32)
+            alpha = np.clip(alpha, 0.0, 1.0)
+            if alpha.shape[0] != h or alpha.shape[1] != w:
+                alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC)
+            alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.4, sigmaY=1.4)
+            alpha_u8 = (alpha * 255.0).astype(np.uint8)
+
+        overlay = np.zeros((h, w, 3), dtype=np.uint8)
+        overlay[..., 0] = (alpha_u8.astype(np.uint16) * b0 // 255).astype(np.uint8)
+        overlay[..., 1] = (alpha_u8.astype(np.uint16) * g0 // 255).astype(np.uint8)
+        overlay[..., 2] = (alpha_u8.astype(np.uint16) * r0 // 255).astype(np.uint8)
+        last_overlay = overlay
+
+        slack = out_dt_local * 0.25
+        dup_count = 1
+        if t + slack > next_out_time:
+            dup_count = int(math.floor((t + slack - next_out_time) / out_dt_local)) + 1
+            dup_count = max(1, dup_count)
+
+        remaining = expected - written
+        if remaining <= 0:
+            break
+        dup_count = min(dup_count, remaining)
+
+        for _ in range(dup_count):
+            writer.write(overlay)
+            written += 1
+            next_out_time += out_dt_local
+            OVERLAY_JOBS[job_id]["frames_written"] = written
+            OVERLAY_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
+            if written >= expected:
+                break
+
+        if written >= expected:
+            break
+
+    # Pad if needed
+    if written < expected and last_overlay is not None:
+        for _ in range(expected - written):
+            writer.write(last_overlay)
+        written = expected
+        OVERLAY_JOBS[job_id]["frames_written"] = written
+        OVERLAY_JOBS[job_id]["progress"] = 1.0
+
+    cap.release()
+    writer.release()
+    OVERLAY_JOBS[job_id]["status"] = "done"
+
+
+@app.post("/api/overlay/yolo/start")
+async def overlay_yolo_start(
+    video: UploadFile = File(...),
+    color: str = Form(default="#38bdf8"),
+    fps: int = Form(default=12),
+    session_id: str | None = Form(default=None),
+    side: str | None = Form(default=None),
+    backend: str = Form(default="wasm"),
+):
+    _ = backend
+    sid = (session_id or "").strip() or "default"
+    side_val = (side or "").strip() or "unknown"
+    job_id = str(uuid.uuid4())
+
+    tmp_in = _save_upload(video, f"overlay_{side_val}_{job_id}")
+    tmp_out = tempfile.NamedTemporaryFile(prefix=f"overlay_{side_val}_{job_id}_", suffix=".webm", delete=False).name
+
+    OVERLAY_JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0.0,
+        "frames_written": 0,
+        "frames_expected": None,
+        "tmp_in": tmp_in,
+        "tmp_out": tmp_out,
+        "session_id": sid,
+        "side": side_val,
+        "error": None,
+    }
+
+    t = threading.Thread(
+        target=_yolo_overlay_job_worker,
+        args=(job_id, tmp_in, tmp_out, color, fps),
+        daemon=True,
+    )
+    t.start()
+
+    return JSONResponse({"job_id": job_id}, status_code=200)
+
+
+@app.get("/api/overlay/yolo/status")
+async def overlay_yolo_status(job_id: str):
+    job = OVERLAY_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "progress": float(job.get("progress", 0.0) or 0.0),
+        "frames_written": job.get("frames_written"),
+        "frames_expected": job.get("frames_expected"),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/api/overlay/yolo/result")
+async def overlay_yolo_result(job_id: str, background_tasks: BackgroundTasks):
+    job = OVERLAY_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    if job.get("status") != "done":
+        return JSONResponse({"error": "Job not ready"}, status_code=409)
+
+    tmp_out = job.get("tmp_out")
+    tmp_in = job.get("tmp_in")
+    if not tmp_out:
+        return JSONResponse({"error": "Missing output"}, status_code=500)
+
+    background_tasks.add_task(lambda: Path(tmp_out).unlink(missing_ok=True))
+    if tmp_in:
+        background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
+    OVERLAY_JOBS.pop(job_id, None)
+
+    return FileResponse(path=tmp_out, media_type="video/webm", filename=f"{job_id}_yolo_overlay.webm")
 

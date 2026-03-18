@@ -227,10 +227,86 @@ export function EbsViewer(props: EbsViewerProps) {
           let userArtifact: OverlayArtifact;
 
           if (segGenerator === "python") {
-            setOverlayStatus("YOLO (reference) Python…");
-            const ref = await generateViaPython("reference", "#38bdf8");
-            setOverlayStatus("YOLO (user) Python…");
-            const user = await generateViaPython("practice", "#22c55e");
+            const startedAt = Date.now();
+            let refProgress = 0;
+            let userProgress = 0;
+
+            const updateStatus = () => {
+              const avg = (refProgress + userProgress) / 2;
+              const left = Math.max(0, Math.round((1 - avg) * 100));
+              const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+              setOverlayStatus(`YOLO overlays generating… ${left}% left (${s}s elapsed)`);
+            };
+
+            const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+
+            const startJob = async (side: "reference" | "practice", color: string) => {
+              const file = await getSessionVideo(sessionId, side);
+              if (!file) throw new Error(`Missing ${side} video for this session`);
+
+              const form = new FormData();
+              form.append("video", file, file.name);
+              form.append("color", color);
+              form.append("fps", String(OVERLAY_FPS));
+              form.append("session_id", sessionId);
+              form.append("side", side);
+              form.append("backend", segProvider);
+
+              const res = await fetch(`${baseUrl}/api/overlay/yolo/start`, { method: "POST", body: form });
+              if (!res.ok) {
+                const txt = await res.text().catch(() => "");
+                throw new Error(`YOLO overlay start error (${res.status}): ${txt || res.statusText}`);
+              }
+              const json = (await res.json()) as { job_id: string };
+              if (!json?.job_id) throw new Error("Missing job_id from YOLO overlay start");
+              return json.job_id;
+            };
+
+            const waitJob = async (jobId: string, side: "reference" | "practice") => {
+              // Poll until done.
+              // eslint-disable-next-line no-constant-condition
+              while (true) {
+                const stRes = await fetch(`${baseUrl}/api/overlay/yolo/status?job_id=${encodeURIComponent(jobId)}`);
+                if (!stRes.ok) {
+                  const txt = await stRes.text().catch(() => "");
+                  throw new Error(`YOLO overlay status error (${stRes.status}): ${txt || stRes.statusText}`);
+                }
+                const st = (await stRes.json()) as { status: string; progress?: number; error?: string };
+                const p = typeof st.progress === "number" ? st.progress : 0;
+                if (side === "reference") refProgress = p;
+                else userProgress = p;
+                updateStatus();
+
+                if (st.status === "done") {
+                  const outRes = await fetch(
+                    `${baseUrl}/api/overlay/yolo/result?job_id=${encodeURIComponent(jobId)}`
+                  );
+                  if (!outRes.ok) {
+                    const txt = await outRes.text().catch(() => "");
+                    throw new Error(
+                      `YOLO overlay result error (${outRes.status}): ${txt || outRes.statusText}`
+                    );
+                  }
+                  const blob = await outRes.blob();
+                  return { blob, mime: outRes.headers.get("content-type") || "video/webm" };
+                }
+                if (st.status === "error") {
+                  throw new Error(st.error || "YOLO overlay job failed");
+                }
+                await sleep(500);
+              }
+            };
+
+            updateStatus();
+            const [refJobId, userJobId] = await Promise.all([
+              startJob("reference", "#38bdf8"),
+              startJob("practice", "#22c55e"),
+            ]);
+
+            const [ref, user] = await Promise.all([
+              waitJob(refJobId, "reference"),
+              waitJob(userJobId, "practice"),
+            ]);
 
             refArtifact = {
               version: 1,
