@@ -990,3 +990,223 @@ async def overlay_yolo_pose_result(job_id: str, layer: str, background_tasks: Ba
 
     return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_{layer}_overlay.webm")
 
+
+BODYPix_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def _bodypix_job_worker(
+    job_id: str,
+    tmp_in: str,
+    out_path: str,
+    arms_color: str,
+    legs_color: str,
+    torso_color: str,
+    head_color: str,
+    fps: int,
+) -> None:
+    try:
+        import cv2  # type: ignore
+        from ultralytics import YOLO  # type: ignore
+    except Exception as exc:
+        BODYPix_JOBS[job_id]["status"] = "error"
+        BODYPix_JOBS[job_id]["error"] = f"Missing bodypart deps: {exc}"
+        return
+
+    # Python "BodyPix-like" backend using YOLO pose keypoints to render semantic body regions.
+    pose_weights = (
+        Path(__file__).resolve().parents[3] / "web-app" / "public" / "models" / "yolo26n-pose.pt"
+    ).resolve()
+    if not pose_weights.exists():
+        BODYPix_JOBS[job_id]["status"] = "error"
+        BODYPix_JOBS[job_id]["error"] = f"YOLO pose weights not found at {pose_weights}"
+        return
+
+    cap = cv2.VideoCapture(tmp_in)
+    if not cap.isOpened():
+        BODYPix_JOBS[job_id]["status"] = "error"
+        BODYPix_JOBS[job_id]["error"] = "Failed to open video."
+        return
+
+    out_fps_local = max(1, int(fps))
+    out_dt_local = 1.0 / float(out_fps_local)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+
+    try:
+        meta = probe_video_metadata(tmp_in)
+        duration_sec = float(meta.get("duration_sec") or 0.0)
+    except Exception:
+        duration_sec = 0.0
+    expected = _expected_frames(duration_sec, out_fps_local)
+
+    BODYPix_JOBS[job_id]["frames_expected"] = expected
+    BODYPix_JOBS[job_id]["frames_written"] = 0
+    BODYPix_JOBS[job_id]["progress"] = 0.0
+    BODYPix_JOBS[job_id]["status"] = "processing"
+
+    model = YOLO(str(pose_weights))
+    fourcc = cv2.VideoWriter_fourcc(*"VP90")
+    writer = cv2.VideoWriter(out_path, fourcc, out_fps_local, (w, h))
+    if not writer.isOpened():
+        BODYPix_JOBS[job_id]["status"] = "error"
+        BODYPix_JOBS[job_id]["error"] = "Failed to open VideoWriter."
+        return
+
+    written = 0
+    next_out_time = 0.0
+    last_frame_time = 0.0
+    last_overlay = None
+
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+
+        try:
+            t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+        except Exception:
+            t = last_frame_time + out_dt_local
+        last_frame_time = t
+
+        if t + (out_dt_local * 0.25) < next_out_time:
+            continue
+
+        results = model.predict(frame_bgr, imgsz=768, conf=0.2, iou=0.5, verbose=False)
+
+        if results and getattr(results[0], "keypoints", None) is not None and len(results[0].keypoints.xy) > 0:
+            kp = results[0].keypoints
+            xy = kp.xy[0].detach().cpu().numpy()  # type: ignore[attr-defined]
+            conf = kp.conf[0].detach().cpu().numpy() if getattr(kp, "conf", None) is not None else None  # type: ignore[attr-defined]
+
+            arms_overlay, legs_overlay = _render_pose_layers(xy, conf, w, h, arms_color, legs_color)
+            # bodypix-like single semantic overlay: combine layers and add torso/head from custom colors
+            import numpy as np  # type: ignore
+
+            overlay = np.maximum(arms_overlay, legs_overlay)
+            shoulder_width = 60.0
+            ls = _visible_pose_point(xy, conf, 5)
+            rs = _visible_pose_point(xy, conf, 6)
+            if ls and rs:
+                shoulder_width = math.hypot(ls[0] - rs[0], ls[1] - rs[1])
+            _draw_pose_torso_head(overlay, xy, conf, torso_color, shoulder_width, intensity=0.55)
+            nose = _visible_pose_point(xy, conf, 0, threshold=0.2)
+            if nose is not None:
+                _draw_pose_circle(
+                    overlay,
+                    nose,
+                    max(int(round(max(shoulder_width * 0.3, 18) * 0.9)), 10),
+                    _scaled_bgr(head_color, 0.6),
+                )
+        else:
+            import numpy as np  # type: ignore
+
+            overlay = np.zeros((h, w, 3), dtype=np.uint8)
+
+        last_overlay = overlay
+        slack = out_dt_local * 0.25
+        dup_count = 1
+        if t + slack > next_out_time:
+            dup_count = int(math.floor((t + slack - next_out_time) / out_dt_local)) + 1
+            dup_count = max(1, dup_count)
+        remaining = expected - written
+        if remaining <= 0:
+            break
+        dup_count = min(dup_count, remaining)
+
+        for _ in range(dup_count):
+            writer.write(overlay)
+            written += 1
+            next_out_time += out_dt_local
+            BODYPix_JOBS[job_id]["frames_written"] = written
+            BODYPix_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
+            if written >= expected:
+                break
+
+        if written >= expected:
+            break
+
+    if written < expected and last_overlay is not None:
+        for _ in range(expected - written):
+            writer.write(last_overlay)
+        written = expected
+        BODYPix_JOBS[job_id]["frames_written"] = written
+        BODYPix_JOBS[job_id]["progress"] = 1.0
+
+    cap.release()
+    writer.release()
+    BODYPix_JOBS[job_id]["status"] = "done"
+
+
+@app.post("/api/overlay/bodypix/start")
+async def overlay_bodypix_start(
+    video: UploadFile = File(...),
+    arms_color: str = Form(default="#38bdf8"),
+    legs_color: str = Form(default="#6366f1"),
+    torso_color: str = Form(default="#22c55e"),
+    head_color: str = Form(default="#f59e0b"),
+    fps: int = Form(default=12),
+    session_id: str | None = Form(default=None),
+    side: str | None = Form(default=None),
+):
+    sid = (session_id or "").strip() or "default"
+    side_val = (side or "").strip() or "unknown"
+    job_id = str(uuid.uuid4())
+
+    tmp_in = _save_upload(video, f"bodypix_{side_val}_{job_id}")
+    out_path = tempfile.NamedTemporaryFile(prefix=f"bodypix_{side_val}_{job_id}_", suffix=".webm", delete=False).name
+
+    BODYPix_JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0.0,
+        "frames_written": 0,
+        "frames_expected": None,
+        "tmp_in": tmp_in,
+        "out_path": out_path,
+        "session_id": sid,
+        "side": side_val,
+        "error": None,
+    }
+
+    t = threading.Thread(
+        target=_bodypix_job_worker,
+        args=(job_id, tmp_in, out_path, arms_color, legs_color, torso_color, head_color, fps),
+        daemon=True,
+    )
+    t.start()
+
+    return JSONResponse({"job_id": job_id}, status_code=200)
+
+
+@app.get("/api/overlay/bodypix/status")
+async def overlay_bodypix_status(job_id: str):
+    job = BODYPix_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "progress": float(job.get("progress", 0.0) or 0.0),
+        "frames_written": job.get("frames_written"),
+        "frames_expected": job.get("frames_expected"),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/api/overlay/bodypix/result")
+async def overlay_bodypix_result(job_id: str, background_tasks: BackgroundTasks):
+    job = BODYPix_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    if job.get("status") != "done":
+        return JSONResponse({"error": "Job not ready"}, status_code=409)
+    out_path = job.get("out_path")
+    tmp_in = job.get("tmp_in")
+    if not out_path:
+        return JSONResponse({"error": "Missing output"}, status_code=500)
+
+    background_tasks.add_task(lambda: Path(out_path).unlink(missing_ok=True))
+    if tmp_in:
+        background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
+    BODYPix_JOBS.pop(job_id, None)
+    return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_bodypix_overlay.webm")
+

@@ -2,6 +2,7 @@ export type OverlayType =
   | "yolo"
   | "movenet"
   | "fastsam"
+  | "bodypix"
   | "yolo-pose-arms"
   | "yolo-pose-legs";
 export type OverlaySide = "reference" | "practice";
