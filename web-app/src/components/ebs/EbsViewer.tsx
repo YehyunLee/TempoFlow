@@ -145,6 +145,7 @@ export function EbsViewer(props: EbsViewerProps) {
   const [overlayMode, setOverlayMode] = useState<"precomputed" | "live">("precomputed");
   const [showMoveNet, setShowMoveNet] = useState(false);
   const [showYolo, setShowYolo] = useState(false);
+  const [showYoloPose, setShowYoloPose] = useState(false);
   const [showFastSam, setShowFastSam] = useState(false);
   const [overlayMethod, setOverlayMethod] = useState<"pose-fill" | "sam3-experimental" | "sam3-roboflow">("pose-fill");
   const [overlayBusy, setOverlayBusy] = useState(false);
@@ -155,6 +156,10 @@ export function EbsViewer(props: EbsViewerProps) {
   const [refYoloArtifact, setRefYoloArtifact] = useState<OverlayArtifact | null>(null);
   const [userPoseArtifact, setUserPoseArtifact] = useState<OverlayArtifact | null>(null);
   const [userYoloArtifact, setUserYoloArtifact] = useState<OverlayArtifact | null>(null);
+  const [refYoloPoseArmsArtifact, setRefYoloPoseArmsArtifact] = useState<OverlayArtifact | null>(null);
+  const [refYoloPoseLegsArtifact, setRefYoloPoseLegsArtifact] = useState<OverlayArtifact | null>(null);
+  const [userYoloPoseArmsArtifact, setUserYoloPoseArmsArtifact] = useState<OverlayArtifact | null>(null);
+  const [userYoloPoseLegsArtifact, setUserYoloPoseLegsArtifact] = useState<OverlayArtifact | null>(null);
   const [refFastSamArtifact, setRefFastSamArtifact] = useState<OverlayArtifact | null>(null);
   const [userFastSamArtifact, setUserFastSamArtifact] = useState<OverlayArtifact | null>(null);
   // Lower FPS dramatically reduces precompute time (model + WebP encode).
@@ -162,24 +167,37 @@ export function EbsViewer(props: EbsViewerProps) {
   const missingPrecomputed =
     overlayMode === "precomputed" &&
     ((showYolo && (!refYoloArtifact || !userYoloArtifact)) ||
+      (showYoloPose &&
+        (!refYoloPoseArmsArtifact ||
+          !refYoloPoseLegsArtifact ||
+          !userYoloPoseArmsArtifact ||
+          !userYoloPoseLegsArtifact)) ||
       (showMoveNet && (!refPoseArtifact || !userPoseArtifact)) ||
       (showFastSam && (!refFastSamArtifact || !userFastSamArtifact)));
 
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
     const variant = overlayMethod;
-    const [rp, ry, up, uy, rf, uf] = await Promise.all([
+    const [rp, ry, rpa, rpl, up, uy, upa, upl, rf, uf] = await Promise.all([
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "reference", fps: OVERLAY_FPS, variant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "practice", fps: OVERLAY_FPS, variant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "reference", fps: OVERLAY_FPS, variant: "wasm" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "practice", fps: OVERLAY_FPS, variant: "wasm" })),
     ]);
     setRefPoseArtifact(rp);
     setRefYoloArtifact(ry);
+    setRefYoloPoseArmsArtifact(rpa);
+    setRefYoloPoseLegsArtifact(rpl);
     setUserPoseArtifact(up);
     setUserYoloArtifact(uy);
+    setUserYoloPoseArmsArtifact(upa);
+    setUserYoloPoseLegsArtifact(upl);
     setRefFastSamArtifact(rf);
     setUserFastSamArtifact(uf);
   }, [overlayMethod, segProvider, sessionId]);
@@ -189,7 +207,7 @@ export function EbsViewer(props: EbsViewerProps) {
   }, [loadCachedOverlays]);
 
   const generateOverlays = useCallback(
-    async (which: "movenet" | "yolo" | "fastsam") => {
+    async (which: "movenet" | "yolo" | "yolo-pose" | "fastsam") => {
       if (!sessionId || !activeReferenceVideoUrl || !activeUserVideoUrl) return;
       if (overlayBusy) return;
       setOverlayBusy(true);
@@ -393,6 +411,184 @@ export function EbsViewer(props: EbsViewerProps) {
           setRefYoloArtifact(refArtifact);
           setUserYoloArtifact(userArtifact);
           setOverlayStatus("YOLO overlays ready.");
+        } else if (which === "yolo-pose") {
+          setOverlayStatus("Generating YOLO Pose overlays…");
+          const processorUrl =
+            (process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL as string | undefined) ?? "http://127.0.0.1:8787/api/process";
+          const baseUrl = processorUrl.replace(/\/api\/process\s*$/, "");
+          const startedAt = Date.now();
+          let refProgress = 0;
+          let userProgress = 0;
+
+          const updateStatus = () => {
+            const avg = (refProgress + userProgress) / 2;
+            const left = Math.max(0, Math.round((1 - avg) * 100));
+            const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+            setOverlayStatus(`YOLO Pose overlays generating… ${left}% left (${s}s elapsed)`);
+          };
+
+          const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+
+          const startPoseJob = async (
+            side: "reference" | "practice",
+            armsColor: string,
+            legsColor: string,
+          ) => {
+            const file = await getSessionVideo(sessionId, side);
+            if (!file) throw new Error(`Missing ${side} video for this session`);
+
+            const form = new FormData();
+            form.append("video", file, file.name);
+            form.append("arms_color", armsColor);
+            form.append("legs_color", legsColor);
+            form.append("fps", String(OVERLAY_FPS));
+            form.append("session_id", sessionId);
+            form.append("side", side);
+
+            const res = await fetch(`${baseUrl}/api/overlay/yolo-pose/start`, { method: "POST", body: form });
+            if (!res.ok) {
+              const txt = await res.text().catch(() => "");
+              throw new Error(`YOLO Pose start error (${res.status}): ${txt || res.statusText}`);
+            }
+            const json = (await res.json()) as { job_id: string };
+            if (!json?.job_id) throw new Error("Missing job_id from YOLO Pose start");
+            return json.job_id;
+          };
+
+          const waitPoseJob = async (jobId: string, side: "reference" | "practice") => {
+            while (true) {
+              const stRes = await fetch(
+                `${baseUrl}/api/overlay/yolo-pose/status?job_id=${encodeURIComponent(jobId)}`
+              );
+              if (!stRes.ok) {
+                const txt = await stRes.text().catch(() => "");
+                throw new Error(`YOLO Pose status error (${stRes.status}): ${txt || stRes.statusText}`);
+              }
+              const st = (await stRes.json()) as { status: string; progress?: number; error?: string };
+              const p = typeof st.progress === "number" ? st.progress : 0;
+              if (side === "reference") refProgress = p;
+              else userProgress = p;
+              updateStatus();
+
+              if (st.status === "done") {
+                const [armsRes, legsRes] = await Promise.all([
+                  fetch(
+                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=arms`
+                  ),
+                  fetch(
+                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=legs`
+                  ),
+                ]);
+                if (!armsRes.ok || !legsRes.ok) {
+                  const [armsTxt, legsTxt] = await Promise.all([
+                    armsRes.text().catch(() => ""),
+                    legsRes.text().catch(() => ""),
+                  ]);
+                  throw new Error(
+                    `YOLO Pose result error (${armsRes.status}/${legsRes.status}): ${armsTxt || legsTxt || "fetch failed"}`
+                  );
+                }
+                const [armsBlob, legsBlob] = await Promise.all([armsRes.blob(), legsRes.blob()]);
+                return {
+                  arms: { blob: armsBlob, mime: armsRes.headers.get("content-type") || "video/webm" },
+                  legs: { blob: legsBlob, mime: legsRes.headers.get("content-type") || "video/webm" },
+                };
+              }
+              if (st.status === "error") {
+                throw new Error(st.error || "YOLO Pose job failed");
+              }
+              await sleep(500);
+            }
+          };
+
+          updateStatus();
+          const [refJobId, userJobId] = await Promise.all([
+            startPoseJob("reference", "#38bdf8", "#6366f1"),
+            startPoseJob("practice", "#22c55e", "#f59e0b"),
+          ]);
+
+          const [ref, user] = await Promise.all([
+            waitPoseJob(refJobId, "reference"),
+            waitPoseJob(userJobId, "practice"),
+          ]);
+
+          const refArmsArtifact: OverlayArtifact = {
+            version: 1,
+            type: "yolo-pose-arms",
+            side: "reference",
+            fps: OVERLAY_FPS,
+            width: refVideo.current?.videoWidth || 640,
+            height: refVideo.current?.videoHeight || 480,
+            frameCount: 0,
+            createdAt: new Date().toISOString(),
+            video: ref.arms.blob,
+            videoMime: ref.arms.mime,
+            meta: { generator: "python", part: "arms" },
+          };
+          const refLegsArtifact: OverlayArtifact = {
+            version: 1,
+            type: "yolo-pose-legs",
+            side: "reference",
+            fps: OVERLAY_FPS,
+            width: refVideo.current?.videoWidth || 640,
+            height: refVideo.current?.videoHeight || 480,
+            frameCount: 0,
+            createdAt: new Date().toISOString(),
+            video: ref.legs.blob,
+            videoMime: ref.legs.mime,
+            meta: { generator: "python", part: "legs" },
+          };
+          const userArmsArtifact: OverlayArtifact = {
+            version: 1,
+            type: "yolo-pose-arms",
+            side: "practice",
+            fps: OVERLAY_FPS,
+            width: userVideo.current?.videoWidth || 640,
+            height: userVideo.current?.videoHeight || 480,
+            frameCount: 0,
+            createdAt: new Date().toISOString(),
+            video: user.arms.blob,
+            videoMime: user.arms.mime,
+            meta: { generator: "python", part: "arms" },
+          };
+          const userLegsArtifact: OverlayArtifact = {
+            version: 1,
+            type: "yolo-pose-legs",
+            side: "practice",
+            fps: OVERLAY_FPS,
+            width: userVideo.current?.videoWidth || 640,
+            height: userVideo.current?.videoHeight || 480,
+            frameCount: 0,
+            createdAt: new Date().toISOString(),
+            video: user.legs.blob,
+            videoMime: user.legs.mime,
+            meta: { generator: "python", part: "legs" },
+          };
+
+          await Promise.all([
+            storeSessionOverlay(
+              buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" }),
+              refArmsArtifact,
+            ),
+            storeSessionOverlay(
+              buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" }),
+              refLegsArtifact,
+            ),
+            storeSessionOverlay(
+              buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" }),
+              userArmsArtifact,
+            ),
+            storeSessionOverlay(
+              buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" }),
+              userLegsArtifact,
+            ),
+          ]);
+
+          setRefYoloPoseArmsArtifact(refArmsArtifact);
+          setRefYoloPoseLegsArtifact(refLegsArtifact);
+          setUserYoloPoseArmsArtifact(userArmsArtifact);
+          setUserYoloPoseLegsArtifact(userLegsArtifact);
+          setOverlayStatus("YOLO Pose overlays ready.");
         } else if (which === "movenet") {
           setOverlayStatus("Generating MoveNet overlays…");
           const variant = overlayMethod;
@@ -507,7 +703,7 @@ export function EbsViewer(props: EbsViewerProps) {
         setOverlayBusy(false);
       }
     },
-    [activeReferenceVideoUrl, activeUserVideoUrl, overlayBusy, overlayMethod, sessionId, refVideo, userVideo],
+    [activeReferenceVideoUrl, activeUserVideoUrl, overlayBusy, overlayMethod, segProvider, sessionId, refVideo, userVideo],
   );
 
   useEffect(() => {
@@ -829,6 +1025,14 @@ export function EbsViewer(props: EbsViewerProps) {
                   YOLO
                 </button>
                 <button
+                  onClick={() => setShowYoloPose((v) => !v)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold border transition-all ${
+                    showYoloPose ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
+                  }`}
+                >
+                  YOLO Pose
+                </button>
+                <button
                   onClick={() => setShowFastSam((v) => !v)}
                   className={`rounded-full px-3 py-1.5 text-xs font-semibold border transition-all ${
                     showFastSam ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
@@ -864,6 +1068,13 @@ export function EbsViewer(props: EbsViewerProps) {
                   Gen YOLO
                 </button>
                 <button
+                  onClick={() => void generateOverlays("yolo-pose")}
+                  disabled={overlayBusy || !showYoloPose}
+                  className="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 transition-all hover:bg-sky-100 disabled:opacity-50"
+                >
+                  Gen YOLO Pose
+                </button>
+                <button
                   onClick={() => void generateOverlays("fastsam")}
                   disabled={overlayBusy || !showFastSam}
                   className="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 transition-all hover:bg-sky-100 disabled:opacity-50"
@@ -895,7 +1106,7 @@ export function EbsViewer(props: EbsViewerProps) {
           {sessionMode && missingPrecomputed ? (
             <div className="mb-3 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-900">
               Precomputed overlays are enabled, but frames haven’t been generated yet. Click <b>Gen MoveNet</b> /{" "}
-              <b>Gen YOLO</b> once, then playback will be synced (no realtime lag).
+              <b>Gen YOLO</b> / <b>Gen YOLO Pose</b> once, then playback will be synced (no realtime lag).
             </div>
           ) : null}
 
@@ -923,6 +1134,26 @@ export function EbsViewer(props: EbsViewerProps) {
                   ) : (
                     <SegmentOverlay videoRef={refVideo} color="#38bdf8" />
                   )
+                ) : null}
+                {sessionMode && showYoloPose ? (
+                  overlayMode === "precomputed" ? (
+                    <>
+                      {refYoloPoseArmsArtifact?.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={refVideo}
+                          overlayBlob={refYoloPoseArmsArtifact.video}
+                          mimeType={refYoloPoseArmsArtifact.videoMime}
+                        />
+                      ) : null}
+                      {refYoloPoseLegsArtifact?.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={refVideo}
+                          overlayBlob={refYoloPoseLegsArtifact.video}
+                          mimeType={refYoloPoseLegsArtifact.videoMime}
+                        />
+                      ) : null}
+                    </>
+                  ) : null
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (
@@ -981,6 +1212,26 @@ export function EbsViewer(props: EbsViewerProps) {
                   ) : (
                     <SegmentOverlay videoRef={userVideo} color="#22c55e" />
                   )
+                ) : null}
+                {sessionMode && showYoloPose ? (
+                  overlayMode === "precomputed" ? (
+                    <>
+                      {userYoloPoseArmsArtifact?.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={userVideo}
+                          overlayBlob={userYoloPoseArmsArtifact.video}
+                          mimeType={userYoloPoseArmsArtifact.videoMime}
+                        />
+                      ) : null}
+                      {userYoloPoseLegsArtifact?.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={userVideo}
+                          overlayBlob={userYoloPoseLegsArtifact.video}
+                          mimeType={userYoloPoseLegsArtifact.videoMime}
+                        />
+                      ) : null}
+                    </>
+                  ) : null
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (

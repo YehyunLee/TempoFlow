@@ -306,8 +306,9 @@ async def overlay_yolo(
             if frame_time_sec_local + (out_dt_local * 0.25) < next_out_time_local:
                 continue
 
+            # Tune for dancer overlays: include thinner hand regions.
             results = model.predict(
-                frame_bgr, imgsz=640, conf=0.25, iou=0.5, classes=[0], verbose=False
+                frame_bgr, imgsz=768, conf=0.12, iou=0.5, classes=[0], verbose=False
             )
 
             alpha_u8 = np.zeros((h, w), dtype=np.uint8)
@@ -318,7 +319,8 @@ async def overlay_yolo(
                 alpha = np.clip(alpha, 0.0, 1.0)
                 if alpha.shape[0] != h or alpha.shape[1] != w:
                     alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC)
-                alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.4, sigmaY=1.4)
+                # Reduce blur to preserve hand/finger edges while still smoothing.
+                alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=0.9, sigmaY=0.9)
                 alpha_u8 = (alpha * 255.0).astype(np.uint8)
 
             overlay = np.zeros((h, w, 3), dtype=np.uint8)
@@ -454,7 +456,8 @@ def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str,
         if t + (out_dt_local * 0.25) < next_out_time:
             continue
 
-        results = model.predict(frame_bgr, imgsz=640, conf=0.25, iou=0.5, classes=[0], verbose=False)
+        # Tune for dancer overlays: include thinner hand regions.
+        results = model.predict(frame_bgr, imgsz=768, conf=0.12, iou=0.5, classes=[0], verbose=False)
 
         alpha_u8 = np.zeros((h, w), dtype=np.uint8)
         if results and results[0].masks is not None:
@@ -464,7 +467,8 @@ def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str,
             alpha = np.clip(alpha, 0.0, 1.0)
             if alpha.shape[0] != h or alpha.shape[1] != w:
                 alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC)
-            alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=1.4, sigmaY=1.4)
+            # Reduce blur to preserve hand/finger edges while still smoothing.
+            alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=0.9, sigmaY=0.9)
             alpha_u8 = (alpha * 255.0).astype(np.uint8)
 
         overlay = np.zeros((h, w, 3), dtype=np.uint8)
@@ -582,4 +586,407 @@ async def overlay_yolo_result(job_id: str, background_tasks: BackgroundTasks):
     OVERLAY_JOBS.pop(job_id, None)
 
     return FileResponse(path=tmp_out, media_type="video/webm", filename=f"{job_id}_yolo_overlay.webm")
+
+
+POSE_JOBS: dict[str, dict[str, Any]] = {}
+
+
+def _visible_pose_point(
+    xy: Any, conf: Any, idx: int, threshold: float = 0.25
+) -> tuple[int, int] | None:
+    try:
+        if idx >= len(xy):
+            return None
+        score = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+        if score < threshold:
+            return None
+        point = xy[idx]
+        return (int(round(float(point[0]))), int(round(float(point[1]))))
+    except Exception:
+        return None
+
+
+def _scaled_bgr(color_hex: str, scale: float) -> tuple[int, int, int]:
+    r, g, b = _hex_to_rgb(color_hex)
+    scale = max(0.0, min(1.0, scale))
+    return (
+        int(round(b * scale)),
+        int(round(g * scale)),
+        int(round(r * scale)),
+    )
+
+
+def _draw_pose_circle(
+    overlay: Any,
+    center: tuple[int, int] | None,
+    radius: int,
+    color_bgr: tuple[int, int, int],
+) -> None:
+    if center is None or radius <= 0:
+        return
+    import cv2  # type: ignore
+
+    cv2.circle(overlay, center, radius, color_bgr, thickness=-1, lineType=cv2.LINE_AA)
+
+
+def _draw_pose_segment(
+    overlay: Any,
+    start: tuple[int, int] | None,
+    end: tuple[int, int] | None,
+    width: int,
+    color_bgr: tuple[int, int, int],
+) -> None:
+    if start is None or end is None or width <= 0:
+        return
+    import cv2  # type: ignore
+
+    cv2.line(overlay, start, end, color_bgr, thickness=width, lineType=cv2.LINE_AA)
+    joint_r = max(2, int(round(width * 0.42)))
+    cv2.circle(overlay, start, joint_r, color_bgr, thickness=-1, lineType=cv2.LINE_AA)
+    cv2.circle(overlay, end, joint_r, color_bgr, thickness=-1, lineType=cv2.LINE_AA)
+
+
+def _draw_pose_torso_head(
+    overlay: Any,
+    xy: Any,
+    conf: Any,
+    color_hex: str,
+    shoulder_width: float,
+    intensity: float = 0.5,
+) -> None:
+    import cv2  # type: ignore
+    import numpy as np  # type: ignore
+
+    ls = _visible_pose_point(xy, conf, 5)
+    rs = _visible_pose_point(xy, conf, 6)
+    lh = _visible_pose_point(xy, conf, 11)
+    rh = _visible_pose_point(xy, conf, 12)
+    nose = _visible_pose_point(xy, conf, 0, threshold=0.2)
+
+    fill = _scaled_bgr(color_hex, 0.28 * intensity)
+    edge = _scaled_bgr(color_hex, 0.52 * intensity)
+    glow = _scaled_bgr(color_hex, 0.18 * intensity)
+
+    if ls and rs and lh and rh:
+        pts = np.array([ls, rs, rh, lh], dtype=np.int32)
+        cv2.fillConvexPoly(overlay, pts, fill, lineType=cv2.LINE_AA)
+
+    if nose is not None:
+        head_radius = max(int(round(shoulder_width * 0.28)), 18)
+        cv2.circle(
+            overlay,
+            nose,
+            max(2, int(round(head_radius * 1.15))),
+            glow,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+        cv2.circle(overlay, nose, head_radius, edge, thickness=-1, lineType=cv2.LINE_AA)
+
+    torso_r = max(int(round(max(shoulder_width * 0.25, 10) * intensity)), 6)
+    _draw_pose_circle(overlay, ls, torso_r, edge)
+    _draw_pose_circle(overlay, rs, torso_r, edge)
+    _draw_pose_circle(overlay, lh, torso_r, edge)
+    _draw_pose_circle(overlay, rh, torso_r, edge)
+
+
+def _render_pose_layers(
+    xy: Any,
+    conf: Any,
+    w: int,
+    h: int,
+    arms_color: str,
+    legs_color: str,
+) -> tuple[Any, Any]:
+    import numpy as np  # type: ignore
+
+    arms_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    legs_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+
+    ls = _visible_pose_point(xy, conf, 5)
+    rs = _visible_pose_point(xy, conf, 6)
+    lh = _visible_pose_point(xy, conf, 11)
+    rh = _visible_pose_point(xy, conf, 12)
+
+    if ls and rs:
+        shoulder_width = math.hypot(ls[0] - rs[0], ls[1] - rs[1])
+    else:
+        shoulder_width = 60.0
+
+    limb_width = max(int(round(shoulder_width * 0.7)), 18)
+    arm_edge = _scaled_bgr(arms_color, 0.78)
+    leg_edge = _scaled_bgr(legs_color, 0.78)
+
+    # Shared torso/head at half intensity in both layers.
+    _draw_pose_torso_head(arms_overlay, xy, conf, arms_color, shoulder_width, intensity=0.5)
+    _draw_pose_torso_head(legs_overlay, xy, conf, legs_color, shoulder_width, intensity=0.5)
+
+    # Arms: shoulder -> elbow -> wrist
+    _draw_pose_segment(arms_overlay, ls, _visible_pose_point(xy, conf, 7), limb_width, arm_edge)
+    _draw_pose_segment(
+        arms_overlay,
+        _visible_pose_point(xy, conf, 7),
+        _visible_pose_point(xy, conf, 9),
+        max(int(round(limb_width * 0.86)), 10),
+        arm_edge,
+    )
+    _draw_pose_segment(arms_overlay, rs, _visible_pose_point(xy, conf, 8), limb_width, arm_edge)
+    _draw_pose_segment(
+        arms_overlay,
+        _visible_pose_point(xy, conf, 8),
+        _visible_pose_point(xy, conf, 10),
+        max(int(round(limb_width * 0.86)), 10),
+        arm_edge,
+    )
+
+    # Legs: hip -> knee -> ankle
+    _draw_pose_segment(legs_overlay, lh, _visible_pose_point(xy, conf, 13), int(round(limb_width * 1.05)), leg_edge)
+    _draw_pose_segment(
+        legs_overlay,
+        _visible_pose_point(xy, conf, 13),
+        _visible_pose_point(xy, conf, 15),
+        max(int(round(limb_width * 0.9)), 10),
+        leg_edge,
+    )
+    _draw_pose_segment(legs_overlay, rh, _visible_pose_point(xy, conf, 14), int(round(limb_width * 1.05)), leg_edge)
+    _draw_pose_segment(
+        legs_overlay,
+        _visible_pose_point(xy, conf, 14),
+        _visible_pose_point(xy, conf, 16),
+        max(int(round(limb_width * 0.9)), 10),
+        leg_edge,
+    )
+
+    return arms_overlay, legs_overlay
+
+
+def _yolo_pose_job_worker(
+    job_id: str,
+    tmp_in: str,
+    arms_out: str,
+    legs_out: str,
+    arms_color: str,
+    legs_color: str,
+    fps: int,
+) -> None:
+    try:
+        import cv2  # type: ignore
+        from ultralytics import YOLO  # type: ignore
+    except Exception as exc:
+        POSE_JOBS[job_id]["status"] = "error"
+        POSE_JOBS[job_id]["error"] = f"Missing pose deps: {exc}"
+        return
+
+    weights = (
+        Path(__file__).resolve().parents[3] / "web-app" / "public" / "models" / "yolo26n-pose.pt"
+    ).resolve()
+    if not weights.exists():
+        POSE_JOBS[job_id]["status"] = "error"
+        POSE_JOBS[job_id]["error"] = f"YOLO pose weights not found at {weights}"
+        return
+
+    cap = cv2.VideoCapture(tmp_in)
+    if not cap.isOpened():
+        POSE_JOBS[job_id]["status"] = "error"
+        POSE_JOBS[job_id]["error"] = "Failed to open video."
+        return
+
+    out_fps_local = max(1, int(fps))
+    out_dt_local = 1.0 / float(out_fps_local)
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 640)
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 480)
+
+    try:
+        meta = probe_video_metadata(tmp_in)
+        duration_sec = float(meta.get("duration_sec") or 0.0)
+    except Exception:
+        duration_sec = 0.0
+    expected = _expected_frames(duration_sec, out_fps_local)
+
+    POSE_JOBS[job_id]["frames_expected"] = expected
+    POSE_JOBS[job_id]["frames_written"] = 0
+    POSE_JOBS[job_id]["progress"] = 0.0
+    POSE_JOBS[job_id]["status"] = "processing"
+
+    model = YOLO(str(weights))
+
+    fourcc = cv2.VideoWriter_fourcc(*"VP90")
+    arms_writer = cv2.VideoWriter(arms_out, fourcc, out_fps_local, (w, h))
+    legs_writer = cv2.VideoWriter(legs_out, fourcc, out_fps_local, (w, h))
+    if not arms_writer.isOpened() or not legs_writer.isOpened():
+        POSE_JOBS[job_id]["status"] = "error"
+        POSE_JOBS[job_id]["error"] = "Failed to open VideoWriter for pose overlay."
+        return
+
+    written = 0
+    next_out_time = 0.0
+    last_frame_time = 0.0
+    last_arms = None
+    last_legs = None
+
+    while True:
+        ok, frame_bgr = cap.read()
+        if not ok:
+            break
+
+        try:
+            t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+        except Exception:
+            t = last_frame_time + out_dt_local
+        last_frame_time = t
+
+        if t + (out_dt_local * 0.25) < next_out_time:
+            continue
+
+        results = model.predict(frame_bgr, imgsz=768, conf=0.2, iou=0.5, verbose=False)
+        arms_overlay = None
+        legs_overlay = None
+
+        if results and getattr(results[0], "keypoints", None) is not None:
+            keypoints = results[0].keypoints
+            xy_all = keypoints.xy
+            conf_all = getattr(keypoints, "conf", None)
+
+            if xy_all is not None and len(xy_all) > 0:
+                xy = xy_all[0].detach().cpu().numpy()  # type: ignore[attr-defined]
+                conf = conf_all[0].detach().cpu().numpy() if conf_all is not None and len(conf_all) > 0 else None  # type: ignore[attr-defined]
+                arms_overlay, legs_overlay = _render_pose_layers(xy, conf, w, h, arms_color, legs_color)
+
+        if arms_overlay is None or legs_overlay is None:
+            import numpy as np  # type: ignore
+
+            arms_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+            legs_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+
+        last_arms = arms_overlay
+        last_legs = legs_overlay
+
+        slack = out_dt_local * 0.25
+        dup_count = 1
+        if t + slack > next_out_time:
+            dup_count = int(math.floor((t + slack - next_out_time) / out_dt_local)) + 1
+            dup_count = max(1, dup_count)
+
+        remaining = expected - written
+        if remaining <= 0:
+            break
+        dup_count = min(dup_count, remaining)
+
+        for _ in range(dup_count):
+            arms_writer.write(arms_overlay)
+            legs_writer.write(legs_overlay)
+            written += 1
+            next_out_time += out_dt_local
+            POSE_JOBS[job_id]["frames_written"] = written
+            POSE_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
+            if written >= expected:
+                break
+
+        if written >= expected:
+            break
+
+    if written < expected and last_arms is not None and last_legs is not None:
+        for _ in range(expected - written):
+            arms_writer.write(last_arms)
+            legs_writer.write(last_legs)
+        written = expected
+        POSE_JOBS[job_id]["frames_written"] = written
+        POSE_JOBS[job_id]["progress"] = 1.0
+
+    cap.release()
+    arms_writer.release()
+    legs_writer.release()
+    POSE_JOBS[job_id]["status"] = "done"
+
+
+@app.post("/api/overlay/yolo-pose/start")
+async def overlay_yolo_pose_start(
+    video: UploadFile = File(...),
+    arms_color: str = Form(default="#38bdf8"),
+    legs_color: str = Form(default="#6366f1"),
+    fps: int = Form(default=12),
+    session_id: str | None = Form(default=None),
+    side: str | None = Form(default=None),
+):
+    sid = (session_id or "").strip() or "default"
+    side_val = (side or "").strip() or "unknown"
+    job_id = str(uuid.uuid4())
+
+    tmp_in = _save_upload(video, f"pose_{side_val}_{job_id}")
+    arms_out = tempfile.NamedTemporaryFile(prefix=f"pose_arms_{side_val}_{job_id}_", suffix=".webm", delete=False).name
+    legs_out = tempfile.NamedTemporaryFile(prefix=f"pose_legs_{side_val}_{job_id}_", suffix=".webm", delete=False).name
+
+    POSE_JOBS[job_id] = {
+        "status": "queued",
+        "progress": 0.0,
+        "frames_written": 0,
+        "frames_expected": None,
+        "tmp_in": tmp_in,
+        "arms_out": arms_out,
+        "legs_out": legs_out,
+        "session_id": sid,
+        "side": side_val,
+        "error": None,
+        "served_layers": set(),
+    }
+
+    t = threading.Thread(
+        target=_yolo_pose_job_worker,
+        args=(job_id, tmp_in, arms_out, legs_out, arms_color, legs_color, fps),
+        daemon=True,
+    )
+    t.start()
+
+    return JSONResponse({"job_id": job_id}, status_code=200)
+
+
+@app.get("/api/overlay/yolo-pose/status")
+async def overlay_yolo_pose_status(job_id: str):
+    job = POSE_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    return {
+        "job_id": job_id,
+        "status": job.get("status", "unknown"),
+        "progress": float(job.get("progress", 0.0) or 0.0),
+        "frames_written": job.get("frames_written"),
+        "frames_expected": job.get("frames_expected"),
+        "error": job.get("error"),
+    }
+
+
+@app.get("/api/overlay/yolo-pose/result")
+async def overlay_yolo_pose_result(job_id: str, layer: str, background_tasks: BackgroundTasks):
+    job = POSE_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    if job.get("status") != "done":
+        return JSONResponse({"error": "Job not ready"}, status_code=409)
+
+    if layer not in {"arms", "legs"}:
+        return JSONResponse({"error": "Invalid layer"}, status_code=400)
+
+    path_key = "arms_out" if layer == "arms" else "legs_out"
+    out_path = job.get(path_key)
+    if not out_path:
+        return JSONResponse({"error": "Missing output"}, status_code=500)
+
+    served_layers = job.get("served_layers")
+    if not isinstance(served_layers, set):
+        served_layers = set()
+        job["served_layers"] = served_layers
+    served_layers.add(layer)
+
+    background_tasks.add_task(lambda: Path(out_path).unlink(missing_ok=True))
+
+    if served_layers == {"arms", "legs"}:
+        tmp_in = job.get("tmp_in")
+        other_path = job.get("legs_out" if layer == "arms" else "arms_out")
+        if tmp_in:
+          background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
+        if other_path:
+          background_tasks.add_task(lambda: Path(other_path).unlink(missing_ok=True))
+        POSE_JOBS.pop(job_id, None)
+
+    return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_{layer}_overlay.webm")
 
