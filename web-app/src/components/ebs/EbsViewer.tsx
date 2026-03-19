@@ -6,11 +6,13 @@ import { useEbsViewer } from "./useEbsViewer";
 import type { EbsData } from "./types";
 import PoseOverlay from "../PoseOverlay";
 import SegmentOverlay from "../SegmentOverlay";
+import { BodyPixOverlay } from "../BodyPixOverlay";
 import { PrecomputedFrameOverlay } from "../PrecomputedFrameOverlay";
 import { PrecomputedVideoOverlay } from "../PrecomputedVideoOverlay";
 import { generateMoveNetOverlayFrames } from "../../lib/movenetOverlayGenerator";
 import { generateYoloOverlayFrames, type YoloExecutionProvider } from "../../lib/yoloOverlayGenerator";
 import { generateFastSamOverlayFrames } from "../../lib/fastSamOverlayGenerator";
+import { generateBodyPixOverlayFrames } from "../../lib/bodyPixOverlayGenerator";
 import { buildOverlayKey, getSessionOverlay, storeSessionOverlay, type OverlayArtifact } from "../../lib/overlayStorage";
 import { getSessionVideo } from "../../lib/videoStorage";
 
@@ -146,6 +148,7 @@ export function EbsViewer(props: EbsViewerProps) {
   const [showMoveNet, setShowMoveNet] = useState(false);
   const [showYolo, setShowYolo] = useState(false);
   const [showYoloPose, setShowYoloPose] = useState(false);
+  const [showBodyPix, setShowBodyPix] = useState(false);
   const [showFastSam, setShowFastSam] = useState(false);
   const [overlayMethod, setOverlayMethod] = useState<"pose-fill" | "sam3-experimental" | "sam3-roboflow">("pose-fill");
   const [overlayBusy, setOverlayBusy] = useState(false);
@@ -162,6 +165,8 @@ export function EbsViewer(props: EbsViewerProps) {
   const [userYoloPoseLegsArtifact, setUserYoloPoseLegsArtifact] = useState<OverlayArtifact | null>(null);
   const [refFastSamArtifact, setRefFastSamArtifact] = useState<OverlayArtifact | null>(null);
   const [userFastSamArtifact, setUserFastSamArtifact] = useState<OverlayArtifact | null>(null);
+  const [refBodyPixArtifact, setRefBodyPixArtifact] = useState<OverlayArtifact | null>(null);
+  const [userBodyPixArtifact, setUserBodyPixArtifact] = useState<OverlayArtifact | null>(null);
   // Lower FPS dramatically reduces precompute time (model + WebP encode).
   const OVERLAY_FPS = 12;
   const missingPrecomputed =
@@ -172,21 +177,24 @@ export function EbsViewer(props: EbsViewerProps) {
           !refYoloPoseLegsArtifact ||
           !userYoloPoseArmsArtifact ||
           !userYoloPoseLegsArtifact)) ||
+      (showBodyPix && (!refBodyPixArtifact || !userBodyPixArtifact)) ||
       (showMoveNet && (!refPoseArtifact || !userPoseArtifact)) ||
       (showFastSam && (!refFastSamArtifact || !userFastSamArtifact)));
 
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
     const variant = overlayMethod;
-    const [rp, ry, rpa, rpl, up, uy, upa, upl, rf, uf] = await Promise.all([
+    const [rp, ry, rpa, rpl, rbp, up, uy, upa, upl, ubp, rf, uf] = await Promise.all([
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "reference", fps: OVERLAY_FPS, variant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: segProvider })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: "bodypix24" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "practice", fps: OVERLAY_FPS, variant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: segProvider })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: "bodypix24" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "reference", fps: OVERLAY_FPS, variant: "wasm" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "practice", fps: OVERLAY_FPS, variant: "wasm" })),
     ]);
@@ -194,10 +202,12 @@ export function EbsViewer(props: EbsViewerProps) {
     setRefYoloArtifact(ry);
     setRefYoloPoseArmsArtifact(rpa);
     setRefYoloPoseLegsArtifact(rpl);
+    setRefBodyPixArtifact(rbp);
     setUserPoseArtifact(up);
     setUserYoloArtifact(uy);
     setUserYoloPoseArmsArtifact(upa);
     setUserYoloPoseLegsArtifact(upl);
+    setUserBodyPixArtifact(ubp);
     setRefFastSamArtifact(rf);
     setUserFastSamArtifact(uf);
   }, [overlayMethod, segProvider, sessionId]);
@@ -207,7 +217,7 @@ export function EbsViewer(props: EbsViewerProps) {
   }, [loadCachedOverlays]);
 
   const generateOverlays = useCallback(
-    async (which: "movenet" | "yolo" | "yolo-pose" | "fastsam") => {
+    async (which: "movenet" | "yolo" | "yolo-pose" | "bodypix" | "fastsam") => {
       if (!sessionId || !activeReferenceVideoUrl || !activeUserVideoUrl) return;
       if (overlayBusy) return;
       setOverlayBusy(true);
@@ -589,6 +599,67 @@ export function EbsViewer(props: EbsViewerProps) {
           setUserYoloPoseArmsArtifact(userArmsArtifact);
           setUserYoloPoseLegsArtifact(userLegsArtifact);
           setOverlayStatus("YOLO Pose overlays ready.");
+        } else if (which === "bodypix") {
+          setOverlayStatus("Generating BodyPix overlays…");
+
+          if (segGenerator === "python") {
+            // Python backend is currently pose-derived approximation, not true BodyPix part segmentation.
+            // For demo-style part coloring, fall back to browser BodyPix generator.
+            setOverlayStatus("BodyPix demo-style part segmentation runs in browser mode. Generating locally…");
+          }
+
+          const ref = await generateBodyPixOverlayFrames({
+            videoUrl: activeReferenceVideoUrl,
+            fps: OVERLAY_FPS,
+            opacity: 0.68,
+            onProgress: (c, t) => setOverlayStatus(`BodyPix (reference) ${c}/${t}`),
+          });
+          const user = await generateBodyPixOverlayFrames({
+            videoUrl: activeUserVideoUrl,
+            fps: OVERLAY_FPS,
+            opacity: 0.68,
+            onProgress: (c, t) => setOverlayStatus(`BodyPix (user) ${c}/${t}`),
+          });
+
+            const refArtifact: OverlayArtifact = {
+              version: 1,
+              type: "bodypix",
+              side: "reference",
+              fps: ref.fps,
+              width: ref.width,
+              height: ref.height,
+              frameCount: ref.frames.length,
+              createdAt: new Date().toISOString(),
+              frames: ref.frames,
+              meta: { generator: "browser" },
+            };
+            const userArtifact: OverlayArtifact = {
+              version: 1,
+              type: "bodypix",
+              side: "practice",
+              fps: user.fps,
+              width: user.width,
+              height: user.height,
+              frameCount: user.frames.length,
+              createdAt: new Date().toISOString(),
+              frames: user.frames,
+              meta: { generator: "browser" },
+            };
+
+            await Promise.all([
+              storeSessionOverlay(
+                buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: "bodypix24" }),
+                refArtifact,
+              ),
+              storeSessionOverlay(
+                buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: "bodypix24" }),
+                userArtifact,
+              ),
+            ]);
+
+          setRefBodyPixArtifact(refArtifact);
+          setUserBodyPixArtifact(userArtifact);
+          setOverlayStatus("BodyPix overlays ready.");
         } else if (which === "movenet") {
           setOverlayStatus("Generating MoveNet overlays…");
           const variant = overlayMethod;
@@ -1033,6 +1104,14 @@ export function EbsViewer(props: EbsViewerProps) {
                   YOLO Pose
                 </button>
                 <button
+                  onClick={() => setShowBodyPix((v) => !v)}
+                  className={`rounded-full px-3 py-1.5 text-xs font-semibold border transition-all ${
+                    showBodyPix ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
+                  }`}
+                >
+                  BodyPix
+                </button>
+                <button
                   onClick={() => setShowFastSam((v) => !v)}
                   className={`rounded-full px-3 py-1.5 text-xs font-semibold border transition-all ${
                     showFastSam ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-700 border-slate-200"
@@ -1075,6 +1154,13 @@ export function EbsViewer(props: EbsViewerProps) {
                   Gen YOLO Pose
                 </button>
                 <button
+                  onClick={() => void generateOverlays("bodypix")}
+                  disabled={overlayBusy || !showBodyPix}
+                  className="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 transition-all hover:bg-sky-100 disabled:opacity-50"
+                >
+                  Gen BodyPix
+                </button>
+                <button
                   onClick={() => void generateOverlays("fastsam")}
                   disabled={overlayBusy || !showFastSam}
                   className="rounded-full bg-sky-50 px-3 py-1.5 text-xs font-semibold text-sky-700 transition-all hover:bg-sky-100 disabled:opacity-50"
@@ -1106,7 +1192,8 @@ export function EbsViewer(props: EbsViewerProps) {
           {sessionMode && missingPrecomputed ? (
             <div className="mb-3 rounded-2xl border border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-900">
               Precomputed overlays are enabled, but frames haven’t been generated yet. Click <b>Gen MoveNet</b> /{" "}
-              <b>Gen YOLO</b> / <b>Gen YOLO Pose</b> once, then playback will be synced (no realtime lag).
+              <b>Gen YOLO</b> / <b>Gen YOLO Pose</b> / <b>Gen BodyPix</b> once, then playback will be synced
+              (no realtime lag).
             </div>
           ) : null}
 
@@ -1154,6 +1241,27 @@ export function EbsViewer(props: EbsViewerProps) {
                       ) : null}
                     </>
                   ) : null
+                ) : null}
+                {sessionMode && showBodyPix ? (
+                  overlayMode === "precomputed" ? (
+                    refBodyPixArtifact ? (
+                      refBodyPixArtifact.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={refVideo}
+                          overlayBlob={refBodyPixArtifact.video}
+                          mimeType={refBodyPixArtifact.videoMime}
+                        />
+                      ) : refBodyPixArtifact.frames ? (
+                        <PrecomputedFrameOverlay
+                          videoRef={refVideo}
+                          frames={refBodyPixArtifact.frames}
+                          fps={refBodyPixArtifact.fps}
+                        />
+                      ) : null
+                    ) : null
+                  ) : (
+                    <BodyPixOverlay videoRef={refVideo} opacity={0.68} />
+                  )
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (
@@ -1232,6 +1340,27 @@ export function EbsViewer(props: EbsViewerProps) {
                       ) : null}
                     </>
                   ) : null
+                ) : null}
+                {sessionMode && showBodyPix ? (
+                  overlayMode === "precomputed" ? (
+                    userBodyPixArtifact ? (
+                      userBodyPixArtifact.video ? (
+                        <PrecomputedVideoOverlay
+                          videoRef={userVideo}
+                          overlayBlob={userBodyPixArtifact.video}
+                          mimeType={userBodyPixArtifact.videoMime}
+                        />
+                      ) : userBodyPixArtifact.frames ? (
+                        <PrecomputedFrameOverlay
+                          videoRef={userVideo}
+                          frames={userBodyPixArtifact.frames}
+                          fps={userBodyPixArtifact.fps}
+                        />
+                      ) : null
+                    ) : null
+                  ) : (
+                    <BodyPixOverlay videoRef={userVideo} opacity={0.68} />
+                  )
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (
