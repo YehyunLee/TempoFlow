@@ -5,10 +5,12 @@ on:
     branches: [ "main", "a5" ]
     paths:
       - 'A5/**'
+      - '.github/workflows/a5-tests-and-code-coverage.yml'
   pull_request:
     branches: [ "main", "a5" ]
     paths:
       - 'A5/**'
+      - '.github/workflows/a5-tests-and-code-coverage.yml'
   workflow_dispatch:
 
 permissions:
