@@ -7,13 +7,28 @@ import type { EbsData } from "./types";
 import PoseOverlay from "../PoseOverlay";
 import SegmentOverlay from "../SegmentOverlay";
 import { BodyPixOverlay } from "../BodyPixOverlay";
-import { PrecomputedFrameOverlay } from "../PrecomputedFrameOverlay";
-import { PrecomputedVideoOverlay } from "../PrecomputedVideoOverlay";
+import { ProgressiveOverlay } from "../ProgressiveOverlay";
 import { generateMoveNetOverlayFrames } from "../../lib/movenetOverlayGenerator";
 import { generateYoloOverlayFrames, type YoloExecutionProvider } from "../../lib/yoloOverlayGenerator";
 import { generateFastSamOverlayFrames } from "../../lib/fastSamOverlayGenerator";
 import { generateBodyPixOverlayFrames } from "../../lib/bodyPixOverlayGenerator";
-import { buildOverlayKey, getSessionOverlay, storeSessionOverlay, type OverlayArtifact } from "../../lib/overlayStorage";
+import {
+  buildOverlayKey,
+  getSessionOverlay,
+  storeSessionOverlay,
+  type OverlayArtifact,
+  type OverlaySegmentArtifact,
+  type OverlayType,
+} from "../../lib/overlayStorage";
+import {
+  buildOverlaySegmentPlans,
+  createSegmentedOverlayArtifact,
+  getOverlaySegmentByIndex,
+  isOverlayArtifactComplete,
+  overlayArtifactHasRenderableData,
+  upsertOverlaySegment,
+  type OverlaySegmentPlan,
+} from "../../lib/overlaySegments";
 import { getSessionVideo } from "../../lib/videoStorage";
 import { FeedbackOverlay } from "./FeedbackOverlay";
 import type { DanceFeedback } from "../../lib/bodyPixComparison";
@@ -170,32 +185,43 @@ export function EbsViewer(props: EbsViewerProps) {
   const [userBodyPixArtifact, setUserBodyPixArtifact] = useState<OverlayArtifact | null>(null);
   // Lower FPS dramatically reduces precompute time (model + WebP encode).
   const OVERLAY_FPS = 12;
+  const yoloVariant = `${segGenerator}-${segProvider}`;
+  const bodyPixVariant = segGenerator === "python" ? "bodypix24-python" : "bodypix24-browser";
+  const overlaySegmentPlans = useMemo(() => buildOverlaySegmentPlans(state.ebs), [state.ebs]);
   const missingPrecomputed =
     overlayMode === "precomputed" &&
-    ((showYolo && (!refYoloArtifact || !userYoloArtifact)) ||
+    ((showYolo &&
+      (!overlayArtifactHasRenderableData(refYoloArtifact) ||
+        !overlayArtifactHasRenderableData(userYoloArtifact))) ||
       (showYoloPose &&
-        (!refYoloPoseArmsArtifact ||
-          !refYoloPoseLegsArtifact ||
-          !userYoloPoseArmsArtifact ||
-          !userYoloPoseLegsArtifact)) ||
-      (showBodyPix && (!refBodyPixArtifact || !userBodyPixArtifact)) ||
-      (showMoveNet && (!refPoseArtifact || !userPoseArtifact)) ||
-      (showFastSam && (!refFastSamArtifact || !userFastSamArtifact)));
+        (!overlayArtifactHasRenderableData(refYoloPoseArmsArtifact) ||
+          !overlayArtifactHasRenderableData(refYoloPoseLegsArtifact) ||
+          !overlayArtifactHasRenderableData(userYoloPoseArmsArtifact) ||
+          !overlayArtifactHasRenderableData(userYoloPoseLegsArtifact))) ||
+      (showBodyPix &&
+        (!overlayArtifactHasRenderableData(refBodyPixArtifact) ||
+          !overlayArtifactHasRenderableData(userBodyPixArtifact))) ||
+      (showMoveNet &&
+        (!overlayArtifactHasRenderableData(refPoseArtifact) ||
+          !overlayArtifactHasRenderableData(userPoseArtifact))) ||
+      (showFastSam &&
+        (!overlayArtifactHasRenderableData(refFastSamArtifact) ||
+          !overlayArtifactHasRenderableData(userFastSamArtifact))));
 
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
     const variant = overlayMethod;
     const [rp, ry, rpa, rpl, rbp, up, uy, upa, upl, ubp, rf, uf] = await Promise.all([
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "reference", fps: OVERLAY_FPS, variant })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: yoloVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: "bodypix24" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: bodyPixVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "practice", fps: OVERLAY_FPS, variant })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: yoloVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: "bodypix24" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: bodyPixVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "reference", fps: OVERLAY_FPS, variant: "wasm" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "practice", fps: OVERLAY_FPS, variant: "wasm" })),
     ]);
@@ -211,7 +237,7 @@ export function EbsViewer(props: EbsViewerProps) {
     setUserBodyPixArtifact(ubp);
     setRefFastSamArtifact(rf);
     setUserFastSamArtifact(uf);
-  }, [overlayMethod, segProvider, sessionId]);
+  }, [bodyPixVariant, overlayMethod, sessionId, yoloVariant]);
 
   useEffect(() => {
     void loadCachedOverlays();
@@ -225,49 +251,390 @@ export function EbsViewer(props: EbsViewerProps) {
       setOverlayStatus(null);
 
       try {
+        const processorUrl =
+          (process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL as string | undefined) ?? "http://127.0.0.1:8787/api/process";
+        const baseUrl = processorUrl.replace(/\/api\/process\s*$/, "");
+        const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
+
+        const getVideoSize = (side: "reference" | "practice") => {
+          const video = side === "reference" ? refVideo.current : userVideo.current;
+          return {
+            width: video?.videoWidth || 640,
+            height: video?.videoHeight || 480,
+          };
+        };
+
+        const startBackgroundJob = async (endpoint: "yolo" | "bodypix", form: FormData) => {
+          const res = await fetch(`${baseUrl}/api/overlay/${endpoint}/start`, {
+            method: "POST",
+            body: form,
+          });
+          if (!res.ok) {
+            const txt = await res.text().catch(() => "");
+            throw new Error(
+              `${endpoint.toUpperCase()} overlay start error (${res.status}): ${txt || res.statusText}`,
+            );
+          }
+          const json = (await res.json()) as { job_id?: string };
+          if (!json.job_id) {
+            throw new Error(`Missing job_id from ${endpoint.toUpperCase()} overlay start`);
+          }
+          return json.job_id;
+        };
+
+        const waitForBackgroundJob = async (
+          endpoint: "yolo" | "bodypix",
+          jobId: string,
+          reportProgress: (progress: number) => void,
+        ) => {
+          while (true) {
+            const stRes = await fetch(
+              `${baseUrl}/api/overlay/${endpoint}/status?job_id=${encodeURIComponent(jobId)}`,
+            );
+            if (!stRes.ok) {
+              const txt = await stRes.text().catch(() => "");
+              throw new Error(
+                `${endpoint.toUpperCase()} overlay status error (${stRes.status}): ${txt || stRes.statusText}`,
+              );
+            }
+
+            const st = (await stRes.json()) as {
+              status: string;
+              progress?: number;
+              error?: string;
+            };
+            reportProgress(typeof st.progress === "number" ? st.progress : 0);
+
+            if (st.status === "done") {
+              const outRes = await fetch(
+                `${baseUrl}/api/overlay/${endpoint}/result?job_id=${encodeURIComponent(jobId)}`,
+              );
+              if (!outRes.ok) {
+                const txt = await outRes.text().catch(() => "");
+                throw new Error(
+                  `${endpoint.toUpperCase()} overlay result error (${outRes.status}): ${txt || outRes.statusText}`,
+                );
+              }
+              const blob = await outRes.blob();
+              return {
+                blob,
+                mime: outRes.headers.get("content-type") || "video/webm",
+              };
+            }
+
+            if (st.status === "error") {
+              throw new Error(st.error || `${endpoint.toUpperCase()} overlay job failed`);
+            }
+
+            await sleep(400);
+          }
+        };
+
+        const runSegmentedOverlayPipeline = async (params: {
+          label: string;
+          type: OverlayType;
+          variant: string;
+          existingReference: OverlayArtifact | null;
+          existingPractice: OverlayArtifact | null;
+          setReferenceArtifact: (artifact: OverlayArtifact) => void;
+          setPracticeArtifact: (artifact: OverlayArtifact) => void;
+          referenceMeta?: Record<string, unknown>;
+          practiceMeta?: Record<string, unknown>;
+          buildReferenceSegment: (
+            plan: OverlaySegmentPlan,
+            ctx: {
+              ordinal: number;
+              total: number;
+              reportProgress: (progress: number) => void;
+            },
+          ) => Promise<OverlaySegmentArtifact>;
+          buildPracticeSegment: (
+            plan: OverlaySegmentPlan,
+            ctx: {
+              ordinal: number;
+              total: number;
+              reportProgress: (progress: number) => void;
+            },
+          ) => Promise<OverlaySegmentArtifact>;
+        }) => {
+          if (!overlaySegmentPlans.length) {
+            return false;
+          }
+
+          if (
+            isOverlayArtifactComplete(params.existingReference, overlaySegmentPlans.length) &&
+            isOverlayArtifactComplete(params.existingPractice, overlaySegmentPlans.length)
+          ) {
+            setOverlayStatus(`${params.label} overlays already ready.`);
+            return true;
+          }
+
+          let referenceArtifact = createSegmentedOverlayArtifact({
+            existing: params.existingReference,
+            type: params.type,
+            side: "reference",
+            fps: OVERLAY_FPS,
+            ...getVideoSize("reference"),
+            meta: params.referenceMeta,
+          });
+          let practiceArtifact = createSegmentedOverlayArtifact({
+            existing: params.existingPractice,
+            type: params.type,
+            side: "practice",
+            fps: OVERLAY_FPS,
+            ...getVideoSize("practice"),
+            meta: params.practiceMeta,
+          });
+
+          const referenceKey = buildOverlayKey({
+            sessionId,
+            type: params.type,
+            side: "reference",
+            fps: OVERLAY_FPS,
+            variant: params.variant,
+          });
+          const practiceKey = buildOverlayKey({
+            sessionId,
+            type: params.type,
+            side: "practice",
+            fps: OVERLAY_FPS,
+            variant: params.variant,
+          });
+
+          const countReadyPairs = () =>
+            overlaySegmentPlans.filter(
+              (plan) =>
+                getOverlaySegmentByIndex(referenceArtifact, plan.index) &&
+                getOverlaySegmentByIndex(practiceArtifact, plan.index),
+            ).length;
+
+          for (let idx = 0; idx < overlaySegmentPlans.length; idx += 1) {
+            const plan = overlaySegmentPlans[idx];
+            const ordinal = idx + 1;
+            const existingReferenceSegment = getOverlaySegmentByIndex(referenceArtifact, plan.index);
+            const existingPracticeSegment = getOverlaySegmentByIndex(practiceArtifact, plan.index);
+
+            if (existingReferenceSegment && existingPracticeSegment) {
+              continue;
+            }
+
+            let referenceProgress = existingReferenceSegment ? 1 : 0;
+            let practiceProgress = existingPracticeSegment ? 1 : 0;
+
+            const updateSegmentStatus = () => {
+              const avgProgress = (referenceProgress + practiceProgress) / 2;
+              const pct = Math.max(0, Math.min(100, Math.round(avgProgress * 100)));
+              setOverlayStatus(
+                `${params.label} segment ${ordinal}/${overlaySegmentPlans.length} processing… ${pct}%`,
+              );
+            };
+
+            updateSegmentStatus();
+
+            const [nextReferenceSegment, nextPracticeSegment] = await Promise.all([
+              existingReferenceSegment
+                ? Promise.resolve(existingReferenceSegment)
+                : params.buildReferenceSegment(plan, {
+                    ordinal,
+                    total: overlaySegmentPlans.length,
+                    reportProgress: (progress) => {
+                      referenceProgress = progress;
+                      updateSegmentStatus();
+                    },
+                  }),
+              existingPracticeSegment
+                ? Promise.resolve(existingPracticeSegment)
+                : params.buildPracticeSegment(plan, {
+                    ordinal,
+                    total: overlaySegmentPlans.length,
+                    reportProgress: (progress) => {
+                      practiceProgress = progress;
+                      updateSegmentStatus();
+                    },
+                  }),
+            ]);
+
+            referenceArtifact = upsertOverlaySegment(referenceArtifact, nextReferenceSegment);
+            practiceArtifact = upsertOverlaySegment(practiceArtifact, nextPracticeSegment);
+
+            await Promise.all([
+              storeSessionOverlay(referenceKey, referenceArtifact),
+              storeSessionOverlay(practiceKey, practiceArtifact),
+            ]);
+
+            params.setReferenceArtifact(referenceArtifact);
+            params.setPracticeArtifact(practiceArtifact);
+
+            const nextPendingIndex = overlaySegmentPlans.findIndex(
+              (candidate) =>
+                !getOverlaySegmentByIndex(referenceArtifact, candidate.index) ||
+                !getOverlaySegmentByIndex(practiceArtifact, candidate.index),
+            );
+
+            if (nextPendingIndex >= 0) {
+              setOverlayStatus(
+                `${params.label} segment ${ordinal}/${overlaySegmentPlans.length} ready. ` +
+                  `Segment ${nextPendingIndex + 1}/${overlaySegmentPlans.length} is processing in the background…`,
+              );
+            }
+          }
+
+          setOverlayStatus(
+            `${params.label} overlays ready. ${countReadyPairs()}/${overlaySegmentPlans.length} segments processed.`,
+          );
+          return true;
+        };
+
         if (which === "yolo") {
           setOverlayStatus("Generating YOLO overlays…");
-          const processorUrl =
-            (process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL as string | undefined) ?? "http://127.0.0.1:8787/api/process";
-          const baseUrl = processorUrl.replace(/\/api\/process\s*$/, "");
-
-          const generateViaPython = async (side: "reference" | "practice", color: string) => {
-            const file = await getSessionVideo(sessionId, side);
-            if (!file) throw new Error(`Missing ${side} video for this session`);
-
-            const form = new FormData();
-            form.append("video", file, file.name);
-            form.append("color", color);
-            form.append("fps", String(OVERLAY_FPS));
-            form.append("session_id", sessionId);
-            form.append("side", side);
-            form.append("backend", segProvider);
-
-            const res = await fetch(`${baseUrl}/api/overlay/yolo`, { method: "POST", body: form });
-            if (!res.ok) {
-              const txt = await res.text().catch(() => "");
-              throw new Error(`YOLO overlay service error (${res.status}): ${txt || res.statusText}`);
-            }
-            const blob = await res.blob();
-            return { blob, mime: res.headers.get("content-type") || "video/webm" };
-          };
-
           let refArtifact: OverlayArtifact;
           let userArtifact: OverlayArtifact;
 
+          const usedSegmentPipeline = await runSegmentedOverlayPipeline({
+            label: "YOLO",
+            type: "yolo",
+            variant: yoloVariant,
+            existingReference: refYoloArtifact,
+            existingPractice: userYoloArtifact,
+            setReferenceArtifact: setRefYoloArtifact,
+            setPracticeArtifact: setUserYoloArtifact,
+            referenceMeta: { generator: segGenerator, provider: segProvider },
+            practiceMeta: { generator: segGenerator, provider: segProvider },
+            buildReferenceSegment: async (plan, ctx) => {
+              if (segGenerator === "python") {
+                const file = await getSessionVideo(sessionId, "reference");
+                if (!file) throw new Error("Missing reference video for this session");
+
+                const form = new FormData();
+                form.append("video", file, file.name);
+                form.append("color", "#38bdf8");
+                form.append("fps", String(OVERLAY_FPS));
+                form.append("session_id", sessionId);
+                form.append("side", "reference");
+                form.append("backend", segProvider);
+                form.append("start_sec", String(plan.reference.startSec));
+                form.append("end_sec", String(plan.reference.endSec));
+
+                const jobId = await startBackgroundJob("yolo", form);
+                const result = await waitForBackgroundJob("yolo", jobId, ctx.reportProgress);
+                const size = getVideoSize("reference");
+                return {
+                  index: plan.index,
+                  startSec: plan.reference.startSec,
+                  endSec: plan.reference.endSec,
+                  fps: OVERLAY_FPS,
+                  width: size.width,
+                  height: size.height,
+                  frameCount: Math.max(
+                    1,
+                    Math.ceil((plan.reference.endSec - plan.reference.startSec) * OVERLAY_FPS),
+                  ),
+                  createdAt: new Date().toISOString(),
+                  video: result.blob,
+                  videoMime: result.mime,
+                  meta: { generator: "python", provider: segProvider, segmentIndex: plan.index },
+                };
+              }
+
+              const frames = await generateYoloOverlayFrames({
+                videoUrl: activeReferenceVideoUrl,
+                color: "#38bdf8",
+                fps: OVERLAY_FPS,
+                inferFps: Math.max(4, Math.round(OVERLAY_FPS / 2)),
+                provider: segProvider,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              const size = getVideoSize("reference");
+              return {
+                index: plan.index,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                fps: OVERLAY_FPS,
+                width: size.width,
+                height: size.height,
+                frameCount: frames.length,
+                createdAt: new Date().toISOString(),
+                frames,
+                meta: { generator: "browser", provider: segProvider, segmentIndex: plan.index },
+              };
+            },
+            buildPracticeSegment: async (plan, ctx) => {
+              if (segGenerator === "python") {
+                const file = await getSessionVideo(sessionId, "practice");
+                if (!file) throw new Error("Missing practice video for this session");
+
+                const form = new FormData();
+                form.append("video", file, file.name);
+                form.append("color", "#22c55e");
+                form.append("fps", String(OVERLAY_FPS));
+                form.append("session_id", sessionId);
+                form.append("side", "practice");
+                form.append("backend", segProvider);
+                form.append("start_sec", String(plan.practice.startSec));
+                form.append("end_sec", String(plan.practice.endSec));
+
+                const jobId = await startBackgroundJob("yolo", form);
+                const result = await waitForBackgroundJob("yolo", jobId, ctx.reportProgress);
+                const size = getVideoSize("practice");
+                return {
+                  index: plan.index,
+                  startSec: plan.practice.startSec,
+                  endSec: plan.practice.endSec,
+                  fps: OVERLAY_FPS,
+                  width: size.width,
+                  height: size.height,
+                  frameCount: Math.max(
+                    1,
+                    Math.ceil((plan.practice.endSec - plan.practice.startSec) * OVERLAY_FPS),
+                  ),
+                  createdAt: new Date().toISOString(),
+                  video: result.blob,
+                  videoMime: result.mime,
+                  meta: { generator: "python", provider: segProvider, segmentIndex: plan.index },
+                };
+              }
+
+              const frames = await generateYoloOverlayFrames({
+                videoUrl: activeUserVideoUrl,
+                color: "#22c55e",
+                fps: OVERLAY_FPS,
+                inferFps: Math.max(4, Math.round(OVERLAY_FPS / 2)),
+                provider: segProvider,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              const size = getVideoSize("practice");
+              return {
+                index: plan.index,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                fps: OVERLAY_FPS,
+                width: size.width,
+                height: size.height,
+                frameCount: frames.length,
+                createdAt: new Date().toISOString(),
+                frames,
+                meta: { generator: "browser", provider: segProvider, segmentIndex: plan.index },
+              };
+            },
+          });
+
+          if (usedSegmentPipeline) {
+            return;
+          }
+
           if (segGenerator === "python") {
-            const startedAt = Date.now();
-            let refProgress = 0;
-            let userProgress = 0;
-
+            let referenceProgress = 0;
+            let practiceProgress = 0;
             const updateStatus = () => {
-              const avg = (refProgress + userProgress) / 2;
-              const left = Math.max(0, Math.round((1 - avg) * 100));
-              const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
-              setOverlayStatus(`YOLO overlays generating… ${left}% left (${s}s elapsed)`);
+              const avgProgress = (referenceProgress + practiceProgress) / 2;
+              setOverlayStatus(`YOLO overlays generating… ${Math.round(avgProgress * 100)}%`);
             };
-
-            const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
 
             const startJob = async (side: "reference" | "practice", color: string) => {
               const file = await getSessionVideo(sessionId, side);
@@ -280,61 +647,23 @@ export function EbsViewer(props: EbsViewerProps) {
               form.append("session_id", sessionId);
               form.append("side", side);
               form.append("backend", segProvider);
-
-              const res = await fetch(`${baseUrl}/api/overlay/yolo/start`, { method: "POST", body: form });
-              if (!res.ok) {
-                const txt = await res.text().catch(() => "");
-                throw new Error(`YOLO overlay start error (${res.status}): ${txt || res.statusText}`);
-              }
-              const json = (await res.json()) as { job_id: string };
-              if (!json?.job_id) throw new Error("Missing job_id from YOLO overlay start");
-              return json.job_id;
+              return startBackgroundJob("yolo", form);
             };
 
-            const waitJob = async (jobId: string, side: "reference" | "practice") => {
-              // Poll until done.
-              // eslint-disable-next-line no-constant-condition
-              while (true) {
-                const stRes = await fetch(`${baseUrl}/api/overlay/yolo/status?job_id=${encodeURIComponent(jobId)}`);
-                if (!stRes.ok) {
-                  const txt = await stRes.text().catch(() => "");
-                  throw new Error(`YOLO overlay status error (${stRes.status}): ${txt || stRes.statusText}`);
-                }
-                const st = (await stRes.json()) as { status: string; progress?: number; error?: string };
-                const p = typeof st.progress === "number" ? st.progress : 0;
-                if (side === "reference") refProgress = p;
-                else userProgress = p;
-                updateStatus();
-
-                if (st.status === "done") {
-                  const outRes = await fetch(
-                    `${baseUrl}/api/overlay/yolo/result?job_id=${encodeURIComponent(jobId)}`
-                  );
-                  if (!outRes.ok) {
-                    const txt = await outRes.text().catch(() => "");
-                    throw new Error(
-                      `YOLO overlay result error (${outRes.status}): ${txt || outRes.statusText}`
-                    );
-                  }
-                  const blob = await outRes.blob();
-                  return { blob, mime: outRes.headers.get("content-type") || "video/webm" };
-                }
-                if (st.status === "error") {
-                  throw new Error(st.error || "YOLO overlay job failed");
-                }
-                await sleep(500);
-              }
-            };
-
-            updateStatus();
-            const [refJobId, userJobId] = await Promise.all([
+            const [referenceJobId, practiceJobId] = await Promise.all([
               startJob("reference", "#38bdf8"),
               startJob("practice", "#22c55e"),
             ]);
 
-            const [ref, user] = await Promise.all([
-              waitJob(refJobId, "reference"),
-              waitJob(userJobId, "practice"),
+            const [referenceResult, practiceResult] = await Promise.all([
+              waitForBackgroundJob("yolo", referenceJobId, (progress) => {
+                referenceProgress = progress;
+                updateStatus();
+              }),
+              waitForBackgroundJob("yolo", practiceJobId, (progress) => {
+                practiceProgress = progress;
+                updateStatus();
+              }),
             ]);
 
             refArtifact = {
@@ -342,12 +671,11 @@ export function EbsViewer(props: EbsViewerProps) {
               type: "yolo",
               side: "reference",
               fps: OVERLAY_FPS,
-              width: refVideo.current?.videoWidth || 640,
-              height: refVideo.current?.videoHeight || 480,
+              ...getVideoSize("reference"),
               frameCount: 0,
               createdAt: new Date().toISOString(),
-              video: ref.blob,
-              videoMime: ref.mime,
+              video: referenceResult.blob,
+              videoMime: referenceResult.mime,
               meta: { generator: "python", provider: segProvider },
             };
             userArtifact = {
@@ -355,16 +683,14 @@ export function EbsViewer(props: EbsViewerProps) {
               type: "yolo",
               side: "practice",
               fps: OVERLAY_FPS,
-              width: userVideo.current?.videoWidth || 640,
-              height: userVideo.current?.videoHeight || 480,
+              ...getVideoSize("practice"),
               frameCount: 0,
               createdAt: new Date().toISOString(),
-              video: user.blob,
-              videoMime: user.mime,
+              video: practiceResult.blob,
+              videoMime: practiceResult.mime,
               meta: { generator: "python", provider: segProvider },
             };
           } else {
-            // Browser fallback (slow).
             const refFrames = await generateYoloOverlayFrames({
               videoUrl: activeReferenceVideoUrl,
               color: "#38bdf8",
@@ -387,8 +713,7 @@ export function EbsViewer(props: EbsViewerProps) {
               type: "yolo",
               side: "reference",
               fps: OVERLAY_FPS,
-              width: refVideo.current?.videoWidth || 640,
-              height: refVideo.current?.videoHeight || 480,
+              ...getVideoSize("reference"),
               frameCount: refFrames.length,
               createdAt: new Date().toISOString(),
               frames: refFrames,
@@ -399,8 +724,7 @@ export function EbsViewer(props: EbsViewerProps) {
               type: "yolo",
               side: "practice",
               fps: OVERLAY_FPS,
-              width: userVideo.current?.videoWidth || 640,
-              height: userVideo.current?.videoHeight || 480,
+              ...getVideoSize("practice"),
               frameCount: userFrames.length,
               createdAt: new Date().toISOString(),
               frames: userFrames,
@@ -410,11 +734,23 @@ export function EbsViewer(props: EbsViewerProps) {
 
           await Promise.all([
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: segProvider }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo",
+                side: "reference",
+                fps: OVERLAY_FPS,
+                variant: yoloVariant,
+              }),
               refArtifact,
             ),
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: segProvider }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo",
+                side: "practice",
+                fps: OVERLAY_FPS,
+                variant: yoloVariant,
+              }),
               userArtifact,
             ),
           ]);
@@ -424,9 +760,6 @@ export function EbsViewer(props: EbsViewerProps) {
           setOverlayStatus("YOLO overlays ready.");
         } else if (which === "yolo-pose") {
           setOverlayStatus("Generating YOLO Pose overlays…");
-          const processorUrl =
-            (process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL as string | undefined) ?? "http://127.0.0.1:8787/api/process";
-          const baseUrl = processorUrl.replace(/\/api\/process\s*$/, "");
           const startedAt = Date.now();
           let refProgress = 0;
           let userProgress = 0;
@@ -437,8 +770,6 @@ export function EbsViewer(props: EbsViewerProps) {
             const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
             setOverlayStatus(`YOLO Pose overlays generating… ${left}% left (${s}s elapsed)`);
           };
-
-          const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
 
           const startPoseJob = async (
             side: "reference" | "practice",
@@ -456,12 +787,15 @@ export function EbsViewer(props: EbsViewerProps) {
             form.append("session_id", sessionId);
             form.append("side", side);
 
-            const res = await fetch(`${baseUrl}/api/overlay/yolo-pose/start`, { method: "POST", body: form });
+            const res = await fetch(`${baseUrl}/api/overlay/yolo-pose/start`, {
+              method: "POST",
+              body: form,
+            });
             if (!res.ok) {
               const txt = await res.text().catch(() => "");
               throw new Error(`YOLO Pose start error (${res.status}): ${txt || res.statusText}`);
             }
-            const json = (await res.json()) as { job_id: string };
+            const json = (await res.json()) as { job_id?: string };
             if (!json?.job_id) throw new Error("Missing job_id from YOLO Pose start");
             return json.job_id;
           };
@@ -469,7 +803,7 @@ export function EbsViewer(props: EbsViewerProps) {
           const waitPoseJob = async (jobId: string, side: "reference" | "practice") => {
             while (true) {
               const stRes = await fetch(
-                `${baseUrl}/api/overlay/yolo-pose/status?job_id=${encodeURIComponent(jobId)}`
+                `${baseUrl}/api/overlay/yolo-pose/status?job_id=${encodeURIComponent(jobId)}`,
               );
               if (!stRes.ok) {
                 const txt = await stRes.text().catch(() => "");
@@ -484,10 +818,10 @@ export function EbsViewer(props: EbsViewerProps) {
               if (st.status === "done") {
                 const [armsRes, legsRes] = await Promise.all([
                   fetch(
-                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=arms`
+                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=arms`,
                   ),
                   fetch(
-                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=legs`
+                    `${baseUrl}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=legs`,
                   ),
                 ]);
                 if (!armsRes.ok || !legsRes.ok) {
@@ -496,7 +830,7 @@ export function EbsViewer(props: EbsViewerProps) {
                     legsRes.text().catch(() => ""),
                   ]);
                   throw new Error(
-                    `YOLO Pose result error (${armsRes.status}/${legsRes.status}): ${armsTxt || legsTxt || "fetch failed"}`
+                    `YOLO Pose result error (${armsRes.status}/${legsRes.status}): ${armsTxt || legsTxt || "fetch failed"}`,
                   );
                 }
                 const [armsBlob, legsBlob] = await Promise.all([armsRes.blob(), legsRes.blob()]);
@@ -528,8 +862,7 @@ export function EbsViewer(props: EbsViewerProps) {
             type: "yolo-pose-arms",
             side: "reference",
             fps: OVERLAY_FPS,
-            width: refVideo.current?.videoWidth || 640,
-            height: refVideo.current?.videoHeight || 480,
+            ...getVideoSize("reference"),
             frameCount: 0,
             createdAt: new Date().toISOString(),
             video: ref.arms.blob,
@@ -541,8 +874,7 @@ export function EbsViewer(props: EbsViewerProps) {
             type: "yolo-pose-legs",
             side: "reference",
             fps: OVERLAY_FPS,
-            width: refVideo.current?.videoWidth || 640,
-            height: refVideo.current?.videoHeight || 480,
+            ...getVideoSize("reference"),
             frameCount: 0,
             createdAt: new Date().toISOString(),
             video: ref.legs.blob,
@@ -554,8 +886,7 @@ export function EbsViewer(props: EbsViewerProps) {
             type: "yolo-pose-arms",
             side: "practice",
             fps: OVERLAY_FPS,
-            width: userVideo.current?.videoWidth || 640,
-            height: userVideo.current?.videoHeight || 480,
+            ...getVideoSize("practice"),
             frameCount: 0,
             createdAt: new Date().toISOString(),
             video: user.arms.blob,
@@ -567,8 +898,7 @@ export function EbsViewer(props: EbsViewerProps) {
             type: "yolo-pose-legs",
             side: "practice",
             fps: OVERLAY_FPS,
-            width: userVideo.current?.videoWidth || 640,
-            height: userVideo.current?.videoHeight || 480,
+            ...getVideoSize("practice"),
             frameCount: 0,
             createdAt: new Date().toISOString(),
             video: user.legs.blob,
@@ -578,19 +908,43 @@ export function EbsViewer(props: EbsViewerProps) {
 
           await Promise.all([
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo-pose-arms",
+                side: "reference",
+                fps: OVERLAY_FPS,
+                variant: "python",
+              }),
               refArmsArtifact,
             ),
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo-pose-legs",
+                side: "reference",
+                fps: OVERLAY_FPS,
+                variant: "python",
+              }),
               refLegsArtifact,
             ),
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo-pose-arms",
+                side: "practice",
+                fps: OVERLAY_FPS,
+                variant: "python",
+              }),
               userArmsArtifact,
             ),
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" }),
+              buildOverlayKey({
+                sessionId,
+                type: "yolo-pose-legs",
+                side: "practice",
+                fps: OVERLAY_FPS,
+                variant: "python",
+              }),
               userLegsArtifact,
             ),
           ]);
@@ -602,27 +956,237 @@ export function EbsViewer(props: EbsViewerProps) {
           setOverlayStatus("YOLO Pose overlays ready.");
         } else if (which === "bodypix") {
           setOverlayStatus("Generating BodyPix overlays…");
+          let refArtifact: OverlayArtifact;
+          let userArtifact: OverlayArtifact;
 
-          if (segGenerator === "python") {
-            // Python backend is currently pose-derived approximation, not true BodyPix part segmentation.
-            // For demo-style part coloring, fall back to browser BodyPix generator.
-            setOverlayStatus("BodyPix demo-style part segmentation runs in browser mode. Generating locally…");
+          const usedSegmentPipeline = await runSegmentedOverlayPipeline({
+            label: "BodyPix",
+            type: "bodypix",
+            variant: bodyPixVariant,
+            existingReference: refBodyPixArtifact,
+            existingPractice: userBodyPixArtifact,
+            setReferenceArtifact: setRefBodyPixArtifact,
+            setPracticeArtifact: setUserBodyPixArtifact,
+            referenceMeta: { generator: segGenerator },
+            practiceMeta: { generator: segGenerator },
+            buildReferenceSegment: async (plan, ctx) => {
+              if (segGenerator === "python") {
+                const file = await getSessionVideo(sessionId, "reference");
+                if (!file) throw new Error("Missing reference video for this session");
+
+                const form = new FormData();
+                form.append("video", file, file.name);
+                form.append("arms_color", "#38bdf8");
+                form.append("legs_color", "#6366f1");
+                form.append("torso_color", "#22c55e");
+                form.append("head_color", "#f59e0b");
+                form.append("fps", String(OVERLAY_FPS));
+                form.append("session_id", sessionId);
+                form.append("side", "reference");
+                form.append("start_sec", String(plan.reference.startSec));
+                form.append("end_sec", String(plan.reference.endSec));
+
+                const jobId = await startBackgroundJob("bodypix", form);
+                const result = await waitForBackgroundJob("bodypix", jobId, ctx.reportProgress);
+                const size = getVideoSize("reference");
+                return {
+                  index: plan.index,
+                  startSec: plan.reference.startSec,
+                  endSec: plan.reference.endSec,
+                  fps: OVERLAY_FPS,
+                  width: size.width,
+                  height: size.height,
+                  frameCount: Math.max(
+                    1,
+                    Math.ceil((plan.reference.endSec - plan.reference.startSec) * OVERLAY_FPS),
+                  ),
+                  createdAt: new Date().toISOString(),
+                  video: result.blob,
+                  videoMime: result.mime,
+                  meta: { generator: "python", segmentIndex: plan.index },
+                };
+              }
+
+              const result = await generateBodyPixOverlayFrames({
+                videoUrl: activeReferenceVideoUrl,
+                fps: OVERLAY_FPS,
+                opacity: 0.68,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              return {
+                index: plan.index,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                fps: result.fps,
+                width: result.width,
+                height: result.height,
+                frameCount: result.frames.length,
+                createdAt: new Date().toISOString(),
+                frames: result.frames,
+                meta: { generator: "browser", segmentIndex: plan.index },
+              };
+            },
+            buildPracticeSegment: async (plan, ctx) => {
+              if (segGenerator === "python") {
+                const file = await getSessionVideo(sessionId, "practice");
+                if (!file) throw new Error("Missing practice video for this session");
+
+                const form = new FormData();
+                form.append("video", file, file.name);
+                form.append("arms_color", "#22c55e");
+                form.append("legs_color", "#f59e0b");
+                form.append("torso_color", "#38bdf8");
+                form.append("head_color", "#f97316");
+                form.append("fps", String(OVERLAY_FPS));
+                form.append("session_id", sessionId);
+                form.append("side", "practice");
+                form.append("start_sec", String(plan.practice.startSec));
+                form.append("end_sec", String(plan.practice.endSec));
+
+                const jobId = await startBackgroundJob("bodypix", form);
+                const result = await waitForBackgroundJob("bodypix", jobId, ctx.reportProgress);
+                const size = getVideoSize("practice");
+                return {
+                  index: plan.index,
+                  startSec: plan.practice.startSec,
+                  endSec: plan.practice.endSec,
+                  fps: OVERLAY_FPS,
+                  width: size.width,
+                  height: size.height,
+                  frameCount: Math.max(
+                    1,
+                    Math.ceil((plan.practice.endSec - plan.practice.startSec) * OVERLAY_FPS),
+                  ),
+                  createdAt: new Date().toISOString(),
+                  video: result.blob,
+                  videoMime: result.mime,
+                  meta: { generator: "python", segmentIndex: plan.index },
+                };
+              }
+
+              const result = await generateBodyPixOverlayFrames({
+                videoUrl: activeUserVideoUrl,
+                fps: OVERLAY_FPS,
+                opacity: 0.68,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              return {
+                index: plan.index,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                fps: result.fps,
+                width: result.width,
+                height: result.height,
+                frameCount: result.frames.length,
+                createdAt: new Date().toISOString(),
+                frames: result.frames,
+                meta: { generator: "browser", segmentIndex: plan.index },
+              };
+            },
+          });
+
+          if (usedSegmentPipeline) {
+            return;
           }
 
-          const ref = await generateBodyPixOverlayFrames({
-            videoUrl: activeReferenceVideoUrl,
-            fps: OVERLAY_FPS,
-            opacity: 0.68,
-            onProgress: (c, t) => setOverlayStatus(`BodyPix (reference) ${c}/${t}`),
-          });
-          const user = await generateBodyPixOverlayFrames({
-            videoUrl: activeUserVideoUrl,
-            fps: OVERLAY_FPS,
-            opacity: 0.68,
-            onProgress: (c, t) => setOverlayStatus(`BodyPix (user) ${c}/${t}`),
-          });
+          if (segGenerator === "python") {
+            let referenceProgress = 0;
+            let practiceProgress = 0;
+            const updateStatus = () => {
+              const avgProgress = (referenceProgress + practiceProgress) / 2;
+              setOverlayStatus(`BodyPix overlays generating… ${Math.round(avgProgress * 100)}%`);
+            };
 
-            const refArtifact: OverlayArtifact = {
+            const startJob = async (
+              side: "reference" | "practice",
+              colors: { arms: string; legs: string; torso: string; head: string },
+            ) => {
+              const file = await getSessionVideo(sessionId, side);
+              if (!file) throw new Error(`Missing ${side} video for this session`);
+
+              const form = new FormData();
+              form.append("video", file, file.name);
+              form.append("arms_color", colors.arms);
+              form.append("legs_color", colors.legs);
+              form.append("torso_color", colors.torso);
+              form.append("head_color", colors.head);
+              form.append("fps", String(OVERLAY_FPS));
+              form.append("session_id", sessionId);
+              form.append("side", side);
+              return startBackgroundJob("bodypix", form);
+            };
+
+            const [referenceJobId, practiceJobId] = await Promise.all([
+              startJob("reference", {
+                arms: "#38bdf8",
+                legs: "#6366f1",
+                torso: "#22c55e",
+                head: "#f59e0b",
+              }),
+              startJob("practice", {
+                arms: "#22c55e",
+                legs: "#f59e0b",
+                torso: "#38bdf8",
+                head: "#f97316",
+              }),
+            ]);
+
+            const [referenceResult, practiceResult] = await Promise.all([
+              waitForBackgroundJob("bodypix", referenceJobId, (progress) => {
+                referenceProgress = progress;
+                updateStatus();
+              }),
+              waitForBackgroundJob("bodypix", practiceJobId, (progress) => {
+                practiceProgress = progress;
+                updateStatus();
+              }),
+            ]);
+
+            refArtifact = {
+              version: 1,
+              type: "bodypix",
+              side: "reference",
+              fps: OVERLAY_FPS,
+              ...getVideoSize("reference"),
+              frameCount: 0,
+              createdAt: new Date().toISOString(),
+              video: referenceResult.blob,
+              videoMime: referenceResult.mime,
+              meta: { generator: "python" },
+            };
+            userArtifact = {
+              version: 1,
+              type: "bodypix",
+              side: "practice",
+              fps: OVERLAY_FPS,
+              ...getVideoSize("practice"),
+              frameCount: 0,
+              createdAt: new Date().toISOString(),
+              video: practiceResult.blob,
+              videoMime: practiceResult.mime,
+              meta: { generator: "python" },
+            };
+          } else {
+            const ref = await generateBodyPixOverlayFrames({
+              videoUrl: activeReferenceVideoUrl,
+              fps: OVERLAY_FPS,
+              opacity: 0.68,
+              onProgress: (c, t) => setOverlayStatus(`BodyPix (reference) ${c}/${t}`),
+            });
+            const user = await generateBodyPixOverlayFrames({
+              videoUrl: activeUserVideoUrl,
+              fps: OVERLAY_FPS,
+              opacity: 0.68,
+              onProgress: (c, t) => setOverlayStatus(`BodyPix (user) ${c}/${t}`),
+            });
+
+            refArtifact = {
               version: 1,
               type: "bodypix",
               side: "reference",
@@ -634,7 +1198,7 @@ export function EbsViewer(props: EbsViewerProps) {
               frames: ref.frames,
               meta: { generator: "browser" },
             };
-            const userArtifact: OverlayArtifact = {
+            userArtifact = {
               version: 1,
               type: "bodypix",
               side: "practice",
@@ -646,17 +1210,30 @@ export function EbsViewer(props: EbsViewerProps) {
               frames: user.frames,
               meta: { generator: "browser" },
             };
+          }
 
-            await Promise.all([
-              storeSessionOverlay(
-                buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: "bodypix24" }),
-                refArtifact,
-              ),
-              storeSessionOverlay(
-                buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: "bodypix24" }),
-                userArtifact,
-              ),
-            ]);
+          await Promise.all([
+            storeSessionOverlay(
+              buildOverlayKey({
+                sessionId,
+                type: "bodypix",
+                side: "reference",
+                fps: OVERLAY_FPS,
+                variant: bodyPixVariant,
+              }),
+              refArtifact,
+            ),
+            storeSessionOverlay(
+              buildOverlayKey({
+                sessionId,
+                type: "bodypix",
+                side: "practice",
+                fps: OVERLAY_FPS,
+                variant: bodyPixVariant,
+              }),
+              userArtifact,
+            ),
+          ]);
 
           setRefBodyPixArtifact(refArtifact);
           setUserBodyPixArtifact(userArtifact);
@@ -664,7 +1241,69 @@ export function EbsViewer(props: EbsViewerProps) {
         } else if (which === "movenet") {
           setOverlayStatus("Generating MoveNet overlays…");
           const variant = overlayMethod;
-          // Generate sequentially to avoid contention and keep UI progress readable.
+
+          const usedSegmentPipeline = await runSegmentedOverlayPipeline({
+            label: "MoveNet",
+            type: "movenet",
+            variant,
+            existingReference: refPoseArtifact,
+            existingPractice: userPoseArtifact,
+            setReferenceArtifact: setRefPoseArtifact,
+            setPracticeArtifact: setUserPoseArtifact,
+            referenceMeta: { variant },
+            practiceMeta: { variant },
+            buildReferenceSegment: async (plan, ctx) => {
+              const result = await generateMoveNetOverlayFrames({
+                videoUrl: activeReferenceVideoUrl,
+                color: "#2563eb",
+                fps: OVERLAY_FPS,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              return {
+                index: plan.index,
+                startSec: plan.reference.startSec,
+                endSec: plan.reference.endSec,
+                fps: result.fps,
+                width: result.width,
+                height: result.height,
+                frameCount: result.frames.length,
+                createdAt: new Date().toISOString(),
+                frames: result.frames,
+                meta: { variant, segmentIndex: plan.index },
+              };
+            },
+            buildPracticeSegment: async (plan, ctx) => {
+              const result = await generateMoveNetOverlayFrames({
+                videoUrl: activeUserVideoUrl,
+                color: "#10b981",
+                fps: OVERLAY_FPS,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                onProgress: (completed, total) =>
+                  ctx.reportProgress(total > 0 ? completed / total : 0),
+              });
+              return {
+                index: plan.index,
+                startSec: plan.practice.startSec,
+                endSec: plan.practice.endSec,
+                fps: result.fps,
+                width: result.width,
+                height: result.height,
+                frameCount: result.frames.length,
+                createdAt: new Date().toISOString(),
+                frames: result.frames,
+                meta: { variant, segmentIndex: plan.index },
+              };
+            },
+          });
+
+          if (usedSegmentPipeline) {
+            return;
+          }
+
           const ref = await generateMoveNetOverlayFrames({
             videoUrl: activeReferenceVideoUrl,
             color: "#2563eb",
@@ -755,11 +1394,23 @@ export function EbsViewer(props: EbsViewerProps) {
 
           await Promise.all([
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "fastsam", side: "reference", fps: OVERLAY_FPS, variant: "wasm" }),
+              buildOverlayKey({
+                sessionId,
+                type: "fastsam",
+                side: "reference",
+                fps: OVERLAY_FPS,
+                variant: "wasm",
+              }),
               refArtifact,
             ),
             storeSessionOverlay(
-              buildOverlayKey({ sessionId, type: "fastsam", side: "practice", fps: OVERLAY_FPS, variant: "wasm" }),
+              buildOverlayKey({
+                sessionId,
+                type: "fastsam",
+                side: "practice",
+                fps: OVERLAY_FPS,
+                variant: "wasm",
+              }),
               userArtifact,
             ),
           ]);
@@ -775,7 +1426,26 @@ export function EbsViewer(props: EbsViewerProps) {
         setOverlayBusy(false);
       }
     },
-    [activeReferenceVideoUrl, activeUserVideoUrl, overlayBusy, overlayMethod, segProvider, sessionId, refVideo, userVideo],
+    [
+      activeReferenceVideoUrl,
+      activeUserVideoUrl,
+      bodyPixVariant,
+      overlayBusy,
+      overlayMethod,
+      overlaySegmentPlans,
+      refBodyPixArtifact,
+      refPoseArtifact,
+      refVideo,
+      refYoloArtifact,
+      segGenerator,
+      segProvider,
+      sessionId,
+      userBodyPixArtifact,
+      userPoseArtifact,
+      userVideo,
+      userYoloArtifact,
+      yoloVariant,
+    ],
   );
 
   useEffect(() => {
@@ -1195,17 +1865,7 @@ export function EbsViewer(props: EbsViewerProps) {
                 <video ref={refVideo} src={activeReferenceVideoUrl ?? undefined} playsInline />
                 {sessionMode && showYolo ? (
                   overlayMode === "precomputed" ? (
-                    refYoloArtifact ? (
-                      refYoloArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={refVideo}
-                          overlayBlob={refYoloArtifact.video}
-                          mimeType={refYoloArtifact.videoMime}
-                        />
-                      ) : refYoloArtifact.frames ? (
-                        <PrecomputedFrameOverlay videoRef={refVideo} frames={refYoloArtifact.frames ?? []} fps={refYoloArtifact.fps} />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={refVideo} artifact={refYoloArtifact} />
                   ) : (
                     <SegmentOverlay videoRef={refVideo} color="#38bdf8" />
                   )
@@ -1213,64 +1873,26 @@ export function EbsViewer(props: EbsViewerProps) {
                 {sessionMode && showYoloPose ? (
                   overlayMode === "precomputed" ? (
                     <>
-                      {refYoloPoseArmsArtifact?.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={refVideo}
-                          overlayBlob={refYoloPoseArmsArtifact.video}
-                          mimeType={refYoloPoseArmsArtifact.videoMime}
-                        />
-                      ) : null}
-                      {refYoloPoseLegsArtifact?.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={refVideo}
-                          overlayBlob={refYoloPoseLegsArtifact.video}
-                          mimeType={refYoloPoseLegsArtifact.videoMime}
-                        />
-                      ) : null}
+                      <ProgressiveOverlay videoRef={refVideo} artifact={refYoloPoseArmsArtifact} />
+                      <ProgressiveOverlay videoRef={refVideo} artifact={refYoloPoseLegsArtifact} />
                     </>
                   ) : null
                 ) : null}
                 {sessionMode && showBodyPix ? (
                   overlayMode === "precomputed" ? (
-                    refBodyPixArtifact ? (
-                      refBodyPixArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={refVideo}
-                          overlayBlob={refBodyPixArtifact.video}
-                          mimeType={refBodyPixArtifact.videoMime}
-                        />
-                      ) : refBodyPixArtifact.frames ? (
-                        <PrecomputedFrameOverlay
-                          videoRef={refVideo}
-                          frames={refBodyPixArtifact.frames ?? []}
-                          fps={refBodyPixArtifact.fps}
-                        />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={refVideo} artifact={refBodyPixArtifact} />
                   ) : (
                     <BodyPixOverlay videoRef={refVideo} opacity={0.68} />
                   )
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (
-                    refFastSamArtifact ? (
-                      <PrecomputedFrameOverlay
-                        videoRef={refVideo}
-                        frames={refFastSamArtifact.frames ?? []}
-                        fps={refFastSamArtifact.fps}
-                      />
-                    ) : null
+                    <ProgressiveOverlay videoRef={refVideo} artifact={refFastSamArtifact} />
                   ) : null
                 ) : null}
                 {sessionMode && showMoveNet ? (
                   overlayMode === "precomputed" ? (
-                    refPoseArtifact ? (
-                      <PrecomputedFrameOverlay
-                        videoRef={refVideo}
-                        frames={refPoseArtifact.frames ?? []}
-                        fps={refPoseArtifact.fps}
-                      />
-                    ) : null
+                    <ProgressiveOverlay videoRef={refVideo} artifact={refPoseArtifact} />
                   ) : (
                     <PoseOverlay videoRef={refVideo} color="#2563eb" method={overlayMethod} />
                   )
@@ -1294,17 +1916,7 @@ export function EbsViewer(props: EbsViewerProps) {
                 <video ref={userVideo} src={activeUserVideoUrl ?? undefined} playsInline />
                 {sessionMode && showYolo ? (
                   overlayMode === "precomputed" ? (
-                    userYoloArtifact ? (
-                      userYoloArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={userVideo}
-                          overlayBlob={userYoloArtifact.video}
-                          mimeType={userYoloArtifact.videoMime}
-                        />
-                      ) : userYoloArtifact.frames ? (
-                        <PrecomputedFrameOverlay videoRef={userVideo} frames={userYoloArtifact.frames ?? []} fps={userYoloArtifact.fps} />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={userVideo} artifact={userYoloArtifact} />
                   ) : (
                     <SegmentOverlay videoRef={userVideo} color="#22c55e" />
                   )
@@ -1312,64 +1924,26 @@ export function EbsViewer(props: EbsViewerProps) {
                 {sessionMode && showYoloPose ? (
                   overlayMode === "precomputed" ? (
                     <>
-                      {userYoloPoseArmsArtifact?.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={userVideo}
-                          overlayBlob={userYoloPoseArmsArtifact.video}
-                          mimeType={userYoloPoseArmsArtifact.videoMime}
-                        />
-                      ) : null}
-                      {userYoloPoseLegsArtifact?.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={userVideo}
-                          overlayBlob={userYoloPoseLegsArtifact.video}
-                          mimeType={userYoloPoseLegsArtifact.videoMime}
-                        />
-                      ) : null}
+                      <ProgressiveOverlay videoRef={userVideo} artifact={userYoloPoseArmsArtifact} />
+                      <ProgressiveOverlay videoRef={userVideo} artifact={userYoloPoseLegsArtifact} />
                     </>
                   ) : null
                 ) : null}
                 {sessionMode && showBodyPix ? (
                   overlayMode === "precomputed" ? (
-                    userBodyPixArtifact ? (
-                      userBodyPixArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={userVideo}
-                          overlayBlob={userBodyPixArtifact.video}
-                          mimeType={userBodyPixArtifact.videoMime}
-                        />
-                      ) : userBodyPixArtifact.frames ? (
-                        <PrecomputedFrameOverlay
-                          videoRef={userVideo}
-                          frames={userBodyPixArtifact.frames ?? []}
-                          fps={userBodyPixArtifact.fps}
-                        />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={userVideo} artifact={userBodyPixArtifact} />
                   ) : (
                     <BodyPixOverlay videoRef={userVideo} opacity={0.68} />
                   )
                 ) : null}
                 {sessionMode && showFastSam ? (
                   overlayMode === "precomputed" ? (
-                    userFastSamArtifact ? (
-                      <PrecomputedFrameOverlay
-                        videoRef={userVideo}
-                        frames={userFastSamArtifact.frames ?? []}
-                        fps={userFastSamArtifact.fps}
-                      />
-                    ) : null
+                    <ProgressiveOverlay videoRef={userVideo} artifact={userFastSamArtifact} />
                   ) : null
                 ) : null}
                 {sessionMode && showMoveNet ? (
                   overlayMode === "precomputed" ? (
-                    userPoseArtifact ? (
-                      <PrecomputedFrameOverlay
-                        videoRef={userVideo}
-                        frames={userPoseArtifact.frames ?? []}
-                        fps={userPoseArtifact.fps}
-                      />
-                    ) : null
+                    <ProgressiveOverlay videoRef={userVideo} artifact={userPoseArtifact} />
                   ) : (
                     <PoseOverlay videoRef={userVideo} color="#10b981" method={overlayMethod} />
                   )
@@ -1718,4 +2292,3 @@ export function EbsViewer(props: EbsViewerProps) {
     </div>
   );
 }
-
