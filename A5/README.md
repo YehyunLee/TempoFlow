@@ -8,6 +8,9 @@ This project provides:
 
 - Python 3.8+
 - [FFmpeg](https://ffmpeg.org/download.html) (Required by `librosa` / `audioread` for processing audio files)
+- Optional: Gemini micro-timing move feedback requires one of:
+  - `GEMINI_API_KEY`, or
+  - `GOOGLE_API_KEY`
 
 ## Setup
 
