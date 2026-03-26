@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Enables `output: 'standalone'` for Docker / ECS (see web-app/Dockerfile).
+  output: 'standalone',
+
   turbopack: {
     resolveAlias: {
       // Prevent @mediapipe/pose from being bundled (we use tfjs runtime instead)
