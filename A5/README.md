@@ -53,6 +53,10 @@ The server will start on `http://localhost:8787`
 uvicorn src.main:app --host 127.0.0.1 --port 8787 --reload
 ```
 
+If you plan to use Gemini move-feedback endpoints, set one of these **in the same shell** before starting `uvicorn`:
+- `GEMINI_API_KEY`
+- `GOOGLE_API_KEY`
+
 ## Usage
 
 You can access the automatic interactive API documentation at:
@@ -81,10 +85,39 @@ You can access the automatic interactive API documentation at:
   - `POST /api/overlay/yolo-pose/start`, `GET /api/overlay/yolo-pose/status`, `GET /api/overlay/yolo-pose/result`
   - `POST /api/overlay/bodypix/start`, `GET /api/overlay/bodypix/status`, `GET /api/overlay/bodypix/result`
 
+### Gemini Move Feedback (Micro-timing)
+
+These endpoints provide Gemini-based “micro-timing move feedback” for one EBS segment.
+
+- `POST /api/move-feedback/start`
+  - Starts an async job and returns `{ "job_id": "..." }`
+- `POST /api/move-feedback`
+  - Synchronous variant (waits for Gemini and returns feedback JSON)
+- `GET /api/move-feedback/status?job_id=<id>`
+- `GET /api/move-feedback/result?job_id=<id>`
+
+POST fields (multipart):
+- `ref_video` (file), `user_video` (file)
+- `segment_index` (0-based int)
+- optional: `session_id` (reuse stored `/api/process` output) or `ebs_data_json` (full artifact JSON string)
+
 ## Testing
 
-To run the tests with coverage:
+To run the A5 tests with coverage:
 
 ```bash
 pytest --cov=src -s
+```
+
+### Running both A5 + web-app tests
+
+The repo contains two separate test suites:
+- **A5 (Python)**: `pytest`
+- **web-app (Next.js)**: `npm test` (and optionally `npm run coverage`)
+
+If you want a single “run everything” command locally, run these from repo root:
+
+```bash
+./A5/venv/bin/python -m pytest A5/tests -q
+cd web-app && npm test
 ```
