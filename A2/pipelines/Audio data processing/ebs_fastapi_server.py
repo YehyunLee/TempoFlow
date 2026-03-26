@@ -394,7 +394,32 @@ def _expected_frames(duration_sec: float, out_fps: int) -> int:
     return 1
 
 
-def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str, fps: int) -> None:
+def _resolve_segment_window(
+    duration_sec: float,
+    start_sec: float | None,
+    end_sec: float | None,
+) -> tuple[float, float]:
+    segment_start = max(0.0, float(start_sec or 0.0))
+
+    if end_sec is None:
+        segment_end = duration_sec if duration_sec > 0 else segment_start + 1.0
+    else:
+        segment_end = max(segment_start, float(end_sec))
+        if duration_sec > 0:
+            segment_end = min(segment_end, duration_sec)
+
+    return segment_start, segment_end
+
+
+def _yolo_overlay_job_worker(
+    job_id: str,
+    tmp_in: str,
+    tmp_out: str,
+    color: str,
+    fps: int,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
+) -> None:
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
@@ -430,7 +455,21 @@ def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str,
     except Exception:
         duration_sec = 0.0
 
-    expected = _expected_frames(duration_sec, out_fps_local)
+    segment_start_sec, segment_end_sec = _resolve_segment_window(duration_sec, start_sec, end_sec)
+    segment_duration_sec = segment_end_sec - segment_start_sec
+    if segment_duration_sec <= 0:
+        OVERLAY_JOBS[job_id]["status"] = "error"
+        OVERLAY_JOBS[job_id]["error"] = "Overlay segment duration must be greater than 0."
+        cap.release()
+        return
+
+    if segment_start_sec > 0:
+        try:
+            cap.set(cv2.CAP_PROP_POS_MSEC, segment_start_sec * 1000.0)
+        except Exception:
+            pass
+
+    expected = _expected_frames(segment_duration_sec, out_fps_local)
 
     OVERLAY_JOBS[job_id]["frames_expected"] = expected
     OVERLAY_JOBS[job_id]["frames_written"] = 0
@@ -458,12 +497,16 @@ def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str,
             break
 
         try:
-            t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+            abs_t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
         except Exception:
-            t = last_frame_time + out_dt_local
-        last_frame_time = t
+            abs_t = last_frame_time + out_dt_local
+        last_frame_time = abs_t
 
-        if t + (out_dt_local * 0.25) < next_out_time:
+        rel_t = max(0.0, abs_t - segment_start_sec)
+        if rel_t > segment_duration_sec + (out_dt_local * 0.25):
+            break
+
+        if rel_t + (out_dt_local * 0.25) < next_out_time:
             continue
 
         # Tune for dancer overlays: include thinner hand regions.
@@ -489,8 +532,8 @@ def _yolo_overlay_job_worker(job_id: str, tmp_in: str, tmp_out: str, color: str,
 
         slack = out_dt_local * 0.25
         dup_count = 1
-        if t + slack > next_out_time:
-            dup_count = int(math.floor((t + slack - next_out_time) / out_dt_local)) + 1
+        if rel_t + slack > next_out_time:
+            dup_count = int(math.floor((rel_t + slack - next_out_time) / out_dt_local)) + 1
             dup_count = max(1, dup_count)
 
         remaining = expected - written
@@ -531,6 +574,8 @@ async def overlay_yolo_start(
     session_id: str | None = Form(default=None),
     side: str | None = Form(default=None),
     backend: str = Form(default="wasm"),
+    start_sec: float | None = Form(default=None),
+    end_sec: float | None = Form(default=None),
 ):
     _ = backend
     sid = (session_id or "").strip() or "default"
@@ -549,12 +594,14 @@ async def overlay_yolo_start(
         "tmp_out": tmp_out,
         "session_id": sid,
         "side": side_val,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
         "error": None,
     }
 
     t = threading.Thread(
         target=_yolo_overlay_job_worker,
-        args=(job_id, tmp_in, tmp_out, color, fps),
+        args=(job_id, tmp_in, tmp_out, color, fps, start_sec, end_sec),
         daemon=True,
     )
     t.start()
@@ -1013,6 +1060,8 @@ def _bodypix_job_worker(
     torso_color: str,
     head_color: str,
     fps: int,
+    start_sec: float | None = None,
+    end_sec: float | None = None,
 ) -> None:
     try:
         import cv2  # type: ignore
@@ -1047,7 +1096,21 @@ def _bodypix_job_worker(
         duration_sec = float(meta.get("duration_sec") or 0.0)
     except Exception:
         duration_sec = 0.0
-    expected = _expected_frames(duration_sec, out_fps_local)
+    segment_start_sec, segment_end_sec = _resolve_segment_window(duration_sec, start_sec, end_sec)
+    segment_duration_sec = segment_end_sec - segment_start_sec
+    if segment_duration_sec <= 0:
+        BODYPix_JOBS[job_id]["status"] = "error"
+        BODYPix_JOBS[job_id]["error"] = "Body overlay segment duration must be greater than 0."
+        cap.release()
+        return
+
+    if segment_start_sec > 0:
+        try:
+            cap.set(cv2.CAP_PROP_POS_MSEC, segment_start_sec * 1000.0)
+        except Exception:
+            pass
+
+    expected = _expected_frames(segment_duration_sec, out_fps_local)
 
     BODYPix_JOBS[job_id]["frames_expected"] = expected
     BODYPix_JOBS[job_id]["frames_written"] = 0
@@ -1073,12 +1136,16 @@ def _bodypix_job_worker(
             break
 
         try:
-            t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
+            abs_t = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0.0) / 1000.0
         except Exception:
-            t = last_frame_time + out_dt_local
-        last_frame_time = t
+            abs_t = last_frame_time + out_dt_local
+        last_frame_time = abs_t
 
-        if t + (out_dt_local * 0.25) < next_out_time:
+        rel_t = max(0.0, abs_t - segment_start_sec)
+        if rel_t > segment_duration_sec + (out_dt_local * 0.25):
+            break
+
+        if rel_t + (out_dt_local * 0.25) < next_out_time:
             continue
 
         results = model.predict(frame_bgr, imgsz=768, conf=0.2, iou=0.5, verbose=False)
@@ -1115,8 +1182,8 @@ def _bodypix_job_worker(
         last_overlay = overlay
         slack = out_dt_local * 0.25
         dup_count = 1
-        if t + slack > next_out_time:
-            dup_count = int(math.floor((t + slack - next_out_time) / out_dt_local)) + 1
+        if rel_t + slack > next_out_time:
+            dup_count = int(math.floor((rel_t + slack - next_out_time) / out_dt_local)) + 1
             dup_count = max(1, dup_count)
         remaining = expected - written
         if remaining <= 0:
@@ -1157,6 +1224,8 @@ async def overlay_bodypix_start(
     fps: int = Form(default=12),
     session_id: str | None = Form(default=None),
     side: str | None = Form(default=None),
+    start_sec: float | None = Form(default=None),
+    end_sec: float | None = Form(default=None),
 ):
     sid = (session_id or "").strip() or "default"
     side_val = (side or "").strip() or "unknown"
@@ -1174,12 +1243,25 @@ async def overlay_bodypix_start(
         "out_path": out_path,
         "session_id": sid,
         "side": side_val,
+        "start_sec": start_sec,
+        "end_sec": end_sec,
         "error": None,
     }
 
     t = threading.Thread(
         target=_bodypix_job_worker,
-        args=(job_id, tmp_in, out_path, arms_color, legs_color, torso_color, head_color, fps),
+        args=(
+            job_id,
+            tmp_in,
+            out_path,
+            arms_color,
+            legs_color,
+            torso_color,
+            head_color,
+            fps,
+            start_sec,
+            end_sec,
+        ),
         daemon=True,
     )
     t.start()
@@ -1219,4 +1301,3 @@ async def overlay_bodypix_result(job_id: str, background_tasks: BackgroundTasks)
         background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
     BODYPix_JOBS.pop(job_id, None)
     return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_bodypix_overlay.webm")
-
