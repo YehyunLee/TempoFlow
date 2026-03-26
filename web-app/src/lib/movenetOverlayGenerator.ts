@@ -132,6 +132,8 @@ export async function generateMoveNetOverlayFrames(params: {
   videoUrl: string;
   color: string;
   fps?: number;
+  startSec?: number;
+  endSec?: number;
   onProgress?: (completed: number, total: number) => void;
 }): Promise<{ frames: string[]; fps: number; width: number; height: number }> {
   const { videoUrl, color, onProgress } = params;
@@ -151,6 +153,14 @@ export async function generateMoveNetOverlayFrames(params: {
     throw new Error("Video duration is unavailable for MoveNet overlay generation.");
   }
 
+  const segmentStartSec = Math.max(0, Math.min(duration, params.startSec ?? 0));
+  const rawSegmentEndSec = params.endSec ?? duration;
+  const segmentEndSec = Math.max(segmentStartSec, Math.min(duration, rawSegmentEndSec));
+  const segmentDurationSec = segmentEndSec - segmentStartSec;
+  if (segmentDurationSec <= 0) {
+    throw new Error("MoveNet overlay segment duration must be greater than 0.");
+  }
+
   const width = video.videoWidth || 640;
   const height = video.videoHeight || 480;
 
@@ -160,11 +170,11 @@ export async function generateMoveNetOverlayFrames(params: {
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Failed to create overlay canvas.");
 
-  const totalFrames = Math.max(1, Math.ceil(duration * fps));
+  const totalFrames = Math.max(1, Math.ceil(segmentDurationSec * fps));
   const frames: string[] = [];
 
   for (let index = 0; index < totalFrames; index += 1) {
-    const timeSec = Math.min(duration - 0.001, index / fps);
+    const timeSec = Math.min(segmentEndSec - 0.001, segmentStartSec + index / fps);
     await seekVideo(video, Math.max(0, timeSec));
 
     ctx.clearRect(0, 0, width, height);
@@ -181,4 +191,3 @@ export async function generateMoveNetOverlayFrames(params: {
 
   return { frames, fps, width, height };
 }
-
