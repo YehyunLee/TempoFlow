@@ -256,6 +256,8 @@ export async function generateYoloOverlayFrames(params: {
   fps?: number; // output fps (frame count)
   inferFps?: number; // how often to actually run the model
   provider?: YoloExecutionProvider;
+  startSec?: number;
+  endSec?: number;
   onProgress?: (completed: number, total: number) => void;
 }): Promise<Array<string | Blob>> {
   const { videoUrl, color, onProgress } = params;
@@ -277,6 +279,14 @@ export async function generateYoloOverlayFrames(params: {
     throw new Error('Video duration is unavailable for YOLO overlay generation.');
   }
 
+  const segmentStartSec = Math.max(0, Math.min(duration, params.startSec ?? 0));
+  const rawSegmentEndSec = params.endSec ?? duration;
+  const segmentEndSec = Math.max(segmentStartSec, Math.min(duration, rawSegmentEndSec));
+  const segmentDurationSec = segmentEndSec - segmentStartSec;
+  if (segmentDurationSec <= 0) {
+    throw new Error("YOLO overlay segment duration must be greater than 0.");
+  }
+
   const sourceCanvas = document.createElement('canvas');
   sourceCanvas.width = video.videoWidth || 640;
   sourceCanvas.height = video.videoHeight || 480;
@@ -291,7 +301,7 @@ export async function generateYoloOverlayFrames(params: {
   outputCtx.imageSmoothingEnabled = true;
   outputCtx.imageSmoothingQuality = "high";
 
-  const totalFrames = Math.max(1, Math.ceil(duration * fps));
+  const totalFrames = Math.max(1, Math.ceil(segmentDurationSec * fps));
   const frames: Array<string | Blob> = [];
 
   // Sequential decode: play forward and sample frames via RVFC (no seeking).
@@ -316,7 +326,10 @@ export async function generateYoloOverlayFrames(params: {
       const inputTensor = new ort.Tensor("float32", tensor, [1, 3, INPUT_SIZE, INPUT_SIZE]);
       const results = await session.run({ [inputName]: inputTensor });
 
-      const tensors = Object.values(results) as Array<{ data: unknown; dims?: number[] }>;
+      const tensors = Object.values(results) as unknown as Array<{
+        data: unknown;
+        dims?: readonly number[];
+      }>;
       const predsTensor = tensors.find((tt) => Array.isArray(tt.dims) && tt.dims.length === 3) as
         | { data: Float32Array; dims: number[] }
         | undefined;
@@ -389,7 +402,7 @@ export async function generateYoloOverlayFrames(params: {
     // Fallback: old seek-based path if RVFC unsupported.
     const inferEvery = Math.max(1, Math.round(fps / inferFps));
     for (let index = 0; index < totalFrames; index += 1) {
-      const timeSec = Math.min(duration - 0.001, index / fps);
+      const timeSec = Math.min(segmentEndSec - 0.001, segmentStartSec + index / fps);
       const seekPromise = waitForEvent(video, "seeked");
       video.currentTime = Math.max(0, timeSec);
       await seekPromise;
@@ -411,6 +424,10 @@ export async function generateYoloOverlayFrames(params: {
     const step = 1 / fps;
     const inferEvery = Math.max(1, Math.round(fps / inferFps));
     const nextIndex = frames.length;
+    if (t < segmentStartSec - 1e-3) {
+      video.requestVideoFrameCallback?.(onVideoFrame);
+      return;
+    }
     if (!inFlight && (lastSampleTime < 0 || t - lastSampleTime >= step - 1e-3)) {
       lastSampleTime = t;
       if (nextIndex % inferEvery === 0) {
@@ -421,7 +438,7 @@ export async function generateYoloOverlayFrames(params: {
       } else {
         pushOverlay(lastOverlay);
       }
-      if (frames.length >= totalFrames || t >= duration - 0.02) {
+      if (frames.length >= totalFrames || t >= segmentEndSec - 0.02) {
         cancelled = true;
         video.pause();
         return;
@@ -431,7 +448,7 @@ export async function generateYoloOverlayFrames(params: {
   };
 
   // Start decode
-  video.currentTime = 0;
+  video.currentTime = segmentStartSec;
   await waitForEvent(video, "seeked").catch(() => undefined);
   await video.play().catch(() => undefined);
   video.requestVideoFrameCallback(onVideoFrame);
@@ -441,6 +458,8 @@ export async function generateYoloOverlayFrames(params: {
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, 50));
   }
+  while (frames.length < totalFrames) {
+    pushOverlay(lastOverlay);
+  }
   return frames;
 }
-

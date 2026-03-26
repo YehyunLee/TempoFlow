@@ -16,24 +16,21 @@ export async function POST(request: Request) {
       );
     }
 
+    const region = process.env.AWS_REGION || 'us-east-1';
     const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
     const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+    const useStaticKeys = Boolean(accessKeyId && secretAccessKey);
 
-    if (!accessKeyId || !secretAccessKey) {
-      return NextResponse.json(
-        {
-          error: 'Missing AWS credentials for upload mode.',
-        },
-        { status: 500 },
-      );
-    }
-
-    const s3Client = new S3Client({ 
-      region: process.env.AWS_REGION || 'us-east-1',
-      credentials: {
-        accessKeyId,
-        secretAccessKey,
-      },
+    const s3Client = new S3Client({
+      region,
+      ...(useStaticKeys
+        ? {
+            credentials: {
+              accessKeyId: accessKeyId!,
+              secretAccessKey: secretAccessKey!,
+            },
+          }
+        : {}),
     });
     
     const bucketName = process.env.USER_VIDEO_BUCKET_NAME;

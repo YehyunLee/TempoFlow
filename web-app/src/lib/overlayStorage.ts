@@ -7,6 +7,21 @@ export type OverlayType =
   | "yolo-pose-legs";
 export type OverlaySide = "reference" | "practice";
 
+export type OverlaySegmentArtifact = {
+  index: number;
+  startSec: number;
+  endSec: number;
+  fps: number;
+  width: number;
+  height: number;
+  frameCount: number;
+  createdAt: string;
+  frames?: Array<string | Blob>;
+  video?: Blob;
+  videoMime?: string;
+  meta?: Record<string, unknown>;
+};
+
 export type OverlayArtifact = {
   version: 1;
   type: OverlayType;
@@ -19,9 +34,11 @@ export type OverlayArtifact = {
   // One of:
   // - frames: per-frame transparent images (legacy + browser precompute)
   // - video: a transparent overlay video (python precompute)
+  // - segments: progressively generated per-segment overlays
   frames?: Array<string | Blob>;
   video?: Blob;
   videoMime?: string;
+  segments?: OverlaySegmentArtifact[];
   meta?: Record<string, unknown>;
 };
 
@@ -85,4 +102,3 @@ export async function getSessionOverlay(key: string): Promise<OverlayArtifact | 
 export async function deleteSessionOverlay(key: string): Promise<void> {
   await withStore("readwrite", (store) => store.delete(key));
 }
-

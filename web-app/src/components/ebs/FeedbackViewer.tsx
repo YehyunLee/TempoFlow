@@ -5,8 +5,7 @@ import type { ReactNode } from "react";
 import { useEbsViewer } from "./useEbsViewer";
 import type { EbsData } from "./types";
 import { BodyPixOverlay } from "../BodyPixOverlay";
-import { PrecomputedFrameOverlay } from "../PrecomputedFrameOverlay";
-import { PrecomputedVideoOverlay } from "../PrecomputedVideoOverlay";
+import { ProgressiveOverlay } from "../ProgressiveOverlay";
 import { generateMoveNetOverlayFrames } from "../../lib/movenetOverlayGenerator";
 import { generateYoloOverlayFrames, type YoloExecutionProvider } from "../../lib/yoloOverlayGenerator";
 import { generateFastSamOverlayFrames } from "../../lib/fastSamOverlayGenerator";
@@ -112,20 +111,22 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [userBodyPixArtifact, setUserBodyPixArtifact] = useState<OverlayArtifact | null>(null);
   // Lower FPS dramatically reduces precompute time (model + WebP encode).
   const OVERLAY_FPS = 12;
+  const yoloVariant = `${segGenerator}-${segProvider}`;
+  const bodyPixVariant = "bodypix24-browser";
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
     const variant = overlayMethod;
     const [rp, ry, rpa, rpl, rbp, up, uy, upa, upl, ubp, rf, uf] = await Promise.all([
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "reference", fps: OVERLAY_FPS, variant })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "reference", fps: OVERLAY_FPS, variant: yoloVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "reference", fps: OVERLAY_FPS, variant: "python" })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: "bodypix24" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "reference", fps: OVERLAY_FPS, variant: bodyPixVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "movenet", side: "practice", fps: OVERLAY_FPS, variant })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: segProvider })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo", side: "practice", fps: OVERLAY_FPS, variant: yoloVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-arms", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "yolo-pose-legs", side: "practice", fps: OVERLAY_FPS, variant: "python" })),
-      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: "bodypix24" })),
+      getSessionOverlay(buildOverlayKey({ sessionId, type: "bodypix", side: "practice", fps: OVERLAY_FPS, variant: bodyPixVariant })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "reference", fps: OVERLAY_FPS, variant: "wasm" })),
       getSessionOverlay(buildOverlayKey({ sessionId, type: "fastsam", side: "practice", fps: OVERLAY_FPS, variant: "wasm" })),
     ]);
@@ -141,9 +142,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
     setUserBodyPixArtifact(ubp);
     setRefFastSamArtifact(rf);
     setUserFastSamArtifact(uf);
-  }, [overlayMethod, segProvider, sessionId]);
+  }, [bodyPixVariant, overlayMethod, sessionId, yoloVariant]);
   
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void loadCachedOverlays();
   }, [loadCachedOverlays]);
 
@@ -389,21 +391,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 <video ref={refVideo} src={activeReferenceVideoUrl ?? undefined} playsInline />
                 {sessionMode && showBodyPix ? (
                   overlayMode === "precomputed" ? (
-                    refBodyPixArtifact ? (
-                      refBodyPixArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={refVideo}
-                          overlayBlob={refBodyPixArtifact.video}
-                          mimeType={refBodyPixArtifact.videoMime}
-                        />
-                      ) : refBodyPixArtifact.frames ? (
-                        <PrecomputedFrameOverlay
-                          videoRef={refVideo}
-                          frames={refBodyPixArtifact.frames ?? []}
-                          fps={refBodyPixArtifact.fps}
-                        />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={refVideo} artifact={refBodyPixArtifact} />
                   ) : (
                     <BodyPixOverlay videoRef={refVideo} opacity={0.68} />
                   )
@@ -428,21 +416,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 <video ref={userVideo} src={activeUserVideoUrl ?? undefined} playsInline />
                 {sessionMode && showBodyPix ? (
                   overlayMode === "precomputed" ? (
-                    userBodyPixArtifact ? (
-                      userBodyPixArtifact.video ? (
-                        <PrecomputedVideoOverlay
-                          videoRef={userVideo}
-                          overlayBlob={userBodyPixArtifact.video}
-                          mimeType={userBodyPixArtifact.videoMime}
-                        />
-                      ) : userBodyPixArtifact.frames ? (
-                        <PrecomputedFrameOverlay
-                          videoRef={userVideo}
-                          frames={userBodyPixArtifact.frames ?? []}
-                          fps={userBodyPixArtifact.fps}
-                        />
-                      ) : null
-                    ) : null
+                    <ProgressiveOverlay videoRef={userVideo} artifact={userBodyPixArtifact} />
                   ) : (
                     <BodyPixOverlay videoRef={userVideo} opacity={0.68} />
                   )
@@ -817,4 +791,3 @@ export function FeedbackViewer(props: EbsViewerProps) {
     </div>
   );
 }
-

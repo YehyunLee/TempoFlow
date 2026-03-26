@@ -82,6 +82,8 @@ export async function generateBodyPixOverlayFrames(params: {
   videoUrl: string;
   fps?: number;
   opacity?: number;
+  startSec?: number;
+  endSec?: number;
   onProgress?: (completed: number, total: number) => void;
 }): Promise<{ frames: Array<string | Blob>; fps: number; width: number; height: number }> {
   const {
@@ -104,9 +106,17 @@ export async function generateBodyPixOverlayFrames(params: {
     throw new Error("Video duration is unavailable for BodyPix overlay generation.");
   }
 
+  const segmentStartSec = Math.max(0, Math.min(duration, params.startSec ?? 0));
+  const rawSegmentEndSec = params.endSec ?? duration;
+  const segmentEndSec = Math.max(segmentStartSec, Math.min(duration, rawSegmentEndSec));
+  const segmentDurationSec = segmentEndSec - segmentStartSec;
+  if (segmentDurationSec <= 0) {
+    throw new Error("BodyPix overlay segment duration must be greater than 0.");
+  }
+
   const width = video.videoWidth || 640;
   const height = video.videoHeight || 480;
-  const totalFrames = Math.max(1, Math.ceil(duration * fps));
+  const totalFrames = Math.max(1, Math.ceil(segmentDurationSec * fps));
 
   const outputCanvas = document.createElement("canvas");
   outputCanvas.width = width;
@@ -118,7 +128,7 @@ export async function generateBodyPixOverlayFrames(params: {
   const frames: Array<string | Blob> = [];
 
   for (let i = 0; i < totalFrames; i += 1) {
-    const t = Math.min(duration - 0.001, i / fps);
+    const t = Math.min(segmentEndSec - 0.001, segmentStartSec + i / fps);
     // eslint-disable-next-line no-await-in-loop
     await seekVideo(video, Math.max(0, t));
 
@@ -172,4 +182,3 @@ export async function generateBodyPixOverlayFrames(params: {
 
   return { frames, fps, width, height };
 }
-
