@@ -209,3 +209,221 @@ def test_run_yolo_overlay_job_missing_import(monkeypatch):
     assert oa.OVERLAY_JOBS[jid]["status"] == "error"
     assert "Missing overlay deps" in (oa.OVERLAY_JOBS[jid].get("error") or "")
     del oa.OVERLAY_JOBS[jid]
+
+
+def test_overlay_yolo_status_200(overlay_client):
+    jid = "yolo-status-ok"
+    oa.OVERLAY_JOBS[jid] = {
+        "status": "processing",
+        "progress": 0.33,
+        "frames_written": 10,
+        "frames_expected": 30,
+        "error": None,
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo/status?job_id={jid}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["job_id"] == jid
+        assert body["status"] == "processing"
+        assert body["progress"] == 0.33
+        assert body["frames_written"] == 10
+        assert body["frames_expected"] == 30
+        assert body["error"] is None
+    finally:
+        oa.OVERLAY_JOBS.pop(jid, None)
+
+
+def test_overlay_yolo_result_200_serves_file_and_pops_job(overlay_client, tmp_path):
+    out = tmp_path / "out.webm"
+    out.write_bytes(b"webm-bytes")
+    inp = tmp_path / "in.mp4"
+    inp.write_bytes(b"in")
+    jid = "yolo-result-ok"
+    oa.OVERLAY_JOBS[jid] = {
+        "status": "done",
+        "tmp_out": str(out),
+        "tmp_in": str(inp),
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo/result?job_id={jid}")
+        assert r.status_code == 200
+        assert "video/webm" in r.headers.get("content-type", "")
+        assert r.content == b"webm-bytes"
+        assert jid not in oa.OVERLAY_JOBS
+    finally:
+        oa.OVERLAY_JOBS.pop(jid, None)
+
+
+@patch("src.overlay_api.save_upload", return_value="/tmp/pose_in.mp4")
+def test_overlay_yolo_pose_start_returns_job_id(mock_save, overlay_client):
+    vid = ("v.mp4", io.BytesIO(b"fake"), "video/mp4")
+    r = overlay_client.post(
+        "/api/overlay/yolo-pose/start",
+        data={
+            "arms_color": "#ff0000",
+            "legs_color": "#00ff00",
+            "fps": 12,
+            "session_id": "sess",
+            "side": "ref",
+        },
+        files={"video": vid},
+    )
+    assert r.status_code == 200
+    assert "job_id" in r.json()
+
+
+def test_overlay_yolo_pose_status_200(overlay_client):
+    jid = "pose-status-ok"
+    oa.POSE_JOBS[jid] = {
+        "status": "processing",
+        "progress": 0.5,
+        "frames_written": 5,
+        "frames_expected": 10,
+        "error": None,
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo-pose/status?job_id={jid}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["job_id"] == jid
+        assert body["status"] == "processing"
+        assert body["progress"] == 0.5
+        assert body["frames_written"] == 5
+        assert body["frames_expected"] == 10
+    finally:
+        oa.POSE_JOBS.pop(jid, None)
+
+
+def test_overlay_yolo_pose_result_arms_200_keeps_job_until_both_layers(overlay_client, tmp_path):
+    arms = tmp_path / "arms.webm"
+    legs = tmp_path / "legs.webm"
+    arms.write_bytes(b"arms-data")
+    legs.write_bytes(b"legs-data")
+    inp = tmp_path / "in.mp4"
+    inp.write_bytes(b"x")
+    jid = "pose-result-arms"
+    oa.POSE_JOBS[jid] = {
+        "status": "done",
+        "arms_out": str(arms),
+        "legs_out": str(legs),
+        "tmp_in": str(inp),
+        "served_layers": set(),
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo-pose/result?job_id={jid}&layer=arms")
+        assert r.status_code == 200
+        assert r.content == b"arms-data"
+        assert jid in oa.POSE_JOBS
+        assert "arms" in oa.POSE_JOBS[jid]["served_layers"]
+    finally:
+        oa.POSE_JOBS.pop(jid, None)
+
+
+def test_overlay_yolo_pose_result_second_layer_pops_job(overlay_client, tmp_path):
+    arms = tmp_path / "a2.webm"
+    legs = tmp_path / "l2.webm"
+    arms.write_bytes(b"a")
+    legs.write_bytes(b"l")
+    inp = tmp_path / "in2.mp4"
+    inp.write_bytes(b"x")
+    jid = "pose-result-both"
+    oa.POSE_JOBS[jid] = {
+        "status": "done",
+        "arms_out": str(arms),
+        "legs_out": str(legs),
+        "tmp_in": str(inp),
+        "served_layers": {"arms"},
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo-pose/result?job_id={jid}&layer=legs")
+        assert r.status_code == 200
+        assert r.content == b"l"
+        assert jid not in oa.POSE_JOBS
+    finally:
+        oa.POSE_JOBS.pop(jid, None)
+
+
+def test_overlay_yolo_pose_result_served_layers_not_a_set(overlay_client, tmp_path):
+    """Covers branch that normalizes served_layers to a set (overlay_api ~648–650)."""
+    arms = tmp_path / "arms3.webm"
+    legs = tmp_path / "legs3.webm"
+    arms.write_bytes(b"a")
+    legs.write_bytes(b"l")
+    jid = "pose-bad-layer-type"
+    oa.POSE_JOBS[jid] = {
+        "status": "done",
+        "arms_out": str(arms),
+        "legs_out": str(legs),
+        "tmp_in": None,
+        "served_layers": [],
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo-pose/result?job_id={jid}&layer=arms")
+        assert r.status_code == 200
+        assert isinstance(oa.POSE_JOBS[jid]["served_layers"], set)
+    finally:
+        oa.POSE_JOBS.pop(jid, None)
+
+
+@patch("src.overlay_api.save_upload", return_value="/tmp/body_in.mp4")
+def test_overlay_bodypix_start_returns_job_id(mock_save, overlay_client):
+    vid = ("v.mp4", io.BytesIO(b"fake"), "video/mp4")
+    r = overlay_client.post(
+        "/api/overlay/bodypix/start",
+        data={
+            "arms_color": "#ff0000",
+            "legs_color": "#00ff00",
+            "torso_color": "#0000ff",
+            "head_color": "#ffff00",
+            "fps": 12,
+            "session_id": "s",
+            "side": "user",
+            "start_sec": "0",
+            "end_sec": "1",
+        },
+        files={"video": vid},
+    )
+    assert r.status_code == 200
+    assert "job_id" in r.json()
+
+
+def test_overlay_bodypix_status_200(overlay_client):
+    jid = "bodypix-status-ok"
+    oa.BODYPX_JOBS[jid] = {
+        "status": "done",
+        "progress": 1.0,
+        "frames_written": 12,
+        "frames_expected": 12,
+        "error": None,
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/bodypix/status?job_id={jid}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["job_id"] == jid
+        assert body["status"] == "done"
+        assert body["progress"] == 1.0
+    finally:
+        oa.BODYPX_JOBS.pop(jid, None)
+
+
+def test_overlay_bodypix_result_200_serves_file_and_pops_job(overlay_client, tmp_path):
+    out = tmp_path / "body.webm"
+    out.write_bytes(b"bodypix-out")
+    inp = tmp_path / "bin.mp4"
+    inp.write_bytes(b"in")
+    jid = "bodypix-result-ok"
+    oa.BODYPX_JOBS[jid] = {
+        "status": "done",
+        "out_path": str(out),
+        "tmp_in": str(inp),
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/bodypix/result?job_id={jid}")
+        assert r.status_code == 200
+        assert "video/webm" in r.headers.get("content-type", "")
+        assert r.content == b"bodypix-out"
+        assert jid not in oa.BODYPX_JOBS
+    finally:
+        oa.BODYPX_JOBS.pop(jid, None)
