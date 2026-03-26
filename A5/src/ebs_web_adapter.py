@@ -221,7 +221,9 @@ def process_uploads(ref_video: UploadFile, user_video: UploadFile) -> dict[str, 
         try:
             if len(beat_times) >= BEATS_PER_SEGMENT + 1 and confidence_info["coefficient_of_variation"] <= 0.3:
                 downbeat_offset = estimate_downbeat_phase(onset_env, beat_frames, BEATS_PER_SEGMENT)
-                segment_points = generate_segments(beat_times, downbeat_offset, BEATS_PER_SEGMENT)
+                segment_points, _segment_beat_times = generate_segments(
+                    beat_times, downbeat_offset, BEATS_PER_SEGMENT
+                )
                 segs = _build_segments_from_beats(beat_times, segment_points, shared_len_sec)
                 if segs:
                     segmentation_mode = "eight_beat"
