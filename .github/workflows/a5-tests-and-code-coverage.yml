@@ -82,13 +82,11 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
-          cache-dependency-path: |
-            web-app/package-lock.json
 
       - name: Install web-app dependencies
         working-directory: ./web-app
-        run: npm ci
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
       - name: Run web-app tests + coverage
         shell: bash
