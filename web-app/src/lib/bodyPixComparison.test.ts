@@ -1,3 +1,17 @@
+import { describe, expect, it } from "vitest";
+
+import { KEYPOINT_NAMES, REGION_PARTS, meanOfSamples, stdDeviation } from "./bodyPixComparison";
+
+describe("bodyPixComparison exports", () => {
+  it("re-exports bodyPix package symbols from stable path", () => {
+    expect(Array.isArray(KEYPOINT_NAMES)).toBe(true);
+    expect(KEYPOINT_NAMES.length).toBeGreaterThan(0);
+    expect(typeof REGION_PARTS).toBe("object");
+    expect(meanOfSamples([1, 2, 3])).toBe(2);
+    expect(stdDeviation([2, 2, 2])).toBe(0);
+  });
+});
+
 import {
   computeAngle,
   generateSampleTimestamps,

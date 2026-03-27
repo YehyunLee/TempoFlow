@@ -6,6 +6,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { RefObject } from "react";
 import type { EbsData, EbsSegment, PracticeMove } from "./types";
+import {
+  BEAT_FLASH_TOLERANCE,
+  SEGMENT_BOUNDARY_TOLERANCE,
+  buildMovesForSegment,
+  findActiveMoveIndex,
+  findActiveSegmentIndex,
+  getClosestBeatIndex,
+  shouldLoopPracticeSegment,
+} from "./ebsViewerLogic";
 
 export type EbsViewerRefs = {
   refVideo: RefObject<HTMLVideoElement | null>;
@@ -72,9 +81,6 @@ export type EbsViewerApi = {
   setPauseAtMoveEnd: (value: boolean) => void;
   togglePracticeSpeed: () => void;
 };
-
-const SEGMENT_BOUNDARY_TOLERANCE = 0.02;
-const BEAT_FLASH_TOLERANCE = 0.06;
 
 export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerApi {
   const [ebs, setEbs] = useState<EbsData | null>(null);
@@ -171,27 +177,7 @@ export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerA
   }, []);
 
   const buildMoves = useCallback(
-    (segmentIndex: number): PracticeMove[] => {
-      const segment = segments[segmentIndex];
-      if (!segment?.beat_idx_range) return [];
-      const [beatStart, beatEnd] = segment.beat_idx_range;
-      if (beatEnd <= beatStart) return [];
-
-      const moves: PracticeMove[] = [];
-      const total = beatEnd - beatStart;
-      for (let i = beatStart; i < beatEnd; i++) {
-        if (beats[i] == null || beats[i + 1] == null) break;
-        const num = i - beatStart + 1;
-        moves.push({
-          idx: num - 1,
-          num,
-          startSec: beats[i],
-          endSec: beats[i + 1],
-          isTransition: num === total,
-        });
-      }
-      return moves;
-    },
+    (segmentIndex: number): PracticeMove[] => buildMovesForSegment(beats, segments, segmentIndex),
     [beats, segments],
   );
 
@@ -432,16 +418,7 @@ export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerA
       const segment = segments[practice.segmentIndex];
       if (!segment) return;
 
-      let newMoveIndex = -1;
-      for (let i = 0; i < practice.moves.length; i++) {
-        if (
-          sharedTime >= practice.moves[i].startSec - 0.01 &&
-          sharedTime < practice.moves[i].endSec
-        ) {
-          newMoveIndex = i;
-          break;
-        }
-      }
+      const newMoveIndex = findActiveMoveIndex(sharedTime, practice.moves);
 
       if (newMoveIndex !== practice.currentMoveIndex) {
         if (practice.pauseAtMoveEnd && playingRef.current && practice.currentMoveIndex >= 0) {
@@ -467,7 +444,7 @@ export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerA
         setPractice((prev) => ({ ...prev, currentMoveIndex: newMoveIndex }));
       }
 
-      if (playingRef.current && sharedTime >= segment.shared_end_sec - SEGMENT_BOUNDARY_TOLERANCE) {
+      if (playingRef.current && shouldLoopPracticeSegment(sharedTime, segment)) {
         if (practice.loopSegment) {
           seekToSharedInternal(segment.shared_start_sec, true);
           setPractice((prev) => ({ ...prev, currentMoveIndex: -1 }));
@@ -476,16 +453,7 @@ export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerA
         }
       }
     } else {
-      let newSegmentIndex = -1;
-      for (let i = 0; i < segments.length; i++) {
-        if (
-          sharedTime >= segments[i].shared_start_sec &&
-          sharedTime < segments[i].shared_end_sec
-        ) {
-          newSegmentIndex = i;
-          break;
-        }
-      }
+      const newSegmentIndex = findActiveSegmentIndex(sharedTime, segments);
 
       if (newSegmentIndex !== currentSegmentIndex) {
         if (pauseAtSegmentEnd && playingRef.current && currentSegmentIndex >= 0) {
@@ -501,13 +469,7 @@ export function useEbsViewer({ refVideo, userVideo }: EbsViewerRefs): EbsViewerA
       }
     }
 
-    let closestBeat = -1;
-    for (let i = 0; i < beats.length; i++) {
-      if (Math.abs(sharedTime - beats[i]) < BEAT_FLASH_TOLERANCE) {
-        closestBeat = i;
-        break;
-      }
-    }
+    const closestBeat = getClosestBeatIndex(sharedTime, beats);
 
     if (closestBeat >= 0 && closestBeat !== lastBeatIndex) {
       if (
