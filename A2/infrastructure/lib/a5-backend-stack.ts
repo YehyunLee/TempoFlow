@@ -121,22 +121,22 @@ export class A5BackendStack extends cdk.Stack {
     });
     ebEnv.node.addDependency(appVersion);
 
-    // CloudFormation often no longer exposes `EndpointURL` on newer EB environments; `CNAME` is the
-    // stable attribute (hostname or single-instance public DNS / IP — prefix http:// for clients).
-    const ebHttpBase = cdk.Fn.join('', ['http://', cdk.Token.asString(ebEnv.getAtt('CNAME'))]);
+    const appName = ebApp.applicationName!;
+    const envNameShort = envName.slice(0, 40);
 
+    // AWS::ElasticBeanstalk::Environment no longer publishes EndpointURL/CNAME to Fn::GetAtt in the
+    // CloudFormation schema used for this resource — stack outputs cannot reference them. The EB API
+    // still returns CNAME; use the command below after the environment is healthy.
     new cdk.CfnOutput(this, 'A5BackendStage', { value: stage });
-    new cdk.CfnOutput(this, 'A5EbEndpointUrl', {
-      value: ebHttpBase,
-      description: 'HTTP base URL for the A5 API (EBS_BACKEND_URL / proxy setup)',
-    });
-    new cdk.CfnOutput(this, 'A5BackendBaseUrl', {
-      value: ebHttpBase,
-      description: 'Same as A5EbEndpointUrl',
-    });
-    new cdk.CfnOutput(this, 'A5ProcessorUrl', {
-      value: cdk.Fn.join('', [ebHttpBase, '/api/process']),
-      description: 'Full /api/process URL (HTTP)',
+    new cdk.CfnOutput(this, 'A5EbApplicationName', { value: appName });
+    new cdk.CfnOutput(this, 'A5EbEnvironmentName', { value: envNameShort });
+    new cdk.CfnOutput(this, 'A5EbCnameLookupCommand', {
+      value: cdk.Fn.sub(
+        "aws elasticbeanstalk describe-environments --region ${AWS::Region} --application-names ${App} --environment-names ${Env} --query 'Environments[0].CNAME' --output text",
+        { App: appName, Env: envNameShort },
+      ),
+      description:
+        'Run in a shell after deploy; prints hostname. Use http://<host> for EBS_BACKEND_URL and http://<host>/api/process for EBS_PROCESSOR_URL.',
     });
   }
 }
