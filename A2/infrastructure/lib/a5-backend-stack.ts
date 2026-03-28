@@ -139,6 +139,16 @@ export class A5BackendStack extends cdk.Stack {
           value: 't3.large',
         },
         {
+          namespace: 'aws:autoscaling:launchconfiguration',
+          optionName: 'RootVolumeType',
+          value: 'gp3',
+        },
+        {
+          namespace: 'aws:autoscaling:launchconfiguration',
+          optionName: 'RootVolumeSize',
+          value: '24',
+        },
+        {
           namespace: 'aws:elasticbeanstalk:application:environment',
           optionName: 'GEMINI_API_KEY',
           value: geminiApiKey.valueAsString,
