@@ -159,7 +159,7 @@ After the stack is created, Amplify will start pulling and building the app; Clo
 
 ### Optional: A5 FastAPI backend (`A5/`) on Elastic Beanstalk
 
-The stack **`TempoFlow-A5Backend-<stage>`** (see `lib/a5-backend-stack.ts`) provisions an **Elastic Beanstalk** web environment. CDK uploads a **zip of your local `A5/` tree** to S3 and deploys it — **no Docker**, **no GitHub**, and **no CodeStar/CodeConnections** (works when org SCPs block `codeconnections:*`).
+The stack **`TempoFlow-A5Backend-<stage>`** (see `lib/a5-backend-stack.ts`) provisions an **Elastic Beanstalk** web environment. CDK uploads a **zip of your local `A5/` tree** to S3 and deploys it — **no Docker**, **no GitHub**, and **no CodeStar/CodeConnections** (works when org SCPs block `codeconnections:*`). It also creates a **small VPC** (public subnets, no NAT) because many accounts have **no default VPC**, and EB otherwise fails with *“No default VPC… GroupName is only supported for … default VPC”* when creating security groups.
 
 - **Deploy:** set **`DEPLOY_A5_BACKEND_STACK=1`** and **`GEMINI_API_KEY`** when you run `./scripts/deploy_infra.sh`. Push your latest `A5/` code before deploy so the bundle is current.
 - **Platform string:** Elastic Beanstalk **solution stack names are region-specific and change when AWS updates platforms** — they cannot be hardcoded. `./scripts/deploy_infra.sh` calls `list-available-solution-stacks` and picks **Amazon Linux 2023 + Python 3.12** (then 3.11, then any Python 3). Override with **`A5_EB_SOLUTION_STACK`** if you need a specific row, or pass `--parameters TempoFlow-A5Backend-<stage>:EbSolutionStack=...` to `cdk deploy`.

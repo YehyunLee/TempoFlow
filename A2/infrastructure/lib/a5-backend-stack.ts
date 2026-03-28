@@ -1,5 +1,6 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elasticbeanstalk from 'aws-cdk-lib/aws-elasticbeanstalk';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
@@ -15,12 +16,27 @@ export interface A5BackendStackProps extends cdk.StackProps {
  *
  * Pass `GeminiApiKey` as a NoEcho CloudFormation parameter. Pass `EbSolutionStack` (full platform name for
  * your **region**); `./scripts/deploy_infra.sh` resolves it automatically via the AWS CLI when unset.
+ *
+ * **VPC:** Many course/sandbox accounts have **no default VPC**. EB then fails creating security groups
+ * (“GroupName is only supported for … default VPC”). This stack creates a small **public-subnet-only VPC**
+ * (no NAT) and pins the environment to it — same idea as `WebAppStack`.
  */
 export class A5BackendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: A5BackendStackProps) {
     super(scope, id, props);
 
     const { stage } = props;
+
+    const vpc = new ec2.Vpc(this, 'A5EbVpc', {
+      maxAzs: 2,
+      natGateways: 0,
+      subnetConfiguration: [
+        {
+          name: 'public',
+          subnetType: ec2.SubnetType.PUBLIC,
+        },
+      ],
+    });
 
     const geminiApiKey = new cdk.CfnParameter(this, 'GeminiApiKey', {
       type: 'String',
@@ -88,6 +104,21 @@ export class A5BackendStack extends cdk.Stack {
       tier: { name: 'WebServer', type: 'Standard', version: '1.0' },
       optionSettings: [
         {
+          namespace: 'aws:ec2:vpc',
+          optionName: 'VPCId',
+          value: vpc.vpcId,
+        },
+        {
+          namespace: 'aws:ec2:vpc',
+          optionName: 'Subnets',
+          value: cdk.Fn.join(',', vpc.publicSubnets.map((s) => s.subnetId)),
+        },
+        {
+          namespace: 'aws:ec2:vpc',
+          optionName: 'AssociatePublicIpAddress',
+          value: 'true',
+        },
+        {
           namespace: 'aws:elasticbeanstalk:environment',
           optionName: 'EnvironmentType',
           value: 'SingleInstance',
@@ -132,7 +163,7 @@ export class A5BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'A5EbEnvironmentName', { value: envNameShort });
     new cdk.CfnOutput(this, 'A5EbCnameLookupCommand', {
       value: cdk.Fn.sub(
-        "aws elasticbeanstalk describe-environments --region ${AWS::Region} --application-names ${App} --environment-names ${Env} --query 'Environments[0].CNAME' --output text",
+        "aws elasticbeanstalk describe-environments --region ${AWS::Region} --application-name ${App} --environment-names ${Env} --query 'Environments[0].CNAME' --output text",
         { App: appName, Env: envNameShort },
       ),
       description:
