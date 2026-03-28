@@ -3,12 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EbsData, EbsSegment } from "./types";
 import { getSessionVideo } from "../../lib/videoStorage";
-
-const DEFAULT_PROCESSOR_BASE = "http://127.0.0.1:8787";
+import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
 
 function getProcessorBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL ?? `${DEFAULT_PROCESSOR_BASE}/api/process`;
-  return url.replace(/\/api\/process\/?$/, "");
+  return getPublicEbsProcessorUrl().replace(/\/api\/process\/?$/, "");
 }
 
 export type GeminiMoveResult = {

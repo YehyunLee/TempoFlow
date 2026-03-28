@@ -30,6 +30,7 @@ import {
   type OverlaySegmentPlan,
 } from "../../lib/overlaySegments";
 import { getSessionVideo } from "../../lib/videoStorage";
+import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
 import { FeedbackOverlay } from "./FeedbackOverlay";
 import type { DanceFeedback } from "../../lib/bodyPixComparison";
 
@@ -251,8 +252,7 @@ export function EbsViewer(props: EbsViewerProps) {
       setOverlayStatus(null);
 
       try {
-        const processorUrl =
-          (process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL as string | undefined) ?? "http://127.0.0.1:8787/api/process";
+        const processorUrl = getPublicEbsProcessorUrl();
         const baseUrl = processorUrl.replace(/\/api\/process\s*$/, "");
         const sleep = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 

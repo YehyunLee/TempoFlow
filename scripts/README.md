@@ -46,6 +46,15 @@ DEPLOY_AMPLIFY_WEB_STACK=1 ./scripts/deploy_infra.sh dev
 
 Amplify will pull/build automatically using the PAT passed as a NoEcho CloudFormation parameter.
 
+To deploy the **A5 FastAPI backend** on **Elastic Beanstalk** (CDK zips `A5/` and uploads to S3 — **no Docker**, **no CodeConnections**):
+
+```bash
+export GEMINI_API_KEY="..."   # do not commit; avoid pasting in chat
+DEPLOY_A5_BACKEND_STACK=1 ./scripts/deploy_infra.sh dev
+```
+
+You can combine flags in one run (for example Amplify + A5 + core infra): export `DEPLOY_AMPLIFY_WEB_STACK=1`, `DEPLOY_A5_BACKEND_STACK=1`, and the Amplify PAT/repo vars plus `GEMINI_API_KEY`, then run the script once.
+
 See `A2/infrastructure/README.md` for details.
 
 ### 4. Verify in AWS console

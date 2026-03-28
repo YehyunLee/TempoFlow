@@ -18,7 +18,7 @@ import {
 } from "../../lib/sessionStorage";
 import { DifferenceViewer } from "../../components/ebs/DifferenceViewer";
 import { getSessionVideo } from "../../lib/videoStorage";
-const DEFAULT_EBS_PROCESSOR_URL = "http://127.0.0.1:8787/api/process";
+import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
 const MAX_EBS_PROCESSING_SECONDS = 5 * 60;
 
 function getProcessorBaseUrl(processorUrl: string) {
@@ -52,7 +52,7 @@ function AnalysisPageContent() {
   const [processingStartedAt, setProcessingStartedAt] = useState<number | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const generationRequestRef = useRef<string | null>(null);
-  const processorUrl = process.env.NEXT_PUBLIC_EBS_PROCESSOR_URL ?? DEFAULT_EBS_PROCESSOR_URL;
+  const processorUrl = getPublicEbsProcessorUrl();
 
   const processorBaseUrl = useMemo(() => getProcessorBaseUrl(processorUrl), [processorUrl]);
   
