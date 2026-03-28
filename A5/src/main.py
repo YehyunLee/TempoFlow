@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load A5/.env before any code that reads os.environ (e.g. eval config, Gemini).
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 import asyncio
 import json
 import threading
 import uuid
-from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, Form, UploadFile
@@ -14,7 +20,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from src.alignment_and_segmentation.router import router as alignment_router
 from src.ebs_web_adapter import process_uploads, process_videos_from_paths, save_upload
 from src.overlay_api import router as overlay_router
-from src.gemini_move_feedback import run_move_feedback_pipeline
+from src.eval.runner import run_move_feedback_pipeline
+from src.eval import router as eval_router
 
 app = FastAPI(title="Audio Alignment API")
 app.add_middleware(
@@ -28,6 +35,7 @@ app.add_middleware(
 # Include routers
 app.include_router(alignment_router, prefix="/a5")
 app.include_router(overlay_router)
+app.include_router(eval_router)
 
 SESSION_STATUS: dict[str, str] = {}
 SESSION_RESULTS: dict[str, dict[str, Any]] = {}
