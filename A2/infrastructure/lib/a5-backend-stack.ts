@@ -1,9 +1,12 @@
 import * as path from 'path';
 import * as cdk from 'aws-cdk-lib';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
+import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as elasticbeanstalk from 'aws-cdk-lib/aws-elasticbeanstalk';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as s3assets from 'aws-cdk-lib/aws-s3-assets';
+import { AwsCustomResource, AwsCustomResourcePolicy, PhysicalResourceId } from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
 export interface A5BackendStackProps extends cdk.StackProps {
@@ -165,6 +168,58 @@ export class A5BackendStack extends cdk.Stack {
     const appName = ebApp.applicationName!;
     const envNameShort = envName.slice(0, 40);
 
+    // Resolve EB HTTP hostname at deploy time (not exposed on CfnEnvironment) so we can front it with
+    // HTTPS CloudFront. Browsers on Amplify (HTTPS) cannot call http://*.elasticbeanstalk.com (mixed
+    // content); long /api/process calls also time out when proxied through Amplify (~30s). Direct
+    // https://<cloudfront>/api/process avoids both issues (CORS is already allow_origins=* on A5).
+    const ebCnameLookup = new AwsCustomResource(this, 'EbEnvironmentCnameLookup', {
+      onCreate: {
+        service: 'ElasticBeanstalk',
+        action: 'describeEnvironments',
+        parameters: {
+          ApplicationName: appName,
+          EnvironmentNames: [envNameShort],
+        },
+        physicalResourceId: PhysicalResourceId.of(`${envNameShort}-cname`),
+      },
+      onUpdate: {
+        service: 'ElasticBeanstalk',
+        action: 'describeEnvironments',
+        parameters: {
+          ApplicationName: appName,
+          EnvironmentNames: [envNameShort],
+        },
+        physicalResourceId: PhysicalResourceId.of(`${envNameShort}-cname`),
+      },
+      policy: AwsCustomResourcePolicy.fromSdkCalls({
+        resources: AwsCustomResourcePolicy.ANY_RESOURCE,
+      }),
+    });
+    ebCnameLookup.node.addDependency(ebEnv);
+
+    const ebHttpHostname = ebCnameLookup.getResponseField('Environments.0.CNAME');
+
+    const cfOrigin = new origins.HttpOrigin(ebHttpHostname, {
+      protocolPolicy: cloudfront.OriginProtocolPolicy.HTTP_ONLY,
+      httpPort: 80,
+      readTimeout: cdk.Duration.seconds(180),
+      keepaliveTimeout: cdk.Duration.seconds(60),
+    });
+
+    const a5Distribution = new cloudfront.Distribution(this, 'A5EbHttpsDistribution', {
+      comment: `HTTPS front for TempoFlow A5 EB (${stage}) — use for NEXT_PUBLIC_EBS_PROCESSOR_URL`,
+      defaultBehavior: {
+        origin: cfOrigin,
+        viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+        allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
+        cachePolicy: cloudfront.CachePolicy.CACHING_DISABLED,
+        originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
+        compress: false,
+      },
+      priceClass: cloudfront.PriceClass.PRICE_CLASS_100,
+      httpVersion: cloudfront.HttpVersion.HTTP2_AND_3,
+    });
+
     // AWS::ElasticBeanstalk::Environment no longer publishes EndpointURL/CNAME to Fn::GetAtt in the
     // CloudFormation schema used for this resource — stack outputs cannot reference them. The EB API
     // still returns CNAME; use the command below after the environment is healthy.
@@ -177,7 +232,18 @@ export class A5BackendStack extends cdk.Stack {
         { App: appName, Env: envNameShort },
       ),
       description:
-        'Run in a shell after deploy; prints hostname. Use http://<host> for EBS_BACKEND_URL and http://<host>/api/process for EBS_PROCESSOR_URL.',
+        'EB HTTP hostname. Server-side env can use http://<host>; browsers should use stack output A5HttpsProcessorUrl (HTTPS).',
+    });
+
+    new cdk.CfnOutput(this, 'A5HttpsDistributionDomain', {
+      value: a5Distribution.distributionDomainName,
+      description: 'CloudFront domain (HTTPS). Set Amplify NEXT_PUBLIC_EBS_PROCESSOR_URL to https://<this>/api/process',
+    });
+
+    new cdk.CfnOutput(this, 'A5HttpsProcessorUrl', {
+      value: cdk.Fn.join('', ['https://', a5Distribution.distributionDomainName, '/api/process']),
+      description:
+        'Preferred browser URL for EBS /api/process (HTTPS, long timeout vs Amplify proxy). Set NEXT_PUBLIC_EBS_PROCESSOR_URL to this; unset NEXT_PUBLIC_EBS_PROXY or set 0.',
     });
   }
 }
