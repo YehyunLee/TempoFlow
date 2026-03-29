@@ -677,21 +677,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       }}
                     />
                   )}
-                  {/* Status indicators */}
-                  <div className="absolute top-3 right-3 flex gap-2 z-[70]">
-                    <div
-                      className={`w-3 h-3 rounded-full border border-white/30 ${
-                        refOverlayFrame ? "bg-cyan-400 shadow-[0_0_8px_cyan]" : "bg-red-900"
-                      }`}
-                      title="Ref BodyPix"
-                    />
-                    <div
-                      className={`w-3 h-3 rounded-full border border-white/30 ${
-                        userOverlayFrame ? "bg-emerald-400 shadow-[0_0_8px_emerald]" : "bg-red-900"
-                      }`}
-                      title="User BodyPix"
-                    />
-                  </div>
                 </div>
               </div>
             </div>
