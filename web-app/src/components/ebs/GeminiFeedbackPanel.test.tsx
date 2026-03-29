@@ -5,6 +5,8 @@ import { GeminiFeedbackPanel, type GeminiFeedbackPanelHandle } from "./GeminiFee
 import { getSessionVideo } from "../../lib/videoStorage";
 import { getFeedbackSegment } from "../../lib/feedbackStorage";
 
+const nativeSetTimeout = globalThis.setTimeout.bind(globalThis);
+
 // 1. Mock the video storage utility
 vi.mock("../../lib/videoStorage", () => ({
   getSessionVideo: vi.fn(),
@@ -129,9 +131,8 @@ describe("GeminiFeedbackPanel", () => {
     vi.stubGlobal("fetch", vi.fn());
     // Mock video files
     (getSessionVideo as any).mockResolvedValue(new File([""], "video.mp4", { type: "video/mp4" }));
-    const realSetTimeout = window.setTimeout.bind(window);
     vi.spyOn(window, "setTimeout").mockImplementation(((fn: TimerHandler, _delay?: number, ...args: any[]) => {
-      return realSetTimeout(fn as any, 0, ...args) as any;
+      return nativeSetTimeout(fn as any, 0, ...args) as any;
     }) as typeof window.setTimeout);
     
     // Mock scrollTo since JSDOM doesn't implement it
@@ -206,7 +207,7 @@ describe("GeminiFeedbackPanel", () => {
   it("handles API errors gracefully", async () => {
     (fetch as any).mockResolvedValueOnce({
       ok: false,
-      json: () => Promise.resolve({ error: "Rate limit exceeded" }),
+      json: () => Promise.resolve({ error: "Backend exploded" }),
     });
 
     const ref = createRef<GeminiFeedbackPanelHandle>();
@@ -226,7 +227,7 @@ describe("GeminiFeedbackPanel", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Segment 0: Rate limit exceeded/i)).toBeInTheDocument();
+      expect(document.body.textContent).toContain("Segment 0: Backend exploded");
     });
   });
 
@@ -289,5 +290,56 @@ describe("GeminiFeedbackPanel", () => {
     const raw = String(form.get("yolo_context_json") ?? "");
     expect(raw).toContain('"source":"yolo-hybrid-segment"');
     expect(raw).toContain('"segment_index":0');
+  });
+
+  it("backs off on Gemini rate limits without immediately processing later queued segments", async () => {
+    vi.spyOn(window, "setTimeout").mockImplementation(((fn: TimerHandler, delay?: number, ...args: any[]) => {
+      if ((delay ?? 0) > 1000) {
+        return 1 as any;
+      }
+      return nativeSetTimeout(fn as any, 0, ...args) as any;
+    }) as typeof window.setTimeout);
+
+    (fetch as any).mockResolvedValueOnce({
+      ok: false,
+      json: () =>
+        Promise.resolve({
+          error:
+            "429 You exceeded your current quota. Please retry in 38.5s. Quota exceeded for metric.",
+        }),
+    });
+
+    const ref = createRef<GeminiFeedbackPanelHandle>();
+    render(
+      <GeminiFeedbackPanel
+        ref={ref}
+        sessionId={mockSessionId}
+        ebsData={mockEbsData as any}
+        segments={
+          [
+            ...mockSegments,
+            {
+              beat_idx_range: [10, 20],
+              shared_start_sec: 5,
+              shared_end_sec: 10,
+            },
+          ] as any
+        }
+        sharedTime={0}
+        onSeek={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      ref.current?.enqueueSegmentForFeedback(0);
+      ref.current?.enqueueSegmentForFeedback(1);
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(document.body.textContent).toContain("Gemini rate limited. Retrying in 39s.");
+    });
+
+    expect((fetch as any).mock.calls).toHaveLength(1);
   });
 });

@@ -89,6 +89,39 @@ const FETCH_RETRIES = 3;
 const GEMINI_JOB_POLL_MS = 1500;
 const GEMINI_JOB_TIMEOUT_MS = 20 * 60 * 1000;
 
+type GeminiRateLimitInfo = {
+  retryAfterMs: number;
+  message: string;
+};
+
+function parseGeminiRateLimit(error: unknown): GeminiRateLimitInfo | null {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  if (
+    !lower.includes("quota exceeded") &&
+    !lower.includes("rate limit") &&
+    !lower.includes("429") &&
+    !lower.includes("retry in")
+  ) {
+    return null;
+  }
+
+  const secondsMatch =
+    message.match(/retry(?:[^0-9]+)(\d+(?:\.\d+)?)s/i) ??
+    message.match(/retry_delay[^0-9]*(\d+(?:\.\d+)?)/i) ??
+    message.match(/please retry in\s+(\d+(?:\.\d+)?)s/i);
+  const retryAfterSec = secondsMatch ? Number.parseFloat(secondsMatch[1]) : NaN;
+  const retryAfterMs =
+    Number.isFinite(retryAfterSec) && retryAfterSec > 0
+      ? Math.ceil(retryAfterSec * 1000)
+      : 60_000;
+
+  return {
+    retryAfterMs,
+    message,
+  };
+}
+
 export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiFeedbackPanelProps>(
   function GeminiFeedbackPanel(props, ref) {
   const {
@@ -123,12 +156,19 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
 
   const queueRef = useRef<number[]>([]);
   const drainingRef = useRef(false);
+  const rateLimitResumeTimerRef = useRef<number | null>(null);
+  const rateLimitResumeAtRef = useRef<number | null>(null);
 
   const processorBaseUrl = useMemo(getProcessorBaseUrl, []);
 
   useEffect(() => {
     queueRef.current = [];
     drainingRef.current = false;
+    if (rateLimitResumeTimerRef.current != null) {
+      window.clearTimeout(rateLimitResumeTimerRef.current);
+      rateLimitResumeTimerRef.current = null;
+    }
+    rateLimitResumeAtRef.current = null;
     setResults([]);
     setSegmentsDone(0);
     setSegmentsTotal(0);
@@ -389,6 +429,9 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
 
     try {
       while (queueRef.current.length > 0) {
+        if (rateLimitResumeAtRef.current && Date.now() < rateLimitResumeAtRef.current) {
+          break;
+        }
         const segIndex = queueRef.current.shift()!;
         const ord = validIndices.indexOf(segIndex) + 1;
         setPipelineHint(
@@ -398,12 +441,29 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         );
         try {
           const data = await fetchSegmentWithRetries(segIndex);
+          setError(null);
           setResults((prev) => {
             const rest = prev.filter((r) => r.segment_index !== segIndex);
             return [...rest, data].sort((a, b) => a.segment_index - b.segment_index);
           });
         } catch (e) {
           const msg = e instanceof Error ? e.message : String(e);
+          const rateLimit = parseGeminiRateLimit(e);
+          if (rateLimit) {
+            queueRef.current.unshift(segIndex);
+            rateLimitResumeAtRef.current = Date.now() + rateLimit.retryAfterMs;
+            if (rateLimitResumeTimerRef.current != null) {
+              window.clearTimeout(rateLimitResumeTimerRef.current);
+            }
+            rateLimitResumeTimerRef.current = window.setTimeout(() => {
+              rateLimitResumeTimerRef.current = null;
+              rateLimitResumeAtRef.current = null;
+              void drainQueue();
+            }, rateLimit.retryAfterMs);
+            setError(`Gemini rate limited. Retrying in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s.`);
+            setPipelineHint(`Gemini paused after rate limit. YOLO can keep processing while feedback waits.`);
+            break;
+          }
           setResults((prev) => {
             const rest = prev.filter((r) => r.segment_index !== segIndex);
             return [
@@ -417,8 +477,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     } finally {
       drainingRef.current = false;
       setRunning(false);
-      setPipelineHint(null);
-      if (queueRef.current.length > 0) {
+      if (!rateLimitResumeAtRef.current) {
+        setPipelineHint(null);
+      }
+      if (queueRef.current.length > 0 && !rateLimitResumeAtRef.current) {
         void drainQueue();
       }
     }
@@ -430,6 +492,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
       if (!validIndices.includes(segmentIndex)) return;
       if (queueRef.current.includes(segmentIndex)) return;
       queueRef.current.push(segmentIndex);
+      if (rateLimitResumeAtRef.current && Date.now() < rateLimitResumeAtRef.current) {
+        setPipelineHint(`Queued segment ${segmentIndex + 1} for Gemini after rate limit backoff…`);
+        return;
+      }
       setPipelineHint(`Queued segment ${segmentIndex + 1} for Gemini…`);
       void drainQueue();
     },
@@ -461,6 +527,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     filterLabel === "all"
       ? `All moves (${flatMoves.length})`
       : `${TIMING_BADGES[filterLabel]?.label ?? filterLabel} (${labelCounts[filterLabel] ?? 0})`;
+  const moveCountLabel = filtered.length > 0 ? `Move ${currentMoveIndex + 1}` : "No move";
 
   return (
     <div className="rounded-[24px] border border-indigo-100 bg-white shadow-sm overflow-hidden">
@@ -494,26 +561,26 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
       {/* Results */}
       {flatMoves.length > 0 && (
         <>
-          <div className="px-5 py-3 border-b border-indigo-50 bg-white">
+          <div className="px-5 py-3 border-b border-sky-100 bg-gradient-to-r from-sky-50/80 via-white to-cyan-50/70">
             <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-sky-600/70">
                   Feedback
                 </div>
-                <div className="text-sm font-medium text-slate-700">
-                  Move {filtered.length > 0 ? currentMoveIndex + 1 : 0} of {filtered.length || flatMoves.length}
+                <div className="text-sm font-medium text-slate-700 truncate">
+                  {moveCountLabel}
                 </div>
               </div>
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setFilterMenuOpen((open) => !open)}
-                  className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
+                  className="rounded-full border border-sky-100 bg-white/90 px-3 py-1.5 text-[11px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-sky-50"
                 >
                   {activeFilterBadge}
                 </button>
                 {filterMenuOpen && (
-                  <div className="absolute right-0 top-[calc(100%+8px)] z-20 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                  <div className="absolute right-0 top-[calc(100%+8px)] z-20 min-w-[180px] rounded-2xl border border-sky-100 bg-white p-1.5 shadow-xl">
                     {["all", "on-time", "early", "late", "rushed", "dragged", "mixed", "uncertain"].map((lbl) => (
                       <button
                         key={lbl}
@@ -554,82 +621,59 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
                   return (
                     <div 
                       onClick={() => onSeek(m.shared_start_sec ?? mid)}
-                      className="px-5 py-4 cursor-pointer hover:bg-slate-50/50 transition-colors"
+                      className="px-5 py-4 cursor-pointer hover:bg-sky-50/40 transition-colors"
                     >
                       {/* Header row */}
-                      <div className="flex items-center gap-2 mb-3">
+                      <div className="flex items-center gap-2 mb-2.5">
                         <div className={`w-2.5 h-2.5 rounded-full ${badge.dot}`} />
-                        <span className="text-sm font-mono font-medium text-slate-700">
+                        <span className="text-sm font-semibold text-slate-800">
                           Move {m.move_index}
                         </span>
-                        <span className={`text-[11px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide ${badge.bg} ${badge.color}`}>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold uppercase tracking-wide ${badge.bg} ${badge.color}`}>
                           {badge.label}
                         </span>
+                        {TIMING_LABEL_FRIENDLY[m.micro_timing_label] && (
+                          <span
+                            className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-sky-100 bg-white text-[11px] font-semibold text-sky-400"
+                            title={TIMING_LABEL_FRIENDLY[m.micro_timing_label]}
+                            aria-label={TIMING_LABEL_FRIENDLY[m.micro_timing_label]}
+                          >
+                            i
+                          </span>
+                        )}
                         <span className="text-[11px] text-slate-400 font-mono ml-auto">
                           {fmtTime(m.shared_start_sec ?? 0)}–{fmtTime(m.shared_end_sec ?? 0)}
                         </span>
                       </div>
 
-                      {/* Timing explanation */}
-                      {TIMING_LABEL_FRIENDLY[m.micro_timing_label] && (
-                        <p className="text-xs text-slate-500 mb-2 leading-snug">
-                          {TIMING_LABEL_FRIENDLY[m.micro_timing_label]}
-                        </p>
-                      )}
+                      <p className="text-[11px] text-slate-500 mb-2">
+                        {TIMING_LABEL_FRIENDLY[m.micro_timing_label] ?? "Timing note"}
+                      </p>
 
                       {/* Evidence */}
                       {m.micro_timing_evidence && (
-                        <p className="text-sm text-slate-700 mb-3 leading-relaxed">
+                        <p className="text-sm text-slate-700 mb-2.5 leading-relaxed">
                           {m.micro_timing_evidence}
                         </p>
                       )}
 
                       {/* Meta info row */}
-                      <div className="flex items-center gap-2 flex-wrap mb-3">
-                        {m.confidence && (
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                            m.confidence === "high"
-                              ? "bg-emerald-50 text-emerald-600"
-                              : m.confidence === "medium"
-                                ? "bg-amber-50 text-amber-600"
-                                : "bg-slate-100 text-slate-500"
-                          }`}>
-                            {m.confidence} confidence
-                          </span>
-                        )}
-                        {m.user_relative_to_reference && (
-                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
-                            vs ref: {m.user_relative_to_reference}
-                          </span>
-                        )}
-                        <span className="text-[10px] text-slate-400">Seg {m.segmentIndex}</span>
+                      <div className="flex items-center gap-3 text-[11px] text-slate-400 mb-2.5">
+                        {m.user_relative_to_reference && <span>vs ref: {m.user_relative_to_reference}</span>}
+                        {m.confidence && <span>{m.confidence} confidence</span>}
                       </div>
-
-                      {/* Body parts */}
-                      {m.body_parts_involved?.length > 0 && (
-                        <div className="flex gap-1.5 mb-3 flex-wrap">
-                          {m.body_parts_involved.map((bp) => (
-                            <span
-                              key={bp}
-                              className="text-[11px] px-2 py-0.5 rounded-md bg-slate-100 text-slate-600 font-medium"
-                            >
-                              {bp}
-                            </span>
-                          ))}
-                        </div>
-                      )}
 
                       {/* Guardrail note */}
                       {m.guardrail_note && (
-                        <p className="text-xs text-amber-800 bg-amber-50/80 rounded-lg px-3 py-2 mb-3">
+                        <p className="text-xs text-amber-800 bg-amber-50/80 rounded-lg px-3 py-2 mb-2.5">
                           {m.guardrail_note}
                         </p>
                       )}
 
                       {/* Coaching note */}
                       {m.coaching_note && (
-                        <div className="bg-indigo-50/70 rounded-lg px-3 py-3">
-                          <p className="text-sm text-indigo-800 leading-relaxed font-medium">
+                        <div className="rounded-xl border border-sky-100 bg-sky-50/70 px-3 py-3">
+                          <p className="text-sm text-sky-900 leading-relaxed font-medium">
                             {m.coaching_note}
                           </p>
                         </div>

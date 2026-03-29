@@ -1395,7 +1395,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
               </div>
 
               <div className="timeline" style={{ position: "relative", zIndex: 10 }}>
-                <div className="timeline-track relative overflow-hidden" ref={timelineTrackRef} onClick={handleTimelineClick}>
+                <div className="timeline-track relative" ref={timelineTrackRef} onClick={handleTimelineClick}>
                     {/* 1. SEGMENTS LAYER */}
                     {state.segments.map((segment, index) => {
                       const isActive = index === state.currentSegmentIndex;
@@ -1426,8 +1426,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       );
                     })}
 
-                    {/* 2. FEEDBACK FLAGS */}
-                    {showFeedback && sharedLen > 0 && geminiFeedback.map((move, index) => {
+                    {/* 3. PLAYHEAD (Top Layer) */}
+                    <div
+                      className="timeline-playhead z-[10] shadow-md"
+                      style={{ left: `${sharedLen > 0 ? (state.sharedTime / sharedLen) * 100 : 0}%` }}
+                    />
+                </div>
+                    {showFeedback && sharedLen > 0 && (
+                  <div className="pointer-events-none absolute left-0 right-0 top-0 z-[9] h-[52px] overflow-visible">
+                    {geminiFeedback.map((move, index) => {
                       const start = move.shared_start_sec ?? 0;
                       const end = move.shared_end_sec ?? start;
                       const mid = start + Math.max(end - start, 0.04) / 2;
@@ -1436,13 +1443,13 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         <button
                           key={`gflag-${index}`}
                           type="button"
-                          className="absolute z-[8] -translate-x-1/2 cursor-pointer bg-transparent p-0 border-0"
+                          className="pointer-events-auto absolute z-[8] -translate-x-1/2 cursor-pointer bg-transparent p-0 border-0"
                           title={`Move ${move.move_index}: ${move.micro_timing_label}`}
                           style={{
                             left: `${(mid / sharedLen) * 100}%`,
-                            top: "-3px",
-                            bottom: "-3px",
-                            width: "14px",
+                            top: "0px",
+                            height: "52px",
+                            width: "16px",
                           }}
                           onClick={(event) => {
                             event.stopPropagation();
@@ -1450,12 +1457,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
                           }}
                         >
                           <span
-                            className="absolute left-1/2 top-0 -translate-x-1/2 rounded-full"
+                            className="absolute left-1/2 top-[4px] -translate-x-1/2 rounded-full"
                             style={{
-                              width: "4px",
-                              height: "100%",
+                              width: "3px",
+                              height: "42px",
                               backgroundColor: color,
-                              boxShadow: `0 0 0 1px rgba(255,255,255,0.92), 0 0 14px ${color}`,
+                              boxShadow: `0 0 0 1px rgba(255,255,255,0.95), 0 0 12px ${color}`,
                             }}
                           />
                           <span
@@ -1464,19 +1471,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
                               width: "10px",
                               height: "10px",
                               backgroundColor: color,
-                              boxShadow: `0 0 0 2px rgba(255,255,255,0.95), 0 3px 10px ${color}`,
+                              boxShadow: `0 0 0 2px rgba(255,255,255,0.96), 0 2px 8px ${color}`,
                             }}
                           />
                         </button>
                       );
                     })}
-
-                    {/* 3. PLAYHEAD (Top Layer) */}
-                    <div
-                      className="timeline-playhead z-[10] shadow-md"
-                      style={{ left: `${sharedLen > 0 ? (state.sharedTime / sharedLen) * 100 : 0}%` }}
-                    />
                   </div>
+                )}
                 <div className="beat-markers">
                   {state.beats.map((beat, index) => (
                     <div
