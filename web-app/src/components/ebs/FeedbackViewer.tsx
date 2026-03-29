@@ -64,6 +64,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [userVideoUrl, setUserVideoUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<{ message: string; type?: "error" | "success" } | null>(null);
   const [viewMode, setViewMode] = useState<"side" | "overlay">("side");
+  const [overlayViewSource, setOverlayViewSource] = useState<"reference" | "user" | "both">("reference");
   const overlayVideoRef = useRef<HTMLVideoElement>(null);
   const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
   
@@ -578,6 +579,44 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 >
                   Overlay
                 </button>
+                {viewMode === "overlay" && (
+                  <>
+                    <span className="text-xs text-slate-400">|</span>
+                    <button
+                      onClick={() => setOverlayViewSource("reference")}
+                      className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                        overlayViewSource === "reference"
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                      title="Show reference overlay on user video"
+                    >
+                      Ref
+                    </button>
+                    <button
+                      onClick={() => setOverlayViewSource("user")}
+                      className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                        overlayViewSource === "user"
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                      title="Show user overlay on user video"
+                    >
+                      User
+                    </button>
+                    <button
+                      onClick={() => setOverlayViewSource("both")}
+                      className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                        overlayViewSource === "both"
+                          ? "bg-blue-500 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                      title="Show both overlays"
+                    >
+                      Both
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           ) : (
@@ -593,7 +632,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
             <div className="videos">
               <div className="video-panel">
                 <div className="video-label">
-                  Reference (Clip 1)
+                  Reference ({sessionReferenceName || "Clip 1"})
                   <span className="time-display">{fmtTimeFull(state.refTime)}</span>
                 </div>
                 <div className="relative">
@@ -617,7 +656,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
               </div>
               <div className="video-panel">
                 <div className="video-label">
-                  User (Clip 2)
+                  User ({sessionPracticeName || "Clip 2"})
                   <span className="time-display">{fmtTimeFull(state.userTime)}</span>
                 </div>
                 <div className="relative">
@@ -645,7 +684,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
             <div className="videos single-view">
               <div className="video-panel" style={{ maxWidth: "100%", width: "100%" }}>
                 <div className="video-label">
-                  <span>Overlay Diff (Reference + User)</span>
+                  <span>User ({sessionPracticeName || "Practice"})</span>
                 </div>
                 <div className="relative" style={{ aspectRatio: "16/9", background: "#000" }}>
                   {/* Base: User video (synced with timeline) */}
@@ -656,7 +695,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     playsInline
                   />
                   {/* Layer 1: Reference ghost (BodyPix overlay) */}
-                  {refOverlayFrame && (
+                  {(overlayViewSource === "reference" || overlayViewSource === "both") && refOverlayFrame && (
                     <img
                       src={refOverlayFrame instanceof Blob ? URL.createObjectURL(refOverlayFrame) : refOverlayFrame}
                       alt="Reference ghost"
@@ -669,7 +708,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     />
                   )}
                   {/* Layer 2: User BodyPix overlay */}
-                  {userOverlayFrame && (
+                  {(overlayViewSource === "user" || overlayViewSource === "both") && userOverlayFrame && (
                     <img
                       src={userOverlayFrame instanceof Blob ? URL.createObjectURL(userOverlayFrame) : userOverlayFrame}
                       alt="User overlay"
