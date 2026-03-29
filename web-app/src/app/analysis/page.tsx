@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import "../../components/ebs/ebs-viewer.css";
 
@@ -432,8 +433,15 @@ function AnalysisPageContent() {
         
         {/* 1. Left Section: Logo */}
         <div className="flex-1">
-          <Link href="/" className="text-2xl font-bold text-slate-900 tracking-tight">
-            TempoFlow
+          <Link href="/" className="flex items-center">
+            <Image 
+              src="/logo.png" 
+              alt="TempoFlow" 
+              width={140} 
+              height={40}
+              className="rounded"
+              priority
+            />
           </Link>
         </div>
 
@@ -441,13 +449,13 @@ function AnalysisPageContent() {
         <div className="flex-1 flex justify-end items-center gap-3">
           <Link 
             href="/dashboard" 
-            className="px-4 py-2 bg-sky-50 text-sky-700 rounded-full text-sm font-medium hover:bg-sky-100 transition-colors"
+            className="px-4 py-2 text-slate-600 hover:text-slate-900 text-sm font-medium transition-colors"
           >
             Dashboard
           </Link>
           <Link 
             href="/upload" 
-            className="px-4 py-2 bg-slate-900 text-white rounded-full text-sm font-medium hover:bg-slate-800 transition-colors shadow-lg shadow-slate-200"
+            className="px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-400 text-white rounded-full text-sm font-medium hover:from-blue-600 hover:to-cyan-500 transition-all"
           >
             New Session
           </Link>
