@@ -20,7 +20,8 @@ def _candidate_from_env(env_name: str) -> str | None:
     found = shutil.which(raw)
     if found:
         return found
-    return raw
+    # Do not return a non-existent path (e.g. EB env set before first boot install).
+    return None
 
 
 def _common_windows_ffmpeg_dirs() -> list[Path]:

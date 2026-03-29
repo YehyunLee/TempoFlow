@@ -179,6 +179,17 @@ export class A5BackendStack extends cdk.Stack {
           optionName: 'PYTHONUNBUFFERED',
           value: '1',
         },
+        // Predeploy hook installs static ffmpeg to /usr/local/bin; uvicorn often has a minimal PATH.
+        {
+          namespace: 'aws:elasticbeanstalk:application:environment',
+          optionName: 'EBS_FFMPEG_PATH',
+          value: '/usr/local/bin/ffmpeg',
+        },
+        {
+          namespace: 'aws:elasticbeanstalk:application:environment',
+          optionName: 'EBS_FFPROBE_PATH',
+          value: '/usr/local/bin/ffprobe',
+        },
       ],
     });
     ebEnv.node.addDependency(appVersion);
