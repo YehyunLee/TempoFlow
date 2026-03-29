@@ -23,7 +23,23 @@ vi.mock("./OverlayMaskLayer", () => ({
 vi.mock("./GeminiFeedbackPanel", () => {
   const React = require("react");
   return {
-    GeminiFeedbackPanel: React.forwardRef(() => <div data-testid="gemini-panel" />),
+    GeminiFeedbackPanel: React.forwardRef((props: { onFeedbackReady?: (moves: unknown[]) => void }, ref) => {
+      React.useImperativeHandle(ref, () => ({
+        enqueueSegmentForFeedback: vi.fn(),
+      }));
+      React.useEffect(() => {
+        props.onFeedbackReady?.([
+          {
+            segmentIndex: 0,
+            move_index: 2,
+            shared_start_sec: 4,
+            shared_end_sec: 6,
+            micro_timing_label: "early",
+          },
+        ]);
+      }, [props.onFeedbackReady]);
+      return <div data-testid="gemini-panel" />;
+    }),
     TIMING_LABEL_COLORS: {},
   };
 });
@@ -178,6 +194,23 @@ describe("FeedbackViewer", () => {
       />
     );
     expect(screen.getByTestId("gemini-panel")).toBeInTheDocument();
+  });
+
+  it("seeks to the feedback marker start when a feedback pin is clicked", async () => {
+    render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 10 }], alignment: {} } as any}
+      />,
+    );
+
+    const marker = await screen.findByTitle("Move 2: early");
+    fireEvent.click(marker);
+
+    expect(mockActions.seekToShared).toHaveBeenCalledWith(4);
   });
 
   it("switches to practice mode when requested", () => {

@@ -768,283 +768,304 @@ async function runSegmentedBrowserYoloPipeline(params: {
     }
   };
 
-  const total = overlaySegmentPlans.length;
-  if (
-    isOverlayArtifactComplete(existingReference, total) &&
-    isOverlayArtifactComplete(existingPractice, total) &&
-    isOverlayArtifactComplete(existingReferenceArms, total) &&
-    isOverlayArtifactComplete(existingReferenceLegs, total) &&
-    isOverlayArtifactComplete(existingPracticeArms, total) &&
-    isOverlayArtifactComplete(existingPracticeLegs, total)
-  ) {
-    onStatus("YOLO hybrid overlays already ready.");
-    for (const plan of overlaySegmentPlans) {
+  try {
+    const total = overlaySegmentPlans.length;
+    if (
+      isOverlayArtifactComplete(existingReference, total) &&
+      isOverlayArtifactComplete(existingPractice, total) &&
+      isOverlayArtifactComplete(existingReferenceArms, total) &&
+      isOverlayArtifactComplete(existingReferenceLegs, total) &&
+      isOverlayArtifactComplete(existingPracticeArms, total) &&
+      isOverlayArtifactComplete(existingPracticeLegs, total)
+    ) {
+      onStatus("YOLO hybrid overlays already ready.");
+      for (const plan of overlaySegmentPlans) {
+        onSegmentProgress?.(plan.index, 1);
+      }
+      return true;
+    }
+
+    let artifacts = createHybridArtifacts({
+      existingRef: existingReference,
+      existingUser: existingPractice,
+      existingRefArms: existingReferenceArms,
+      existingRefLegs: existingReferenceLegs,
+      existingUserArms: existingPracticeArms,
+      existingUserLegs: existingPracticeLegs,
+      getVideoSize,
+    });
+    const getVideoFile = async (side: VideoSide) => {
+      if (!videoCache.has(side)) {
+        videoCache.set(side, await getSessionVideo(sessionId, side));
+      }
+      const file = videoCache.get(side);
+      if (!file) {
+        throw new Error(`Missing ${side} video for this session`);
+      }
+      return file;
+    };
+
+    for (let idx = 0; idx < overlaySegmentPlans.length; idx += 1) {
+      throwIfAborted(signal);
+      const plan = overlaySegmentPlans[idx];
+      const ordinal = idx + 1;
+      const refSeg = getOverlaySegmentByIndex(artifacts.referenceSeg, plan.index);
+      const refArms = getOverlaySegmentByIndex(artifacts.referenceArms, plan.index);
+      const refLegs = getOverlaySegmentByIndex(artifacts.referenceLegs, plan.index);
+      const practiceSeg = getOverlaySegmentByIndex(artifacts.practiceSeg, plan.index);
+      const practiceArms = getOverlaySegmentByIndex(artifacts.practiceArms, plan.index);
+      const practiceLegs = getOverlaySegmentByIndex(artifacts.practiceLegs, plan.index);
+
+      if (refSeg && refArms && refLegs && practiceSeg && practiceArms && practiceLegs) {
+        continue;
+      }
+
+      let refSegProgress = refSeg ? 1 : 0;
+      let refPoseProgress = refArms && refLegs ? 1 : 0;
+      let practiceSegProgress = practiceSeg ? 1 : 0;
+      let practicePoseProgress = practiceArms && practiceLegs ? 1 : 0;
+
+      const updateStatus = () => {
+        const avg = (refSegProgress + refPoseProgress + practiceSegProgress + practicePoseProgress) / 4;
+        const pct = Math.max(0, Math.min(100, Math.round(avg * 100)));
+        onSegmentProgress?.(plan.index, avg);
+        onStatus(
+          `YOLO hybrid segment ${ordinal}/${total} processing… ${pct}% (segment ${plan.index + 1})`,
+        );
+      };
+
+      updateStatus();
+
+      const processSide = async (side: VideoSide) => {
+        const clipRange = side === "reference" ? plan.reference : plan.practice;
+        const size = getVideoSize(side);
+        const file = await getVideoFile(side);
+        const segExists = side === "reference" ? Boolean(refSeg) : Boolean(practiceSeg);
+        const poseExists = side === "reference" ? Boolean(refArms && refLegs) : Boolean(practiceArms && practiceLegs);
+
+        const segPromise = segExists
+          ? Promise.resolve<VideoResult | null>(null)
+          : (async () => {
+              throwIfAborted(signal);
+              const segForm = new FormData();
+              segForm.append("video", file, file.name);
+              segForm.append("color", YOLO_SEG_COLORS[side]);
+              segForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
+              segForm.append("session_id", sessionId);
+              segForm.append("side", side);
+              segForm.append("start_sec", String(clipRange.startSec));
+              segForm.append("end_sec", String(clipRange.endSec));
+              const segJobId = await startPythonYoloJob(segForm);
+              await rememberJob({ kind: "yolo", jobId: segJobId });
+              return waitForPythonYoloJob(
+                segJobId,
+                (progress) => {
+                  if (side === "reference") refSegProgress = progress;
+                  else practiceSegProgress = progress;
+                  updateStatus();
+                },
+                signal,
+              );
+            })();
+
+        const posePromise = poseExists
+          ? Promise.resolve<PoseResult | null>(null)
+          : (async () => {
+              throwIfAborted(signal);
+              const poseForm = new FormData();
+              poseForm.append("video", file, file.name);
+              poseForm.append("arms_color", YOLO_POSE_COLORS[side].arms);
+              poseForm.append("legs_color", YOLO_POSE_COLORS[side].legs);
+              poseForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
+              poseForm.append("session_id", sessionId);
+              poseForm.append("side", side);
+              poseForm.append("start_sec", String(clipRange.startSec));
+              poseForm.append("end_sec", String(clipRange.endSec));
+              const poseJobId = await startPythonYoloPoseJob(poseForm);
+              await rememberJob({ kind: "yolo-pose", jobId: poseJobId });
+              return waitForPythonYoloPoseJob(
+                poseJobId,
+                (progress) => {
+                  if (side === "reference") refPoseProgress = progress;
+                  else practicePoseProgress = progress;
+                  updateStatus();
+                },
+                signal,
+              );
+            })();
+
+        const [segResult, poseResult] = await Promise.all([segPromise, posePromise]);
+        return { side, clipRange, size, segResult, poseResult };
+      };
+
+      const [referenceResult, practiceResult] = await Promise.all([
+        processSide("reference"),
+        processSide("practice"),
+      ]);
+      const normalizationMeta = buildNormalizationMeta(
+        referenceResult.segResult?.summary ?? null,
+        practiceResult.segResult?.summary ?? null,
+        referenceResult.poseResult?.summary ?? null,
+        practiceResult.poseResult?.summary ?? null,
+      );
+
+      if (referenceResult.segResult) {
+        artifacts = {
+          ...artifacts,
+          referenceSeg: upsertOverlaySegment(
+            artifacts.referenceSeg,
+            buildSegmentVideoResult({
+              plan: referenceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "reference",
+              size: referenceResult.size,
+              video: referenceResult.segResult,
+              meta: {
+                layer: "seg",
+                normalization: normalizationMeta,
+                segSummary: referenceResult.segResult.summary ?? null,
+                poseSummary: referenceResult.poseResult?.summary ?? null,
+              },
+            }),
+          ),
+        };
+      }
+      if (referenceResult.poseResult) {
+        artifacts = {
+          ...artifacts,
+          referenceArms: upsertOverlaySegment(
+            artifacts.referenceArms,
+            buildSegmentVideoResult({
+              plan: referenceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "reference",
+              size: referenceResult.size,
+              video: referenceResult.poseResult.arms,
+              meta: {
+                layer: "arms",
+                normalization: normalizationMeta,
+                poseSummary: referenceResult.poseResult.summary,
+              },
+            }),
+          ),
+          referenceLegs: upsertOverlaySegment(
+            artifacts.referenceLegs,
+            buildSegmentVideoResult({
+              plan: referenceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "reference",
+              size: referenceResult.size,
+              video: referenceResult.poseResult.legs,
+              meta: {
+                layer: "legs",
+                normalization: normalizationMeta,
+                poseSummary: referenceResult.poseResult.summary,
+              },
+            }),
+          ),
+        };
+      }
+      if (practiceResult.segResult) {
+        artifacts = {
+          ...artifacts,
+          practiceSeg: upsertOverlaySegment(
+            artifacts.practiceSeg,
+            buildSegmentVideoResult({
+              plan: practiceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "practice",
+              size: practiceResult.size,
+              video: practiceResult.segResult,
+              meta: {
+                layer: "seg",
+                segSummary: practiceResult.segResult.summary ?? null,
+                poseSummary: practiceResult.poseResult?.summary ?? null,
+              },
+            }),
+          ),
+        };
+      }
+      if (practiceResult.poseResult) {
+        artifacts = {
+          ...artifacts,
+          practiceArms: upsertOverlaySegment(
+            artifacts.practiceArms,
+            buildSegmentVideoResult({
+              plan: practiceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "practice",
+              size: practiceResult.size,
+              video: practiceResult.poseResult.arms,
+              meta: { layer: "arms", poseSummary: practiceResult.poseResult.summary },
+            }),
+          ),
+          practiceLegs: upsertOverlaySegment(
+            artifacts.practiceLegs,
+            buildSegmentVideoResult({
+              plan: practiceResult.clipRange,
+              index: plan.index,
+              sharedStartSec: plan.sharedStartSec,
+              sharedEndSec: plan.sharedEndSec,
+              side: "practice",
+              size: practiceResult.size,
+              video: practiceResult.poseResult.legs,
+              meta: { layer: "legs", poseSummary: practiceResult.poseResult.summary },
+            }),
+          ),
+        };
+      }
+
+      await persistHybridArtifacts({ sessionId, artifacts });
+      syncHybridArtifacts({
+        artifacts,
+        setRefArtifact: setReferenceArtifact,
+        setUserArtifact: setPracticeArtifact,
+        setRefArmsArtifact: setReferenceArmsArtifact,
+        setRefLegsArtifact: setReferenceLegsArtifact,
+        setUserArmsArtifact: setPracticeArmsArtifact,
+        setUserLegsArtifact: setPracticeLegsArtifact,
+      });
       onSegmentProgress?.(plan.index, 1);
+      onSegmentComplete?.(plan.index);
+
+      const nextPendingIndex = overlaySegmentPlans.findIndex((candidate) => {
+        const index = candidate.index;
+        return !(
+          getOverlaySegmentByIndex(artifacts.referenceSeg, index) &&
+          getOverlaySegmentByIndex(artifacts.referenceArms, index) &&
+          getOverlaySegmentByIndex(artifacts.referenceLegs, index) &&
+          getOverlaySegmentByIndex(artifacts.practiceSeg, index) &&
+          getOverlaySegmentByIndex(artifacts.practiceArms, index) &&
+          getOverlaySegmentByIndex(artifacts.practiceLegs, index)
+        );
+      });
+
+      if (nextPendingIndex >= 0) {
+        onStatus(
+          `YOLO hybrid segment ${plan.index + 1} ready. ` +
+            `${overlaySegmentPlans[nextPendingIndex] ? `Segment ${nextPendingIndex + 1}/${total} is processing in the background…` : ""}`,
+        );
+      }
     }
-    signal?.removeEventListener("abort", cancelStartedJobs);
+
+    onStatus(`YOLO hybrid overlays ready. ${total}/${total} segments processed.`);
     return true;
+  } catch (error) {
+    cancelStartedJobs();
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", cancelStartedJobs);
   }
-
-  let artifacts = createHybridArtifacts({
-    existingRef: existingReference,
-    existingUser: existingPractice,
-    existingRefArms: existingReferenceArms,
-    existingRefLegs: existingReferenceLegs,
-    existingUserArms: existingPracticeArms,
-    existingUserLegs: existingPracticeLegs,
-    getVideoSize,
-  });
-  const getVideoFile = async (side: VideoSide) => {
-    if (!videoCache.has(side)) {
-      videoCache.set(side, await getSessionVideo(sessionId, side));
-    }
-    const file = videoCache.get(side);
-    if (!file) {
-      throw new Error(`Missing ${side} video for this session`);
-    }
-    return file;
-  };
-
-  for (let idx = 0; idx < overlaySegmentPlans.length; idx += 1) {
-    throwIfAborted(signal);
-    const plan = overlaySegmentPlans[idx];
-    const ordinal = idx + 1;
-    const refSeg = getOverlaySegmentByIndex(artifacts.referenceSeg, plan.index);
-    const refArms = getOverlaySegmentByIndex(artifacts.referenceArms, plan.index);
-    const refLegs = getOverlaySegmentByIndex(artifacts.referenceLegs, plan.index);
-    const practiceSeg = getOverlaySegmentByIndex(artifacts.practiceSeg, plan.index);
-    const practiceArms = getOverlaySegmentByIndex(artifacts.practiceArms, plan.index);
-    const practiceLegs = getOverlaySegmentByIndex(artifacts.practiceLegs, plan.index);
-
-    if (refSeg && refArms && refLegs && practiceSeg && practiceArms && practiceLegs) {
-      continue;
-    }
-
-    let refSegProgress = refSeg ? 1 : 0;
-    let refPoseProgress = refArms && refLegs ? 1 : 0;
-    let practiceSegProgress = practiceSeg ? 1 : 0;
-    let practicePoseProgress = practiceArms && practiceLegs ? 1 : 0;
-
-    const updateStatus = () => {
-      const avg = (refSegProgress + refPoseProgress + practiceSegProgress + practicePoseProgress) / 4;
-      const pct = Math.max(0, Math.min(100, Math.round(avg * 100)));
-      onSegmentProgress?.(plan.index, avg);
-      onStatus(
-        `YOLO hybrid segment ${ordinal}/${total} processing… ${pct}% (segment ${plan.index + 1})`,
-      );
-    };
-
-    updateStatus();
-
-    const processSide = async (side: VideoSide) => {
-      const clipRange = side === "reference" ? plan.reference : plan.practice;
-      const size = getVideoSize(side);
-      const file = await getVideoFile(side);
-      const segExists = side === "reference"
-        ? Boolean(refSeg)
-        : Boolean(practiceSeg);
-      const poseExists = side === "reference"
-        ? Boolean(refArms && refLegs)
-        : Boolean(practiceArms && practiceLegs);
-
-      let segResult: VideoResult | null = null;
-      let poseResult: PoseResult | null = null;
-
-      if (!segExists) {
-        throwIfAborted(signal);
-        const segForm = new FormData();
-        segForm.append("video", file, file.name);
-        segForm.append("color", YOLO_SEG_COLORS[side]);
-        segForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-        segForm.append("session_id", sessionId);
-        segForm.append("side", side);
-        segForm.append("start_sec", String(clipRange.startSec));
-        segForm.append("end_sec", String(clipRange.endSec));
-        const segJobId = await startPythonYoloJob(segForm);
-        await rememberJob({ kind: "yolo", jobId: segJobId });
-        segResult = await waitForPythonYoloJob(segJobId, (progress) => {
-          if (side === "reference") refSegProgress = progress;
-          else practiceSegProgress = progress;
-          updateStatus();
-        }, signal);
-      }
-
-      if (!poseExists) {
-        throwIfAborted(signal);
-        const poseForm = new FormData();
-        poseForm.append("video", file, file.name);
-        poseForm.append("arms_color", YOLO_POSE_COLORS[side].arms);
-        poseForm.append("legs_color", YOLO_POSE_COLORS[side].legs);
-        poseForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-        poseForm.append("session_id", sessionId);
-        poseForm.append("side", side);
-        poseForm.append("start_sec", String(clipRange.startSec));
-        poseForm.append("end_sec", String(clipRange.endSec));
-        const poseJobId = await startPythonYoloPoseJob(poseForm);
-        await rememberJob({ kind: "yolo-pose", jobId: poseJobId });
-        poseResult = await waitForPythonYoloPoseJob(poseJobId, (progress) => {
-          if (side === "reference") refPoseProgress = progress;
-          else practicePoseProgress = progress;
-          updateStatus();
-        }, signal);
-      }
-
-      return { side, clipRange, size, segResult, poseResult };
-    };
-
-    const referenceResult = await processSide("reference");
-    const practiceResult = await processSide("practice");
-    const normalizationMeta = buildNormalizationMeta(
-      referenceResult.segResult?.summary ?? null,
-      practiceResult.segResult?.summary ?? null,
-      referenceResult.poseResult?.summary ?? null,
-      practiceResult.poseResult?.summary ?? null,
-    );
-
-    if (referenceResult.segResult) {
-      artifacts = {
-        ...artifacts,
-        referenceSeg: upsertOverlaySegment(
-          artifacts.referenceSeg,
-          buildSegmentVideoResult({
-            plan: referenceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "reference",
-            size: referenceResult.size,
-            video: referenceResult.segResult,
-            meta: {
-              layer: "seg",
-              normalization: normalizationMeta,
-              segSummary: referenceResult.segResult.summary ?? null,
-              poseSummary: referenceResult.poseResult?.summary ?? null,
-            },
-          }),
-        ),
-      };
-    }
-    if (referenceResult.poseResult) {
-      artifacts = {
-        ...artifacts,
-        referenceArms: upsertOverlaySegment(
-          artifacts.referenceArms,
-          buildSegmentVideoResult({
-            plan: referenceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "reference",
-            size: referenceResult.size,
-            video: referenceResult.poseResult.arms,
-            meta: { layer: "arms", normalization: normalizationMeta, poseSummary: referenceResult.poseResult.summary },
-          }),
-        ),
-        referenceLegs: upsertOverlaySegment(
-          artifacts.referenceLegs,
-          buildSegmentVideoResult({
-            plan: referenceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "reference",
-            size: referenceResult.size,
-            video: referenceResult.poseResult.legs,
-            meta: { layer: "legs", normalization: normalizationMeta, poseSummary: referenceResult.poseResult.summary },
-          }),
-        ),
-      };
-    }
-    if (practiceResult.segResult) {
-      artifacts = {
-        ...artifacts,
-        practiceSeg: upsertOverlaySegment(
-          artifacts.practiceSeg,
-          buildSegmentVideoResult({
-            plan: practiceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "practice",
-            size: practiceResult.size,
-            video: practiceResult.segResult,
-            meta: {
-              layer: "seg",
-              segSummary: practiceResult.segResult.summary ?? null,
-              poseSummary: practiceResult.poseResult?.summary ?? null,
-            },
-          }),
-        ),
-      };
-    }
-    if (practiceResult.poseResult) {
-      artifacts = {
-        ...artifacts,
-        practiceArms: upsertOverlaySegment(
-          artifacts.practiceArms,
-          buildSegmentVideoResult({
-            plan: practiceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "practice",
-            size: practiceResult.size,
-            video: practiceResult.poseResult.arms,
-            meta: { layer: "arms", poseSummary: practiceResult.poseResult.summary },
-          }),
-        ),
-        practiceLegs: upsertOverlaySegment(
-          artifacts.practiceLegs,
-          buildSegmentVideoResult({
-            plan: practiceResult.clipRange,
-            index: plan.index,
-            sharedStartSec: plan.sharedStartSec,
-            sharedEndSec: plan.sharedEndSec,
-            side: "practice",
-            size: practiceResult.size,
-            video: practiceResult.poseResult.legs,
-            meta: { layer: "legs", poseSummary: practiceResult.poseResult.summary },
-          }),
-        ),
-      };
-    }
-
-    await persistHybridArtifacts({ sessionId, artifacts });
-    syncHybridArtifacts({
-      artifacts,
-      setRefArtifact: setReferenceArtifact,
-      setUserArtifact: setPracticeArtifact,
-      setRefArmsArtifact: setReferenceArmsArtifact,
-      setRefLegsArtifact: setReferenceLegsArtifact,
-      setUserArmsArtifact: setPracticeArmsArtifact,
-      setUserLegsArtifact: setPracticeLegsArtifact,
-    });
-    onSegmentProgress?.(plan.index, 1);
-    onSegmentComplete?.(plan.index);
-
-    const nextPendingIndex = overlaySegmentPlans.findIndex((candidate) => {
-      const index = candidate.index;
-      return !(
-        getOverlaySegmentByIndex(artifacts.referenceSeg, index) &&
-        getOverlaySegmentByIndex(artifacts.referenceArms, index) &&
-        getOverlaySegmentByIndex(artifacts.referenceLegs, index) &&
-        getOverlaySegmentByIndex(artifacts.practiceSeg, index) &&
-        getOverlaySegmentByIndex(artifacts.practiceArms, index) &&
-        getOverlaySegmentByIndex(artifacts.practiceLegs, index)
-      );
-    });
-
-    if (nextPendingIndex >= 0) {
-      onStatus(
-        `YOLO hybrid segment ${plan.index + 1} ready. ` +
-          `${overlaySegmentPlans[nextPendingIndex] ? `Segment ${nextPendingIndex + 1}/${total} is processing in the background…` : ""}`,
-      );
-    }
-  }
-
-  onStatus(`YOLO hybrid overlays ready. ${total}/${total} segments processed.`);
-  signal?.removeEventListener("abort", cancelStartedJobs);
-  return true;
 }
 
 function buildFullVideoArtifact(params: {
@@ -1143,178 +1164,164 @@ export async function ensureBrowserYoloOverlays(params: {
     };
   };
 
-  const overlaySegmentPlans = buildYoloOverlaySegmentPlans(ebsData);
-  const usedSegmented = await runSegmentedBrowserYoloPipeline({
-    sessionId,
-    overlaySegmentPlans,
-    getVideoSize,
-    existingReference: existingRef,
-    existingPractice: existingUser,
-    existingReferenceArms: existingRefArms,
-    existingReferenceLegs: existingRefLegs,
-    existingPracticeArms: existingUserArms,
-    existingPracticeLegs: existingUserLegs,
-    setReferenceArtifact: setRefArtifact,
-    setPracticeArtifact: setUserArtifact,
-    setReferenceArmsArtifact: setRefArmsArtifact,
-    setReferenceLegsArtifact: setRefLegsArtifact,
-    setPracticeArmsArtifact: setUserArmsArtifact,
-    setPracticeLegsArtifact: setUserLegsArtifact,
-    onStatus: (msg) => onStatus(msg),
-    onSegmentProgress,
-    onSegmentComplete,
-    signal,
-  });
+  try {
+    const overlaySegmentPlans = buildYoloOverlaySegmentPlans(ebsData);
+    const usedSegmented = await runSegmentedBrowserYoloPipeline({
+      sessionId,
+      overlaySegmentPlans,
+      getVideoSize,
+      existingReference: existingRef,
+      existingPractice: existingUser,
+      existingReferenceArms: existingRefArms,
+      existingReferenceLegs: existingRefLegs,
+      existingPracticeArms: existingUserArms,
+      existingPracticeLegs: existingUserLegs,
+      setReferenceArtifact: setRefArtifact,
+      setPracticeArtifact: setUserArtifact,
+      setReferenceArmsArtifact: setRefArmsArtifact,
+      setReferenceLegsArtifact: setRefLegsArtifact,
+      setPracticeArmsArtifact: setUserArmsArtifact,
+      setPracticeLegsArtifact: setUserLegsArtifact,
+      onStatus: (msg) => onStatus(msg),
+      onSegmentProgress,
+      onSegmentComplete,
+      signal,
+    });
 
-  if (usedSegmented) {
+    if (usedSegmented) {
+      return;
+    }
+
+    const [referenceFile, practiceFile] = await Promise.all([
+      getSessionVideo(sessionId, "reference"),
+      getSessionVideo(sessionId, "practice"),
+    ]);
+    if (!referenceFile || !practiceFile) {
+      throw new Error("Missing session videos for YOLO overlay generation.");
+    }
+
+    const runFullVideoSide = async (side: VideoSide, file: File) => {
+      const segForm = new FormData();
+      segForm.append("video", file, file.name);
+      segForm.append("color", YOLO_SEG_COLORS[side]);
+      segForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
+      segForm.append("session_id", sessionId);
+      segForm.append("side", side);
+
+      const poseForm = new FormData();
+      poseForm.append("video", file, file.name);
+      poseForm.append("arms_color", YOLO_POSE_COLORS[side].arms);
+      poseForm.append("legs_color", YOLO_POSE_COLORS[side].legs);
+      poseForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
+      poseForm.append("session_id", sessionId);
+      poseForm.append("side", side);
+
+      const label = side === "reference" ? "reference" : "user";
+      const segPromise = (async () => {
+        throwIfAborted(signal);
+        const segJobId = await startPythonYoloJob(segForm);
+        await rememberJob({ kind: "yolo", jobId: segJobId });
+        return waitForPythonYoloJob(
+          segJobId,
+          (progress) => onStatus(`YOLO hybrid (${label} segmentation) ${Math.round(progress * 100)}%`),
+          signal,
+        );
+      })();
+      const posePromise = (async () => {
+        throwIfAborted(signal);
+        const poseJobId = await startPythonYoloPoseJob(poseForm);
+        await rememberJob({ kind: "yolo-pose", jobId: poseJobId });
+        return waitForPythonYoloPoseJob(
+          poseJobId,
+          (progress) => onStatus(`YOLO hybrid (${label} pose) ${Math.round(progress * 100)}%`),
+          signal,
+        );
+      })();
+
+      const [seg, pose] = await Promise.all([segPromise, posePromise]);
+      return { seg, pose };
+    };
+
+    const [{ seg: referenceSeg, pose: referencePose }, { seg: practiceSeg, pose: practicePose }] = await Promise.all([
+      runFullVideoSide("reference", referenceFile),
+      runFullVideoSide("practice", practiceFile),
+    ]);
+
+    const refArtifact = buildFullVideoArtifact({
+      type: "yolo",
+      side: "reference",
+      size: getVideoSize("reference"),
+      video: referenceSeg,
+      meta: { layer: "seg" },
+    });
+    const userArtifact = buildFullVideoArtifact({
+      type: "yolo",
+      side: "practice",
+      size: getVideoSize("practice"),
+      video: practiceSeg,
+      meta: { layer: "seg" },
+    });
+    const refArmsArtifact = buildFullVideoArtifact({
+      type: "yolo-pose-arms",
+      side: "reference",
+      size: getVideoSize("reference"),
+      video: referencePose.arms,
+      meta: { layer: "arms" },
+    });
+    const refLegsArtifact = buildFullVideoArtifact({
+      type: "yolo-pose-legs",
+      side: "reference",
+      size: getVideoSize("reference"),
+      video: referencePose.legs,
+      meta: { layer: "legs" },
+    });
+    const userArmsArtifact = buildFullVideoArtifact({
+      type: "yolo-pose-arms",
+      side: "practice",
+      size: getVideoSize("practice"),
+      video: practicePose.arms,
+      meta: { layer: "arms" },
+    });
+    const userLegsArtifact = buildFullVideoArtifact({
+      type: "yolo-pose-legs",
+      side: "practice",
+      size: getVideoSize("practice"),
+      video: practicePose.legs,
+      meta: { layer: "legs" },
+    });
+
+    await Promise.all([
+      storeSessionOverlay(getSideVariantKey({ sessionId, type: "yolo", side: "reference" }), refArtifact),
+      storeSessionOverlay(getSideVariantKey({ sessionId, type: "yolo", side: "practice" }), userArtifact),
+      storeSessionOverlay(
+        getSideVariantKey({ sessionId, type: "yolo-pose-arms", side: "reference" }),
+        refArmsArtifact,
+      ),
+      storeSessionOverlay(
+        getSideVariantKey({ sessionId, type: "yolo-pose-legs", side: "reference" }),
+        refLegsArtifact,
+      ),
+      storeSessionOverlay(
+        getSideVariantKey({ sessionId, type: "yolo-pose-arms", side: "practice" }),
+        userArmsArtifact,
+      ),
+      storeSessionOverlay(
+        getSideVariantKey({ sessionId, type: "yolo-pose-legs", side: "practice" }),
+        userLegsArtifact,
+      ),
+    ]);
+
+    setRefArtifact(refArtifact);
+    setUserArtifact(userArtifact);
+    setRefArmsArtifact?.(refArmsArtifact);
+    setRefLegsArtifact?.(refLegsArtifact);
+    setUserArmsArtifact?.(userArmsArtifact);
+    setUserLegsArtifact?.(userLegsArtifact);
+    onStatus("YOLO hybrid overlays ready.");
+  } catch (error) {
+    cancelStartedJobs();
+    throw error;
+  } finally {
     signal?.removeEventListener("abort", cancelStartedJobs);
-    return;
   }
-
-  const [referenceFile, practiceFile] = await Promise.all([
-    getSessionVideo(sessionId, "reference"),
-    getSessionVideo(sessionId, "practice"),
-  ]);
-  if (!referenceFile || !practiceFile) {
-    throw new Error("Missing session videos for YOLO overlay generation.");
-  }
-
-  onStatus("YOLO hybrid (reference segmentation)…");
-  throwIfAborted(signal);
-  const referenceSegForm = new FormData();
-  referenceSegForm.append("video", referenceFile, referenceFile.name);
-  referenceSegForm.append("color", YOLO_SEG_COLORS.reference);
-  referenceSegForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-  referenceSegForm.append("session_id", sessionId);
-  referenceSegForm.append("side", "reference");
-  const referenceSegJobId = await startPythonYoloJob(referenceSegForm);
-  await rememberJob({ kind: "yolo", jobId: referenceSegJobId });
-  const referenceSeg = await waitForPythonYoloJob(
-    referenceSegJobId,
-    (progress) => onStatus(`YOLO hybrid (reference segmentation) ${Math.round(progress * 100)}%`),
-    signal,
-  );
-
-  onStatus("YOLO hybrid (reference pose)…");
-  throwIfAborted(signal);
-  const referencePoseForm = new FormData();
-  referencePoseForm.append("video", referenceFile, referenceFile.name);
-  referencePoseForm.append("arms_color", YOLO_POSE_COLORS.reference.arms);
-  referencePoseForm.append("legs_color", YOLO_POSE_COLORS.reference.legs);
-  referencePoseForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-  referencePoseForm.append("session_id", sessionId);
-  referencePoseForm.append("side", "reference");
-  const referencePoseJobId = await startPythonYoloPoseJob(referencePoseForm);
-  await rememberJob({ kind: "yolo-pose", jobId: referencePoseJobId });
-  const referencePose = await waitForPythonYoloPoseJob(
-    referencePoseJobId,
-    (progress) => onStatus(`YOLO hybrid (reference pose) ${Math.round(progress * 100)}%`),
-    signal,
-  );
-
-  onStatus("YOLO hybrid (user segmentation)…");
-  throwIfAborted(signal);
-  const practiceSegForm = new FormData();
-  practiceSegForm.append("video", practiceFile, practiceFile.name);
-  practiceSegForm.append("color", YOLO_SEG_COLORS.practice);
-  practiceSegForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-  practiceSegForm.append("session_id", sessionId);
-  practiceSegForm.append("side", "practice");
-  const practiceSegJobId = await startPythonYoloJob(practiceSegForm);
-  await rememberJob({ kind: "yolo", jobId: practiceSegJobId });
-  const practiceSeg = await waitForPythonYoloJob(
-    practiceSegJobId,
-    (progress) => onStatus(`YOLO hybrid (user segmentation) ${Math.round(progress * 100)}%`),
-    signal,
-  );
-
-  onStatus("YOLO hybrid (user pose)…");
-  throwIfAborted(signal);
-  const practicePoseForm = new FormData();
-  practicePoseForm.append("video", practiceFile, practiceFile.name);
-  practicePoseForm.append("arms_color", YOLO_POSE_COLORS.practice.arms);
-  practicePoseForm.append("legs_color", YOLO_POSE_COLORS.practice.legs);
-  practicePoseForm.append("fps", String(BROWSER_YOLO_OVERLAY_FPS));
-  practicePoseForm.append("session_id", sessionId);
-  practicePoseForm.append("side", "practice");
-  const practicePoseJobId = await startPythonYoloPoseJob(practicePoseForm);
-  await rememberJob({ kind: "yolo-pose", jobId: practicePoseJobId });
-  const practicePose = await waitForPythonYoloPoseJob(
-    practicePoseJobId,
-    (progress) => onStatus(`YOLO hybrid (user pose) ${Math.round(progress * 100)}%`),
-    signal,
-  );
-
-  const refArtifact = buildFullVideoArtifact({
-    type: "yolo",
-    side: "reference",
-    size: getVideoSize("reference"),
-    video: referenceSeg,
-    meta: { layer: "seg" },
-  });
-  const userArtifact = buildFullVideoArtifact({
-    type: "yolo",
-    side: "practice",
-    size: getVideoSize("practice"),
-    video: practiceSeg,
-    meta: { layer: "seg" },
-  });
-  const refArmsArtifact = buildFullVideoArtifact({
-    type: "yolo-pose-arms",
-    side: "reference",
-    size: getVideoSize("reference"),
-    video: referencePose.arms,
-    meta: { layer: "arms" },
-  });
-  const refLegsArtifact = buildFullVideoArtifact({
-    type: "yolo-pose-legs",
-    side: "reference",
-    size: getVideoSize("reference"),
-    video: referencePose.legs,
-    meta: { layer: "legs" },
-  });
-  const userArmsArtifact = buildFullVideoArtifact({
-    type: "yolo-pose-arms",
-    side: "practice",
-    size: getVideoSize("practice"),
-    video: practicePose.arms,
-    meta: { layer: "arms" },
-  });
-  const userLegsArtifact = buildFullVideoArtifact({
-    type: "yolo-pose-legs",
-    side: "practice",
-    size: getVideoSize("practice"),
-    video: practicePose.legs,
-    meta: { layer: "legs" },
-  });
-
-  await Promise.all([
-    storeSessionOverlay(getSideVariantKey({ sessionId, type: "yolo", side: "reference" }), refArtifact),
-    storeSessionOverlay(getSideVariantKey({ sessionId, type: "yolo", side: "practice" }), userArtifact),
-    storeSessionOverlay(
-      getSideVariantKey({ sessionId, type: "yolo-pose-arms", side: "reference" }),
-      refArmsArtifact,
-    ),
-    storeSessionOverlay(
-      getSideVariantKey({ sessionId, type: "yolo-pose-legs", side: "reference" }),
-      refLegsArtifact,
-    ),
-    storeSessionOverlay(
-      getSideVariantKey({ sessionId, type: "yolo-pose-arms", side: "practice" }),
-      userArmsArtifact,
-    ),
-    storeSessionOverlay(
-      getSideVariantKey({ sessionId, type: "yolo-pose-legs", side: "practice" }),
-      userLegsArtifact,
-    ),
-  ]);
-
-  setRefArtifact(refArtifact);
-  setUserArtifact(userArtifact);
-  setRefArmsArtifact?.(refArmsArtifact);
-  setRefLegsArtifact?.(refLegsArtifact);
-  setUserArmsArtifact?.(userArmsArtifact);
-  setUserLegsArtifact?.(userLegsArtifact);
-  onStatus("YOLO hybrid overlays ready.");
-  signal?.removeEventListener("abort", cancelStartedJobs);
 }
