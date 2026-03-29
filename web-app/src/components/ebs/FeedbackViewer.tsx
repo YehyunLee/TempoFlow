@@ -16,7 +16,6 @@ import {
 import {
   BROWSER_YOLO_OVERLAY_FPS,
   BROWSER_YOLO_VARIANT,
-  buildYoloOverlayChunkPlans,
   ensureBrowserYoloOverlays,
 } from "../../lib/ensureBrowserYoloOverlays";
 import {
@@ -351,31 +350,30 @@ export function FeedbackViewer(props: EbsViewerProps) {
       return;
     }
 
-    const chunkPlans = buildYoloOverlayChunkPlans(sessionEbsData);
-    const totalChunks = chunkPlans.length;
+    const totalSegments = buildOverlaySegmentPlans(sessionEbsData).length;
     const refOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(refYoloArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(refYoloArtifact, totalSegments)
         : overlayArtifactHasRenderableData(refYoloArtifact);
     const userOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(userYoloArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(userYoloArtifact, totalSegments)
         : overlayArtifactHasRenderableData(userYoloArtifact);
     const refArmsOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(refYoloPoseArmsArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(refYoloPoseArmsArtifact, totalSegments)
         : overlayArtifactHasRenderableData(refYoloPoseArmsArtifact);
     const refLegsOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(refYoloPoseLegsArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(refYoloPoseLegsArtifact, totalSegments)
         : overlayArtifactHasRenderableData(refYoloPoseLegsArtifact);
     const userArmsOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(userYoloPoseArmsArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(userYoloPoseArmsArtifact, totalSegments)
         : overlayArtifactHasRenderableData(userYoloPoseArmsArtifact);
     const userLegsOk =
-      totalChunks > 0
-        ? isOverlayArtifactComplete(userYoloPoseLegsArtifact, totalChunks)
+      totalSegments > 0
+        ? isOverlayArtifactComplete(userYoloPoseLegsArtifact, totalSegments)
         : overlayArtifactHasRenderableData(userYoloPoseLegsArtifact);
     if (refOk && userOk && refArmsOk && refLegsOk && userArmsOk && userLegsOk) {
       setOverlayStatus("YOLO hybrid overlays ready.");
@@ -726,16 +724,25 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const getNormalizedReferenceOverlayStyle = useCallback(
     (segment: OverlaySegmentArtifact | null) => {
       const normalization = segment?.meta?.normalization as
-        | { scale?: number; translateX?: number; translateY?: number }
+        | { scale?: number; translateX?: number; translateY?: number; pivotX?: number; pivotY?: number }
         | undefined;
       if (!normalization) return undefined;
       const scale = Number(normalization.scale);
       const translateX = Number(normalization.translateX);
       const translateY = Number(normalization.translateY);
-      if (!Number.isFinite(scale) || !Number.isFinite(translateX) || !Number.isFinite(translateY)) {
+      const pivotX = Number(normalization.pivotX);
+      const pivotY = Number(normalization.pivotY);
+      if (
+        !Number.isFinite(scale) ||
+        !Number.isFinite(translateX) ||
+        !Number.isFinite(translateY) ||
+        !Number.isFinite(pivotX) ||
+        !Number.isFinite(pivotY)
+      ) {
         return undefined;
       }
       return {
+        transformOrigin: `${(pivotX * 100).toFixed(3)}% ${(pivotY * 100).toFixed(3)}%`,
         transform: `translate(${(translateX * 100).toFixed(3)}%, ${(translateY * 100).toFixed(3)}%) scale(${scale.toFixed(4)})`,
       };
     },
@@ -748,52 +755,21 @@ export function FeedbackViewer(props: EbsViewerProps) {
       ) ?? null
     );
   }, []);
-  const getRenderableYoloChunksForSegment = useCallback((artifact: OverlayArtifact | null, segmentIndex: number) => {
-    return (artifact?.segments ?? []).filter((segment) => {
-      const renderable = Boolean(segment.video || (segment.frames && segment.frames.length > 0));
-      return renderable && Number(segment.meta?.segmentIndex) === segmentIndex;
-    });
-  }, []);
-  const hasRenderableYoloMoveChunk = useCallback(
-    (artifact: OverlayArtifact | null, segmentIndex: number, moveIndex: number) => {
-      return (artifact?.segments ?? []).some((segment) => {
-        const renderable = Boolean(segment.video || (segment.frames && segment.frames.length > 0));
-        return (
-          renderable &&
-          Number(segment.meta?.segmentIndex) === segmentIndex &&
-          Number(segment.meta?.moveIndex) === moveIndex
-        );
-      });
-    },
-    [],
-  );
   const activeMoveReadiness = useMemo(() => {
     const inFlight = overlayDetector === "yolo" ? yoloSegmentProgress : bodyPixSegmentProgress;
     const readySharedCutoffBySegment = new Map<number, number>();
 
     state.segments.forEach((segment, index) => {
-      const moves = segmentMoves[index] ?? [];
-      const yoloRenderableChunkCount = getRenderableYoloChunksForSegment(refYoloArtifact, index).length;
       const segmentComplete =
         overlayDetector === "yolo"
-          ? moves.length > 0
-            ? moves.every(
-                (_move, moveIndex) =>
-                  hasRenderableYoloMoveChunk(refYoloArtifact, index, moveIndex) &&
-                  hasRenderableYoloMoveChunk(userYoloArtifact, index, moveIndex) &&
-                  hasRenderableYoloMoveChunk(refYoloPoseArmsArtifact, index, moveIndex) &&
-                  hasRenderableYoloMoveChunk(refYoloPoseLegsArtifact, index, moveIndex) &&
-                  hasRenderableYoloMoveChunk(userYoloPoseArmsArtifact, index, moveIndex) &&
-                  hasRenderableYoloMoveChunk(userYoloPoseLegsArtifact, index, moveIndex),
-              )
-            : Boolean(
-                getRenderableYoloChunksForSegment(refYoloArtifact, index).length &&
-                  getRenderableYoloChunksForSegment(userYoloArtifact, index).length &&
-                  getRenderableYoloChunksForSegment(refYoloPoseArmsArtifact, index).length &&
-                  getRenderableYoloChunksForSegment(refYoloPoseLegsArtifact, index).length &&
-                  getRenderableYoloChunksForSegment(userYoloPoseArmsArtifact, index).length &&
-                  getRenderableYoloChunksForSegment(userYoloPoseLegsArtifact, index).length,
-              )
+          ? Boolean(
+              getRenderableSegment(refYoloArtifact, index) &&
+                getRenderableSegment(userYoloArtifact, index) &&
+                getRenderableSegment(refYoloPoseArmsArtifact, index) &&
+                getRenderableSegment(refYoloPoseLegsArtifact, index) &&
+                getRenderableSegment(userYoloPoseArmsArtifact, index) &&
+                getRenderableSegment(userYoloPoseLegsArtifact, index),
+            )
           : Boolean(getRenderableSegment(refBodyPixArtifact, index) && getRenderableSegment(userBodyPixArtifact, index));
 
       if (segmentComplete) {
@@ -801,21 +777,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
         return;
       }
 
-      if (overlayDetector === "yolo" && yoloRenderableChunkCount > 0) {
-        const completedMoveCount = moves.filter(
-          (_move, moveIndex) =>
-            hasRenderableYoloMoveChunk(refYoloArtifact, index, moveIndex) &&
-            hasRenderableYoloMoveChunk(userYoloArtifact, index, moveIndex) &&
-            hasRenderableYoloMoveChunk(refYoloPoseArmsArtifact, index, moveIndex) &&
-            hasRenderableYoloMoveChunk(refYoloPoseLegsArtifact, index, moveIndex) &&
-            hasRenderableYoloMoveChunk(userYoloPoseArmsArtifact, index, moveIndex) &&
-            hasRenderableYoloMoveChunk(userYoloPoseLegsArtifact, index, moveIndex),
-        ).length;
-        if (completedMoveCount > 0) {
-          const readyMove = moves[Math.min(completedMoveCount - 1, moves.length - 1)];
-          readySharedCutoffBySegment.set(index, readyMove?.endSec ?? segment.shared_start_sec);
-        }
-      } else if (inFlight?.segmentIndex === index) {
+      if (inFlight?.segmentIndex === index) {
         const duration = Math.max(0, segment.shared_end_sec - segment.shared_start_sec);
         readySharedCutoffBySegment.set(
           index,
@@ -848,8 +810,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     state.segments,
     segmentMoves,
     getRenderableSegment,
-    getRenderableYoloChunksForSegment,
-    hasRenderableYoloMoveChunk,
     refYoloArtifact,
     userYoloArtifact,
     refYoloPoseArmsArtifact,

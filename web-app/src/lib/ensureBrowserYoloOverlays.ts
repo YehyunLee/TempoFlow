@@ -14,7 +14,7 @@ import {
 } from "./overlaySegments";
 
 export const BROWSER_YOLO_OVERLAY_FPS = 12;
-export const BROWSER_YOLO_VARIANT = "yolo26n-python-hybrid-v6";
+export const BROWSER_YOLO_VARIANT = "yolo26n-python-hybrid-v9";
 
 type VideoSide = "reference" | "practice";
 type PoseLayer = "arms" | "legs";
@@ -57,22 +57,6 @@ type SegmentedYoloArtifacts = {
   practiceLegs: OverlayArtifact;
 };
 
-export type YoloOverlayChunkPlan = {
-  index: number;
-  segmentIndex: number;
-  moveIndex: number | null;
-  sharedStartSec: number;
-  sharedEndSec: number;
-  reference: {
-    startSec: number;
-    endSec: number;
-  };
-  practice: {
-    startSec: number;
-    endSec: number;
-  };
-};
-
 const YOLO_SEG_COLORS: Record<VideoSide, string> = {
   reference: "#6ec6f5",
   practice: "#f2b37b",
@@ -87,57 +71,8 @@ function getOverlayBaseUrl() {
   return getPublicEbsProcessorUrl().replace(/\/api\/process\/?$/, "");
 }
 
-export function buildYoloOverlayChunkPlans(ebsData: EbsData | null): YoloOverlayChunkPlan[] {
-  const segmentPlans = buildOverlaySegmentPlans(ebsData);
-  const beats = ebsData?.beats_shared_sec ?? [];
-  const segments = ebsData?.segments ?? [];
-  let nextIndex = 0;
-
-  return segmentPlans.flatMap((plan) => {
-    const segment = segments[plan.index];
-    const beatRange = segment?.beat_idx_range;
-    if (beatRange && beatRange[1] > beatRange[0]) {
-      const chunkPlans: YoloOverlayChunkPlan[] = [];
-      for (let beatIdx = beatRange[0]; beatIdx < beatRange[1]; beatIdx += 1) {
-        const sharedStartSec = beats[beatIdx];
-        const sharedEndSec = beats[beatIdx + 1];
-        if (!Number.isFinite(sharedStartSec) || !Number.isFinite(sharedEndSec) || sharedEndSec <= sharedStartSec) {
-          continue;
-        }
-        const refOffset = sharedStartSec - plan.sharedStartSec;
-        const practiceOffset = sharedStartSec - plan.sharedStartSec;
-        const duration = sharedEndSec - sharedStartSec;
-        chunkPlans.push({
-          index: nextIndex++,
-          segmentIndex: plan.index,
-          moveIndex: beatIdx - beatRange[0],
-          sharedStartSec,
-          sharedEndSec,
-          reference: {
-            startSec: plan.reference.startSec + refOffset,
-            endSec: plan.reference.startSec + refOffset + duration,
-          },
-          practice: {
-            startSec: plan.practice.startSec + practiceOffset,
-            endSec: plan.practice.startSec + practiceOffset + duration,
-          },
-        });
-      }
-      if (chunkPlans.length) return chunkPlans;
-    }
-
-    return [
-      {
-        index: nextIndex++,
-        segmentIndex: plan.index,
-        moveIndex: null,
-        sharedStartSec: plan.sharedStartSec,
-        sharedEndSec: plan.sharedEndSec,
-        reference: plan.reference,
-        practice: plan.practice,
-      } satisfies YoloOverlayChunkPlan,
-    ];
-  });
+export function buildYoloOverlaySegmentPlans(ebsData: EbsData | null): OverlaySegmentPlan[] {
+  return buildOverlaySegmentPlans(ebsData);
 }
 
 function sleep(ms: number) {
@@ -164,35 +99,53 @@ function buildNormalizationMeta(
   const practicePeople = [...(practiceSummary?.persons ?? [])].sort((a, b) => a.anchor_x - b.anchor_x);
   if (!refPeople.length || !practicePeople.length) return null;
 
-  const pairCount = Math.min(refPeople.length, practicePeople.length);
-  const refSubset = refPeople.slice(0, pairCount);
-  const practiceSubset = practicePeople.slice(0, pairCount);
+  const practicePool = [...practicePeople];
+  const pairs = refPeople
+    .map((referencePerson) => {
+      if (!practicePool.length) return null;
+      let bestIndex = 0;
+      let bestDistance = Infinity;
+      practicePool.forEach((practicePerson, index) => {
+        const distance =
+          Math.abs(practicePerson.anchor_x - referencePerson.anchor_x) +
+          Math.abs(practicePerson.anchor_y - referencePerson.anchor_y) * 0.35;
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          bestIndex = index;
+        }
+      });
+      const [practicePerson] = practicePool.splice(bestIndex, 1);
+      return practicePerson ? { referencePerson, practicePerson } : null;
+    })
+    .filter((pair): pair is { referencePerson: PosePersonSummary; practicePerson: PosePersonSummary } => pair != null);
 
-  const union = (people: PosePersonSummary[]) => ({
-    minX: Math.min(...people.map((person) => person.min_x)),
-    maxX: Math.max(...people.map((person) => person.max_x)),
-    minY: Math.min(...people.map((person) => person.min_y)),
-    maxY: Math.max(...people.map((person) => person.max_y)),
-    anchorX: people.reduce((sum, person) => sum + person.anchor_x, 0) / people.length,
-    anchorY: Math.max(...people.map((person) => person.anchor_y)),
+  if (!pairs.length) return null;
+
+  const scaleSamples = pairs.map(({ referencePerson, practicePerson }) => {
+    const heightRatio = practicePerson.height / Math.max(referencePerson.height, 0.08);
+    const widthRatio = practicePerson.width / Math.max(referencePerson.width, 0.05);
+    return heightRatio * 0.82 + widthRatio * 0.18;
   });
+  const sortedScaleSamples = [...scaleSamples].sort((a, b) => a - b);
+  const medianIndex = Math.floor(sortedScaleSamples.length / 2);
+  const rawScale =
+    sortedScaleSamples.length % 2 === 0
+      ? (sortedScaleSamples[medianIndex - 1] + sortedScaleSamples[medianIndex]) / 2
+      : sortedScaleSamples[medianIndex];
+  const scale = Math.max(0.35, Math.min(1.65, rawScale));
 
-  const refUnion = union(refSubset);
-  const practiceUnion = union(practiceSubset);
-  const refWidth = Math.max(0.05, refUnion.maxX - refUnion.minX);
-  const practiceWidth = Math.max(0.05, practiceUnion.maxX - practiceUnion.minX);
-  const refHeight = Math.max(0.08, refUnion.maxY - refUnion.minY);
-  const practiceHeight = Math.max(0.08, practiceUnion.maxY - practiceUnion.minY);
-
-  const scale = Math.max(0.55, Math.min(1.9, (practiceHeight / refHeight) * 0.7 + (practiceWidth / refWidth) * 0.3));
-  const translatedAnchorX = refUnion.anchorX * scale;
-  const translatedAnchorY = refUnion.anchorY * scale;
+  const pivotX = pairs.reduce((sum, pair) => sum + pair.referencePerson.anchor_x, 0) / pairs.length;
+  const targetX = pairs.reduce((sum, pair) => sum + pair.practicePerson.anchor_x, 0) / pairs.length;
+  const pivotY = Math.max(...pairs.map((pair) => pair.referencePerson.anchor_y));
+  const targetY = Math.max(...pairs.map((pair) => pair.practicePerson.anchor_y));
 
   return {
     scale,
-    translateX: practiceUnion.anchorX - translatedAnchorX,
-    translateY: practiceUnion.anchorY - translatedAnchorY,
-    matchedPersonCount: pairCount,
+    translateX: targetX - pivotX,
+    translateY: targetY - pivotY,
+    pivotX,
+    pivotY,
+    matchedPersonCount: pairs.length,
     referencePersonCount: refPeople.length,
     practicePersonCount: practicePeople.length,
   };
@@ -334,10 +287,8 @@ async function waitForPythonYoloPoseJob(jobId: string, reportProgress: (progress
 }
 
 function buildSegmentVideoResult(params: {
-  plan: YoloOverlayChunkPlan["reference"] | YoloOverlayChunkPlan["practice"];
+  plan: OverlaySegmentPlan["reference"] | OverlaySegmentPlan["practice"];
   index: number;
-  segmentIndex: number;
-  moveIndex: number | null;
   sharedStartSec: number;
   sharedEndSec: number;
   side: VideoSide;
@@ -345,7 +296,7 @@ function buildSegmentVideoResult(params: {
   video: VideoResult;
   meta?: Record<string, unknown>;
 }) {
-  const { plan, index, segmentIndex, moveIndex, sharedStartSec, sharedEndSec, side, size, video, meta } = params;
+  const { plan, index, sharedStartSec, sharedEndSec, side, size, video, meta } = params;
   return {
     index,
     startSec: plan.startSec,
@@ -360,8 +311,6 @@ function buildSegmentVideoResult(params: {
     meta: {
       generator: "python",
       side,
-      segmentIndex,
-      moveIndex,
       sharedStartSec,
       sharedEndSec,
       ...(meta ?? {}),
@@ -491,7 +440,7 @@ function syncHybridArtifacts(params: {
 
 async function runSegmentedBrowserYoloPipeline(params: {
   sessionId: string;
-  chunkPlans: YoloOverlayChunkPlan[];
+  overlaySegmentPlans: OverlaySegmentPlan[];
   getVideoSize: (side: VideoSide) => { width: number; height: number };
   existingReference: OverlayArtifact | null;
   existingPractice: OverlayArtifact | null;
@@ -510,7 +459,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
 }) {
   const {
     sessionId,
-    chunkPlans,
+    overlaySegmentPlans,
     getVideoSize,
     existingReference,
     existingPractice,
@@ -528,11 +477,11 @@ async function runSegmentedBrowserYoloPipeline(params: {
     onSegmentProgress,
   } = params;
 
-  if (!chunkPlans.length) {
+  if (!overlaySegmentPlans.length) {
     return false;
   }
 
-  const total = chunkPlans.length;
+  const total = overlaySegmentPlans.length;
   if (
     isOverlayArtifactComplete(existingReference, total) &&
     isOverlayArtifactComplete(existingPractice, total) &&
@@ -542,8 +491,8 @@ async function runSegmentedBrowserYoloPipeline(params: {
     isOverlayArtifactComplete(existingPracticeLegs, total)
   ) {
     onStatus("YOLO hybrid overlays already ready.");
-    for (const plan of chunkPlans) {
-      onSegmentProgress?.(plan.segmentIndex, 1);
+    for (const plan of overlaySegmentPlans) {
+      onSegmentProgress?.(plan.index, 1);
     }
     return true;
   }
@@ -570,13 +519,8 @@ async function runSegmentedBrowserYoloPipeline(params: {
     return file;
   };
 
-  const chunkCountsBySegment = new Map<number, number>();
-  for (const chunk of chunkPlans) {
-    chunkCountsBySegment.set(chunk.segmentIndex, (chunkCountsBySegment.get(chunk.segmentIndex) ?? 0) + 1);
-  }
-
-  for (let idx = 0; idx < chunkPlans.length; idx += 1) {
-    const plan = chunkPlans[idx];
+  for (let idx = 0; idx < overlaySegmentPlans.length; idx += 1) {
+    const plan = overlaySegmentPlans[idx];
     const ordinal = idx + 1;
     const refSeg = getOverlaySegmentByIndex(artifacts.referenceSeg, plan.index);
     const refArms = getOverlaySegmentByIndex(artifacts.referenceArms, plan.index);
@@ -597,15 +541,9 @@ async function runSegmentedBrowserYoloPipeline(params: {
     const updateStatus = () => {
       const avg = (refSegProgress + refPoseProgress + practiceSegProgress + practicePoseProgress) / 4;
       const pct = Math.max(0, Math.min(100, Math.round(avg * 100)));
-      const readyChunkCount = (artifacts.referenceSeg.segments ?? []).filter(
-        (segment) => Number(segment.meta?.segmentIndex) === plan.segmentIndex,
-      ).length;
-      const segmentChunkCount = chunkCountsBySegment.get(plan.segmentIndex) ?? 1;
-      const segmentProgress = Math.max(0, Math.min(1, (readyChunkCount + avg) / segmentChunkCount));
-      onSegmentProgress?.(plan.segmentIndex, segmentProgress);
+      onSegmentProgress?.(plan.index, avg);
       onStatus(
-        `YOLO hybrid chunk ${ordinal}/${total} processing… ${pct}% ` +
-          `(segment ${plan.segmentIndex + 1}${plan.moveIndex != null ? `, move ${plan.moveIndex + 1}` : ""})`,
+        `YOLO hybrid segment ${ordinal}/${total} processing… ${pct}% (segment ${plan.index + 1})`,
       );
     };
 
@@ -678,8 +616,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: referenceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "reference",
@@ -698,8 +634,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: referenceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "reference",
@@ -713,8 +647,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: referenceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "reference",
@@ -733,8 +665,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: practiceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "practice",
@@ -753,8 +683,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: practiceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "practice",
@@ -768,8 +696,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
           buildSegmentVideoResult({
             plan: practiceResult.clipRange,
             index: plan.index,
-            segmentIndex: plan.segmentIndex,
-            moveIndex: plan.moveIndex,
             sharedStartSec: plan.sharedStartSec,
             sharedEndSec: plan.sharedEndSec,
             side: "practice",
@@ -791,13 +717,9 @@ async function runSegmentedBrowserYoloPipeline(params: {
       setUserArmsArtifact: setPracticeArmsArtifact,
       setUserLegsArtifact: setPracticeLegsArtifact,
     });
-    const readyChunkCount = (artifacts.referenceSeg.segments ?? []).filter(
-      (segment) => Number(segment.meta?.segmentIndex) === plan.segmentIndex,
-    ).length;
-    const segmentChunkCount = chunkCountsBySegment.get(plan.segmentIndex) ?? 1;
-    onSegmentProgress?.(plan.segmentIndex, Math.max(0, Math.min(1, readyChunkCount / segmentChunkCount)));
+    onSegmentProgress?.(plan.index, 1);
 
-    const nextPendingIndex = chunkPlans.findIndex((candidate) => {
+    const nextPendingIndex = overlaySegmentPlans.findIndex((candidate) => {
       const index = candidate.index;
       return !(
         getOverlaySegmentByIndex(artifacts.referenceSeg, index) &&
@@ -811,13 +733,13 @@ async function runSegmentedBrowserYoloPipeline(params: {
 
     if (nextPendingIndex >= 0) {
       onStatus(
-        `YOLO hybrid ${plan.moveIndex != null ? `move ${plan.moveIndex + 1}` : "chunk"} ready for segment ${plan.segmentIndex + 1}. ` +
-          `${chunkPlans[nextPendingIndex] ? `Chunk ${nextPendingIndex + 1}/${total} is processing in the background…` : ""}`,
+        `YOLO hybrid segment ${plan.index + 1} ready. ` +
+          `${overlaySegmentPlans[nextPendingIndex] ? `Segment ${nextPendingIndex + 1}/${total} is processing in the background…` : ""}`,
       );
     }
   }
 
-  onStatus(`YOLO hybrid overlays ready. ${total}/${total} chunks processed.`);
+  onStatus(`YOLO hybrid overlays ready. ${total}/${total} segments processed.`);
   return true;
 }
 
@@ -895,10 +817,10 @@ export async function ensureBrowserYoloOverlays(params: {
     };
   };
 
-  const chunkPlans = buildYoloOverlayChunkPlans(ebsData);
+  const overlaySegmentPlans = buildYoloOverlaySegmentPlans(ebsData);
   const usedSegmented = await runSegmentedBrowserYoloPipeline({
     sessionId,
-    chunkPlans,
+    overlaySegmentPlans,
     getVideoSize,
     existingReference: existingRef,
     existingPractice: existingUser,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import math
 import tempfile
 import threading
@@ -96,6 +98,102 @@ def _iter_pose_instances(keypoints: Any) -> list[tuple[Any, Any | None]]:
         except Exception:
             continue
     return poses
+
+
+def _summarize_pose_instances(instances: list[tuple[Any, Any | None]], w: int, h: int) -> list[dict[str, float]]:
+    people: list[dict[str, float]] = []
+    norm_w = float(max(1, w))
+    norm_h = float(max(1, h))
+
+    for xy, conf in instances:
+        visible_points: list[tuple[float, float]] = []
+        for idx in range(len(xy)):
+            try:
+                score = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+                if score < 0.25:
+                    continue
+                point = xy[idx]
+                visible_points.append((float(point[0]), float(point[1])))
+            except Exception:
+                continue
+
+        if not visible_points:
+            continue
+
+        min_x = min(point[0] for point in visible_points)
+        max_x = max(point[0] for point in visible_points)
+        min_y = min(point[1] for point in visible_points)
+        max_y = max(point[1] for point in visible_points)
+
+        ankle_points = [
+            _visible_pose_point(xy, conf, 15),
+            _visible_pose_point(xy, conf, 16),
+        ]
+        visible_ankles = [point for point in ankle_points if point is not None]
+        if visible_ankles:
+            anchor_x = sum(point[0] for point in visible_ankles) / len(visible_ankles)
+            anchor_y = sum(point[1] for point in visible_ankles) / len(visible_ankles)
+        else:
+            lowest = max(visible_points, key=lambda point: point[1])
+            anchor_x = lowest[0]
+            anchor_y = lowest[1]
+
+        center_x = (min_x + max_x) / 2.0
+        center_y = (min_y + max_y) / 2.0
+        height = max(1.0, max_y - min_y)
+        width = max(1.0, max_x - min_x)
+
+        people.append(
+            {
+                "anchor_x": anchor_x / norm_w,
+                "anchor_y": anchor_y / norm_h,
+                "center_x": center_x / norm_w,
+                "center_y": center_y / norm_h,
+                "width": width / norm_w,
+                "height": height / norm_h,
+                "min_x": min_x / norm_w,
+                "max_x": max_x / norm_w,
+                "min_y": min_y / norm_h,
+                "max_y": max_y / norm_h,
+            }
+        )
+
+    return sorted(people, key=lambda person: person["anchor_x"])
+
+
+def _aggregate_pose_summaries(summary_frames: list[list[dict[str, float]]]) -> dict[str, Any] | None:
+    if not summary_frames:
+        return None
+
+    slot_count = max(len(frame) for frame in summary_frames)
+    people: list[dict[str, float]] = []
+    keys = ("anchor_x", "anchor_y", "center_x", "center_y", "width", "height", "min_x", "max_x", "min_y", "max_y")
+
+    for slot_index in range(slot_count):
+        samples = [frame[slot_index] for frame in summary_frames if slot_index < len(frame)]
+        if not samples:
+            continue
+        person = {
+            key: sum(float(sample[key]) for sample in samples) / len(samples)
+            for key in keys
+        }
+        people.append(person)
+
+    if not people:
+        return None
+
+    people.sort(key=lambda person: person["anchor_x"])
+    return {
+        "person_count": len(people),
+        "persons": people,
+    }
+
+
+def _encode_summary_header(summary: dict[str, Any] | None) -> str | None:
+    if not summary:
+        return None
+    payload = json.dumps(summary, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii")
 
 
 def _scale_points(points: Any, scale: float) -> Any:
@@ -521,6 +619,7 @@ def _run_pose_overlay_job(
     next_out_time = 0.0
     last_arms = np.zeros((h, w, 3), dtype=np.uint8)
     last_legs = np.zeros((h, w, 3), dtype=np.uint8)
+    pose_summary_frames: list[list[dict[str, float]]] = []
 
     while written < expected:
         ok, frame = cap.read()
@@ -538,7 +637,9 @@ def _run_pose_overlay_job(
         result = pose_model.predict(frame, imgsz=768, conf=0.2, iou=0.5, verbose=False)
         if result and getattr(result[0], "keypoints", None) is not None and len(result[0].keypoints.xy) > 0:
             kp = result[0].keypoints
-            for xy, conf in _iter_pose_instances(kp):
+            instances = _iter_pose_instances(kp)
+            pose_summary_frames.append(_summarize_pose_instances(instances, w, h))
+            for xy, conf in instances:
                 pose_arms_overlay, pose_legs_overlay = _render_pose_layers(xy, conf, w, h, arms_color, legs_color)
                 arms_overlay = np.maximum(arms_overlay, pose_arms_overlay)
                 legs_overlay = np.maximum(legs_overlay, pose_legs_overlay)
@@ -564,6 +665,7 @@ def _run_pose_overlay_job(
     cap.release()
     arms_writer.release()
     legs_writer.release()
+    POSE_JOBS[job_id]["pose_summary"] = _aggregate_pose_summaries(pose_summary_frames)
     POSE_JOBS[job_id]["status"] = "done"
 
 
@@ -837,7 +939,16 @@ async def overlay_yolo_pose_result(job_id: str, layer: str, background_tasks: Ba
         if job.get("tmp_in"):
             background_tasks.add_task(lambda: Path(job["tmp_in"]).unlink(missing_ok=True))
         POSE_JOBS.pop(job_id, None)
-    return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_{layer}_overlay.webm")
+    headers = {}
+    encoded_summary = _encode_summary_header(job.get("pose_summary"))
+    if encoded_summary:
+        headers["x-tempoflow-pose-summary"] = encoded_summary
+    return FileResponse(
+        path=out_path,
+        media_type="video/webm",
+        filename=f"{job_id}_{layer}_overlay.webm",
+        headers=headers,
+    )
 
 
 @router.post("/api/overlay/bodypix/start")
