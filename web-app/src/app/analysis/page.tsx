@@ -430,19 +430,14 @@ function AnalysisPageContent() {
     <header className="fixed top-0 left-0 right-0 bg-white/85 backdrop-blur-md border-b border-sky-100 z-50">
       <div className="flex items-center px-6 py-3">
         
-        {/* 1. Left Section: Logo (Flex-1 to push center) */}
+        {/* 1. Left Section: Logo */}
         <div className="flex-1">
           <Link href="/" className="text-2xl font-bold text-slate-900 tracking-tight">
             TempoFlow
           </Link>
         </div>
 
-        {/* 2. Middle Section: Title */}
-        <div className="flex-none flex items-center">
-          <span className="text-sm font-medium text-slate-600">Analysis</span>
-        </div>
-
-        {/* 3. Right Section: Actions (Flex-1 + justify-end) */}
+        {/* 2. Right Section: Actions */}
         <div className="flex-1 flex justify-end items-center gap-3">
           <Link 
             href="/dashboard" 
