@@ -641,7 +641,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     overlayMode === "precomputed" ? (
                       <ProgressiveOverlay videoRef={refVideo} artifact={refBodyPixArtifact} />
                     ) : (
-                      <BodyPixOverlay videoRef={refVideo} opacity={0.68} />
+                      <BodyPixOverlay videoRef={refVideo} opacity={0.68} color={{ r: 50, g: 200, b: 100 }} />
                     )
                   ) : null}
                 </div>
@@ -665,7 +665,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     overlayMode === "precomputed" ? (
                       <ProgressiveOverlay videoRef={userVideo} artifact={userBodyPixArtifact} />
                     ) : (
-                      <BodyPixOverlay videoRef={userVideo} opacity={0.68} />
+                      <BodyPixOverlay videoRef={userVideo} opacity={0.68} color={{ r: 255, g: 100, b: 50 }} />
                     )
                   ) : null}
                 </div>
@@ -694,20 +694,20 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     className="absolute inset-0 w-full h-full object-contain z-0"
                     playsInline
                   />
-                  {/* Layer 1: Reference ghost (BodyPix overlay) */}
+                  {/* Layer 1: Reference ghost (BodyPix overlay) - tinted green */}
                   {(overlayViewSource === "reference" || overlayViewSource === "both") && refOverlayFrame && (
                     <img
                       src={refOverlayFrame instanceof Blob ? URL.createObjectURL(refOverlayFrame) : refOverlayFrame}
                       alt="Reference ghost"
                       className="absolute inset-0 w-full h-full object-contain pointer-events-none z-10"
                       style={{
-                        mixBlendMode: "difference",
-                        filter: "brightness(1.5) saturate(2)",
-                        opacity: 0.8,
+                        mixBlendMode: "multiply",
+                        filter: "brightness(0.7) saturate(0) sepia(0.6) hue-rotate(90deg) saturate(1.2) drop-shadow(2px 2px 0 #22c55e) drop-shadow(-2px -2px 0 #22c55e) drop-shadow(2px -2px 0 #22c55e) drop-shadow(-2px 2px 0 #22c55e)",
+                        opacity: 0.6,
                       }}
                     />
                   )}
-                  {/* Layer 2: User BodyPix overlay */}
+                  {/* Layer 2: User BodyPix overlay - tinted red-orange */}
                   {(overlayViewSource === "user" || overlayViewSource === "both") && userOverlayFrame && (
                     <img
                       src={userOverlayFrame instanceof Blob ? URL.createObjectURL(userOverlayFrame) : userOverlayFrame}
@@ -715,7 +715,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       className="absolute inset-0 w-full h-full object-contain pointer-events-none z-20"
                       style={{
                         mixBlendMode: "multiply",
-                        opacity: 0.6,
+                        filter: "brightness(0.7) saturate(0) sepia(0.6) hue-rotate(320deg) saturate(1.2) drop-shadow(2px 2px 0 #ef4444) drop-shadow(-2px -2px 0 #ef4444) drop-shadow(2px -2px 0 #ef4444) drop-shadow(-2px 2px 0 #ef4444)",
+                        opacity: 0.5,
                       }}
                     />
                   )}
