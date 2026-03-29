@@ -300,7 +300,8 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
   }, [currentSegmentIndex, seekToSegment, segments.length]);
 
   const toggleMainSpeed = useCallback(() => {
-    const nextRate = mainPlaybackRate === 1 ? 0.5 : 1;
+    // Cycle: 1 -> 0.5 -> 0.25 -> 1
+    const nextRate = mainPlaybackRate === 1 ? 0.5 : mainPlaybackRate === 0.5 ? 0.25 : 1;
     setMainPlaybackRate(nextRate);
     if (!practice.enabled) {
       const refElement = refVideo.current;

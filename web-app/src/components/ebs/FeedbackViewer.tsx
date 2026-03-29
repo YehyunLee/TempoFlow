@@ -712,8 +712,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   <button className="transport-btn" onClick={seekToNextSegment} title="Next segment">
                     ▶▶
                   </button>
-                  <button className="transport-btn" onClick={toggleMainSpeed} title="Toggle 0.5x speed">
-                    {state.mainPlaybackRate === 1 ? "1x" : "0.5x"}
+                  <button className="transport-btn" onClick={toggleMainSpeed} title="Toggle playback speed">
+                    {state.mainPlaybackRate === 1 ? "1x" : state.mainPlaybackRate === 0.5 ? "0.5x" : "0.25x"}
                   </button>
                   <button
                     className="transport-btn practice-btn"
