@@ -86,6 +86,8 @@ export type GeminiFeedbackPanelHandle = {
 };
 
 const FETCH_RETRIES = 3;
+const GEMINI_JOB_POLL_MS = 1500;
+const GEMINI_JOB_TIMEOUT_MS = 20 * 60 * 1000;
 
 export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiFeedbackPanelProps>(
   function GeminiFeedbackPanel(props, ref) {
@@ -115,6 +117,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
   const [burnInLabels, setBurnInLabels] = useState(true);
   const [includeAudio, setIncludeAudio] = useState(false);
   const [pipelineHint, setPipelineHint] = useState<string | null>(null);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   const userHovering = useRef(false);
 
@@ -299,17 +302,49 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         form.append("include_audio", includeAudio ? "true" : "false");
 
         try {
-          const res = await fetch(`${processorBaseUrl}/api/move-feedback`, {
+          const startRes = await fetch(`${processorBaseUrl}/api/move-feedback/start`, {
             method: "POST",
             body: form,
           });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            throw new Error((body as { error?: string }).error ?? `Segment ${segIndex} failed (${res.status})`);
+          if (!startRes.ok) {
+            const body = await startRes.json().catch(() => ({}));
+            throw new Error((body as { error?: string }).error ?? `Segment ${segIndex} failed (${startRes.status})`);
           }
-          const data = (await res.json()) as GeminiSegmentResult;
-          await storeFeedbackSegment(cacheKey, data);
-          return data;
+
+          const startBody = (await startRes.json()) as { job_id?: string; error?: string };
+          if (!startBody.job_id) {
+            throw new Error(startBody.error || `Missing Gemini job id for segment ${segIndex}`);
+          }
+
+          const deadline = Date.now() + GEMINI_JOB_TIMEOUT_MS;
+          while (Date.now() < deadline) {
+            await new Promise((resolve) => window.setTimeout(resolve, GEMINI_JOB_POLL_MS));
+            const statusRes = await fetch(
+              `${processorBaseUrl}/api/move-feedback/status?job_id=${encodeURIComponent(startBody.job_id)}`,
+            );
+            if (!statusRes.ok) {
+              const body = await statusRes.json().catch(() => ({}));
+              throw new Error((body as { error?: string }).error ?? `Gemini status failed (${statusRes.status})`);
+            }
+            const status = (await statusRes.json()) as { status?: string; error?: string };
+            if (status.status === "done") {
+              const resultRes = await fetch(
+                `${processorBaseUrl}/api/move-feedback/result?job_id=${encodeURIComponent(startBody.job_id)}`,
+              );
+              if (!resultRes.ok) {
+                const body = await resultRes.json().catch(() => ({}));
+                throw new Error((body as { error?: string }).error ?? `Gemini result failed (${resultRes.status})`);
+              }
+              const data = (await resultRes.json()) as GeminiSegmentResult;
+              await storeFeedbackSegment(cacheKey, data);
+              return data;
+            }
+            if (status.status === "error") {
+              throw new Error(status.error || `Gemini job failed for segment ${segIndex}`);
+            }
+          }
+
+          throw new Error(`Gemini job timed out for segment ${segIndex}`);
         } catch (e) {
           lastErr = e instanceof Error ? e : new Error(String(e));
           const msg = lastErr.message.toLowerCase();
@@ -422,8 +457,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     return counts;
   }, [flatMoves]);
 
-  const onTimeCount = labelCounts["on-time"] ?? 0;
-  const issueCount = flatMoves.length - onTimeCount;
+  const activeFilterBadge =
+    filterLabel === "all"
+      ? `All moves (${flatMoves.length})`
+      : `${TIMING_BADGES[filterLabel]?.label ?? filterLabel} (${labelCounts[filterLabel] ?? 0})`;
 
   return (
     <div className="rounded-[24px] border border-indigo-100 bg-white shadow-sm overflow-hidden">
@@ -457,81 +494,56 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
       {/* Results */}
       {flatMoves.length > 0 && (
         <>
-          {/* Summary */}
-          <div className="px-5 py-4 border-b border-indigo-50">
-            <div className="flex items-center gap-4 flex-wrap">
-              <p className="text-sm font-medium text-slate-800">
-                {flatMoves.length} move{flatMoves.length === 1 ? "" : "s"} across{" "}
-                {results.filter((r) => r.moves?.length).length} segment
-                {results.filter((r) => r.moves?.length).length === 1 ? "" : "s"}
-              </p>
-              <div className="flex items-center gap-2 flex-wrap">
-                {onTimeCount > 0 && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 font-medium">
-                    {onTimeCount} on-time
-                  </span>
-                )}
-                {issueCount > 0 && (
-                  <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 font-medium">
-                    {issueCount} timing issue{issueCount === 1 ? "" : "s"}
-                  </span>
+          <div className="px-5 py-3 border-b border-indigo-50 bg-white">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+                  Feedback
+                </div>
+                <div className="text-sm font-medium text-slate-700">
+                  Move {filtered.length > 0 ? currentMoveIndex + 1 : 0} of {filtered.length || flatMoves.length}
+                </div>
+              </div>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setFilterMenuOpen((open) => !open)}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
+                >
+                  {activeFilterBadge}
+                </button>
+                {filterMenuOpen && (
+                  <div className="absolute right-0 top-[calc(100%+8px)] z-20 min-w-[180px] rounded-2xl border border-slate-200 bg-white p-1.5 shadow-xl">
+                    {["all", "on-time", "early", "late", "rushed", "dragged", "mixed", "uncertain"].map((lbl) => (
+                      <button
+                        key={lbl}
+                        type="button"
+                        onClick={() => {
+                          setFilterLabel(lbl);
+                          setFilterMenuOpen(false);
+                        }}
+                        className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-[11px] font-medium transition-colors ${
+                          filterLabel === lbl
+                            ? "bg-slate-900 text-white"
+                            : "text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        <span>{lbl === "all" ? "All moves" : (TIMING_BADGES[lbl]?.label ?? lbl)}</span>
+                        <span className={filterLabel === lbl ? "text-slate-200" : "text-slate-400"}>
+                          {lbl === "all" ? flatMoves.length : (labelCounts[lbl] ?? 0)}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
-              <p className="text-[10px] text-slate-400 ml-auto">
-                Model: {results[0]?.model ?? "gemini-2.5-flash-lite"}
-              </p>
             </div>
-          </div>
-
-          {/* Filters */}
-          <div className="px-5 py-2.5 border-b border-indigo-50 flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-medium text-slate-500">Filter:</span>
-            {["all", "on-time", "early", "late", "rushed", "dragged", "mixed", "uncertain"].map(
-              (lbl) => (
-                <button
-                  key={lbl}
-                  onClick={() => setFilterLabel(filterLabel === lbl ? "all" : lbl)}
-                  className={`rounded-full px-2.5 py-1 text-[11px] font-medium border transition-all ${
-                    filterLabel === lbl
-                      ? "bg-slate-900 text-white border-slate-900"
-                      : "bg-white text-slate-600 border-slate-200 hover:bg-slate-50"
-                  }`}
-                >
-                  {lbl === "all" ? "All" : (TIMING_BADGES[lbl]?.label ?? lbl)}
-                  {lbl !== "all" && labelCounts[lbl] ? ` (${labelCounts[lbl]})` : ""}
-                </button>
-              ),
-            )}
-            <span className="text-[11px] text-slate-400 ml-auto">
-              {filtered.length} of {flatMoves.length}
-            </span>
           </div>
 
           {/* Move list - single item view with navigation */}
           <div className="border-t border-indigo-50">
             {filtered.length > 0 && (
               <>
-                {/* Navigation header */}
-                <div className="px-5 py-2 border-b border-indigo-50 flex items-center justify-between bg-slate-50/50">
-                  <button
-                    onClick={() => setCurrentMoveIndex((i) => Math.max(0, i - 1))}
-                    disabled={currentMoveIndex === 0}
-                    className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    ◀ Prev
-                  </button>
-                  <span className="text-xs font-medium text-slate-600">
-                    {currentMoveIndex + 1} / {filtered.length}
-                  </span>
-                  <button
-                    onClick={() => setCurrentMoveIndex((i) => Math.min(filtered.length - 1, i + 1))}
-                    disabled={currentMoveIndex >= filtered.length - 1}
-                    className="px-3 py-1 text-xs font-medium rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                  >
-                    Next ▶
-                  </button>
-                </div>
-
                 {/* Single move display - clickable card */}
                 {(() => {
                   const m = filtered[currentMoveIndex];

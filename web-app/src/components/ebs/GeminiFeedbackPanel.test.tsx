@@ -1,8 +1,9 @@
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createRef } from "react";
 import { GeminiFeedbackPanel, type GeminiFeedbackPanelHandle } from "./GeminiFeedbackPanel";
 import { getSessionVideo } from "../../lib/videoStorage";
+import { getFeedbackSegment } from "../../lib/feedbackStorage";
 
 // 1. Mock the video storage utility
 vi.mock("../../lib/videoStorage", () => ({
@@ -128,6 +129,10 @@ describe("GeminiFeedbackPanel", () => {
     vi.stubGlobal("fetch", vi.fn());
     // Mock video files
     (getSessionVideo as any).mockResolvedValue(new File([""], "video.mp4", { type: "video/mp4" }));
+    const realSetTimeout = window.setTimeout.bind(window);
+    vi.spyOn(window, "setTimeout").mockImplementation(((fn: TimerHandler, _delay?: number, ...args: any[]) => {
+      return realSetTimeout(fn as any, 0, ...args) as any;
+    }) as typeof window.setTimeout);
     
     // Mock scrollTo since JSDOM doesn't implement it
     Element.prototype.scrollTo = vi.fn();
@@ -137,6 +142,29 @@ describe("GeminiFeedbackPanel", () => {
     vi.restoreAllMocks();
     cleanup();
   });
+
+  function mockGeminiJobSuccess(response = mockApiResponse) {
+    (fetch as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ job_id: "job-1" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ status: "done" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(response),
+      });
+  }
+
+  async function flushAsyncRender() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  }
 
   it("renders the initial empty state correctly", () => {
     render(
@@ -153,16 +181,11 @@ describe("GeminiFeedbackPanel", () => {
   });
 
   it("calls onSeek when a move card is clicked", async () => {
-    (fetch as any).mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockApiResponse),
-    });
+    (getFeedbackSegment as any).mockResolvedValueOnce(mockApiResponse);
 
     const onSeek = vi.fn();
-    const ref = createRef<GeminiFeedbackPanelHandle>();
     render(
       <GeminiFeedbackPanel
-        ref={ref}
         sessionId={mockSessionId}
         ebsData={mockEbsData as any}
         segments={mockSegments as any}
@@ -171,9 +194,9 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentForFeedback(0);
-
-    const moveCard = await screen.findByText(/Move 1/i);
+    await flushAsyncRender();
+    const moveCard = document.body.querySelector(".cursor-pointer");
+    expect(moveCard).toBeTruthy();
     fireEvent.click(moveCard);
 
     // Should seek to shared_start_sec (1.2)
@@ -181,7 +204,7 @@ describe("GeminiFeedbackPanel", () => {
   });
 
   it("handles API errors gracefully", async () => {
-    (fetch as any).mockResolvedValue({
+    (fetch as any).mockResolvedValueOnce({
       ok: false,
       json: () => Promise.resolve({ error: "Rate limit exceeded" }),
     });
@@ -198,7 +221,9 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentForFeedback(0);
+    await act(async () => {
+      ref.current?.enqueueSegmentForFeedback(0);
+    });
 
     await waitFor(() => {
       expect(screen.getByText(/Segment 0: Rate limit exceeded/i)).toBeInTheDocument();
@@ -206,15 +231,10 @@ describe("GeminiFeedbackPanel", () => {
   });
 
   it("keeps the move visible when sharedTime updates", async () => {
-    (fetch as any).mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockApiResponse),
-    });
+    (getFeedbackSegment as any).mockResolvedValueOnce(mockApiResponse);
 
-    const ref = createRef<GeminiFeedbackPanelHandle>();
     const { rerender } = render(
       <GeminiFeedbackPanel
-        ref={ref}
         sessionId={mockSessionId}
         ebsData={mockEbsData as any}
         segments={mockSegments as any}
@@ -223,13 +243,11 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentForFeedback(0);
-    await screen.findByText(/Move 1/i);
+    await flushAsyncRender();
 
     // Update sharedTime to be near the move (midpoint is 1.6)
     rerender(
       <GeminiFeedbackPanel
-        ref={ref}
         sessionId={mockSessionId}
         ebsData={mockEbsData as any}
         segments={mockSegments as any}
@@ -238,14 +256,11 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    expect(screen.getByText(/Move 1/i)).toBeInTheDocument();
+    expect(document.body.textContent).toContain("Try to anticipate the snare drum.");
   });
 
   it("includes yolo context in the Gemini request", async () => {
-    (fetch as any).mockResolvedValue({
-      ok: true,
-      json: () => Promise.resolve(mockApiResponse),
-    });
+    mockGeminiJobSuccess();
 
     const ref = createRef<GeminiFeedbackPanelHandle>();
     render(
@@ -261,7 +276,9 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentForFeedback(0);
+    await act(async () => {
+      ref.current?.enqueueSegmentForFeedback(0);
+    });
 
     await waitFor(() => {
       expect(fetch).toHaveBeenCalled();

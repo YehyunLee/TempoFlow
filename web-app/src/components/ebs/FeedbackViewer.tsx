@@ -842,6 +842,70 @@ export function FeedbackViewer(props: EbsViewerProps) {
         ? `${activeMoveReadiness.readyMoves}/${activeMoveReadiness.totalMoves} moves ready`
         : null;
 
+  const feedbackBySegment = useMemo(() => {
+    const bySegment = new Map<number, GeminiFlatMove[]>();
+    geminiFeedback.forEach((move) => {
+      const segmentIndex = Number(move.segmentIndex);
+      if (!Number.isFinite(segmentIndex)) return;
+      const existing = bySegment.get(segmentIndex) ?? [];
+      existing.push(move);
+      bySegment.set(segmentIndex, existing);
+    });
+    return bySegment;
+  }, [geminiFeedback]);
+
+  const segmentFeedbackStyles = useMemo(() => {
+    const severityByLabel: Record<string, number> = {
+      "on-time": 0,
+      uncertain: 0.45,
+      early: 0.74,
+      late: 0.74,
+      rushed: 0.88,
+      dragged: 0.88,
+      mixed: 1,
+    };
+
+    return state.segments.map((_, index) => {
+      const moves = feedbackBySegment.get(index) ?? [];
+      if (!moves.length) {
+        return {
+          fill: "rgba(191, 219, 254, 0.72)",
+          border: "rgba(191, 219, 254, 0.95)",
+          glow: "rgba(148, 163, 184, 0.12)",
+          accent: "#94a3b8",
+        };
+      }
+
+      const severities = moves.map((move) => severityByLabel[move.micro_timing_label] ?? 0.55);
+      const avgSeverity = severities.reduce((sum, value) => sum + value, 0) / severities.length;
+
+      if (avgSeverity <= 0.18) {
+        return {
+          fill: "linear-gradient(180deg, rgba(187, 247, 208, 0.94) 0%, rgba(134, 239, 172, 0.86) 100%)",
+          border: "rgba(74, 222, 128, 0.95)",
+          glow: "rgba(74, 222, 128, 0.18)",
+          accent: "#16a34a",
+        };
+      }
+
+      if (avgSeverity <= 0.52) {
+        return {
+          fill: "linear-gradient(180deg, rgba(254, 240, 138, 0.92) 0%, rgba(253, 224, 71, 0.82) 100%)",
+          border: "rgba(234, 179, 8, 0.95)",
+          glow: "rgba(234, 179, 8, 0.16)",
+          accent: "#ca8a04",
+        };
+      }
+
+      return {
+        fill: "linear-gradient(180deg, rgba(254, 202, 202, 0.94) 0%, rgba(252, 165, 165, 0.84) 100%)",
+        border: "rgba(248, 113, 113, 0.98)",
+        glow: "rgba(239, 68, 68, 0.18)",
+        accent: "#dc2626",
+      };
+    });
+  }, [feedbackBySegment, state.segments]);
+
   const mapArtifactToOverlayTimeline = useCallback(
     (
       artifact: OverlayArtifact | null,
@@ -1332,30 +1396,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
               <div className="timeline" style={{ position: "relative", zIndex: 10 }}>
                 <div className="timeline-track relative overflow-hidden" ref={timelineTrackRef} onClick={handleTimelineClick}>
-                    {/* 0. GEMINI MOVE BANDS (Bottom-most layer) */}
-                    {showFeedback && geminiFeedback.map((m, i) => {
-                      const start = m.shared_start_sec ?? 0;
-                      const end = m.shared_end_sec ?? start;
-                      const color = TIMING_LABEL_COLORS[m.micro_timing_label] ?? "#94a3b8";
-                      if (sharedLen <= 0) return null;
-                      return (
-                        <div
-                          key={`gmove-${i}`}
-                          className="absolute top-0 bottom-0 z-0 opacity-30 hover:opacity-60 transition-opacity cursor-pointer"
-                          title={`Move ${m.move_index}: ${m.micro_timing_label}`}
-                          style={{
-                            left: `${(start / sharedLen) * 100}%`,
-                            width: `${(Math.max(end - start, 0.05) / sharedLen) * 100}%`,
-                            backgroundColor: color,
-                          }}
-                          onClick={(e) => { e.stopPropagation(); seekToShared(start); }}
-                        />
-                      );
-                    })}
-
                     {/* 1. SEGMENTS LAYER */}
                     {state.segments.map((segment, index) => {
                       const isActive = index === state.currentSegmentIndex;
+                      const feedbackStyle = segmentFeedbackStyles[index];
 
                       return (
                         <div
@@ -1368,6 +1412,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
                           style={{
                             left: `${(segment.shared_start_sec / sharedLen) * 100}%`,
                             width: `${((segment.shared_end_sec - segment.shared_start_sec) / sharedLen) * 100}%`,
+                            background: feedbackStyle?.fill,
+                            borderColor: feedbackStyle?.border,
+                            boxShadow: feedbackStyle ? `inset 0 0 0 1px ${feedbackStyle.border}, 0 8px 20px ${feedbackStyle.glow}` : undefined,
                           }}
                           onClick={(event) => {
                             event.stopPropagation();
@@ -1376,6 +1423,51 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         >
                           {index}
                         </div>
+                      );
+                    })}
+
+                    {/* 2. FEEDBACK FLAGS */}
+                    {showFeedback && sharedLen > 0 && geminiFeedback.map((move, index) => {
+                      const start = move.shared_start_sec ?? 0;
+                      const end = move.shared_end_sec ?? start;
+                      const mid = start + Math.max(end - start, 0.04) / 2;
+                      const color = TIMING_LABEL_COLORS[move.micro_timing_label] ?? "#94a3b8";
+                      return (
+                        <button
+                          key={`gflag-${index}`}
+                          type="button"
+                          className="absolute z-[8] -translate-x-1/2 cursor-pointer bg-transparent p-0 border-0"
+                          title={`Move ${move.move_index}: ${move.micro_timing_label}`}
+                          style={{
+                            left: `${(mid / sharedLen) * 100}%`,
+                            top: "-3px",
+                            bottom: "-3px",
+                            width: "14px",
+                          }}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            seekToShared(start);
+                          }}
+                        >
+                          <span
+                            className="absolute left-1/2 top-0 -translate-x-1/2 rounded-full"
+                            style={{
+                              width: "4px",
+                              height: "100%",
+                              backgroundColor: color,
+                              boxShadow: `0 0 0 1px rgba(255,255,255,0.92), 0 0 14px ${color}`,
+                            }}
+                          />
+                          <span
+                            className="absolute left-1/2 top-0 -translate-x-1/2 rounded-full"
+                            style={{
+                              width: "10px",
+                              height: "10px",
+                              backgroundColor: color,
+                              boxShadow: `0 0 0 2px rgba(255,255,255,0.95), 0 3px 10px ${color}`,
+                            }}
+                          />
+                        </button>
                       );
                     })}
 
