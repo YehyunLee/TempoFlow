@@ -312,12 +312,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
       onSegmentProgress: (segmentIndex, progress) => {
         setBodyPixSegmentProgress({ segmentIndex, progress });
       },
-      onSegmentComplete: (segmentIndex) => {
-        setBodyPixSegmentProgress({ segmentIndex, progress: 1 });
-        queueMicrotask(() => {
-          geminiFeedbackRef.current?.enqueueSegmentAfterBodyPix(segmentIndex);
-        });
-      },
     })
       .catch((err) => {
         setOverlayStatus(err instanceof Error ? err.message : "BodyPix overlay generation failed.");
@@ -341,7 +335,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     if (
       !sessionMode ||
       !overlayCacheReady ||
-      overlayBusy ||
       !sessionId ||
       !activeReferenceVideoUrl ||
       !activeUserVideoUrl ||
@@ -384,6 +377,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     autoYoloStartedRef.current = true;
     setOverlayBusy(true);
     setOverlayStatus("Generating YOLO hybrid overlays…");
+    const controller = new AbortController();
 
     void ensureBrowserYoloOverlays({
       sessionId,
@@ -408,19 +402,33 @@ export function FeedbackViewer(props: EbsViewerProps) {
       onSegmentProgress: (segmentIndex, progress) => {
         setYoloSegmentProgress({ segmentIndex, progress });
       },
+      onSegmentComplete: (segmentIndex) => {
+        setYoloSegmentProgress({ segmentIndex, progress: 1 });
+        autoGeminiQueuedRef.current.add(segmentIndex);
+        queueMicrotask(() => {
+          geminiFeedbackRef.current?.enqueueSegmentForFeedback(segmentIndex);
+        });
+      },
+      signal: controller.signal,
     })
       .catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") {
+          return;
+        }
         autoYoloStartedRef.current = false;
         setOverlayStatus(err instanceof Error ? err.message : "YOLO hybrid overlay generation failed.");
       })
       .finally(() => {
         setOverlayBusy(false);
       });
+
+    return () => {
+      controller.abort();
+    };
   }, [
     sessionMode,
     overlayCacheReady,
     overlayDetector,
-    overlayBusy,
     sessionId,
     activeReferenceVideoUrl,
     activeUserVideoUrl,
@@ -433,18 +441,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
     userYoloPoseLegsArtifact,
   ]);
 
-  // Auto-resume: when BodyPix is already cached but Gemini is missing, auto-enqueue those segments
+  // Auto-resume: when YOLO segment data is already cached but Gemini is missing, auto-enqueue those segments.
   useEffect(() => {
-    if (overlayDetector !== "bodypix") {
-      return;
-    }
     if (
       !sessionMode ||
       !overlayCacheReady ||
       !sessionId ||
       !sessionEbsData ||
-      !refBodyPixArtifact ||
-      !userBodyPixArtifact
+      !refYoloArtifact ||
+      !userYoloArtifact
     ) {
       return;
     }
@@ -452,24 +457,24 @@ export function FeedbackViewer(props: EbsViewerProps) {
     const plans = buildOverlaySegmentPlans(sessionEbsData);
     const n = plans.length;
     if (n === 0) return;
-
-    // Only proceed if BodyPix is fully complete
-    const refComplete = isOverlayArtifactComplete(refBodyPixArtifact, n);
-    const userComplete = isOverlayArtifactComplete(userBodyPixArtifact, n);
-    if (!refComplete || !userComplete) return;
-
-    // Check each segment for BodyPix present but Gemini missing
     void (async () => {
       for (let i = 0; i < n; i++) {
         if (autoGeminiQueuedRef.current.has(i)) continue;
 
-        // Verify segment has BodyPix data
-        const hasBodyPix =
-          (refBodyPixArtifact?.segments?.[i]?.frames?.length ?? 0) > 0 &&
-          (userBodyPixArtifact?.segments?.[i]?.frames?.length ?? 0) > 0;
-        if (!hasBodyPix) continue;
+        const refSegment =
+          refYoloArtifact?.segments?.find(
+            (segment) => segment.index === i && Boolean(segment.video || (segment.frames && segment.frames.length > 0)),
+          ) ?? null;
+        const userSegment =
+          userYoloArtifact?.segments?.find(
+            (segment) => segment.index === i && Boolean(segment.video || (segment.frames && segment.frames.length > 0)),
+          ) ?? null;
+        const hasYoloContext =
+          Boolean(refSegment && userSegment) &&
+          Boolean(refSegment?.meta?.segSummary || refSegment?.meta?.poseSummary) &&
+          Boolean(userSegment?.meta?.segSummary || userSegment?.meta?.poseSummary);
+        if (!hasYoloContext) continue;
 
-        // Check if Gemini already cached (default settings: burnIn=true, audio=false)
         const key = buildFeedbackSegmentKey({
           sessionId,
           segmentIndex: i,
@@ -491,20 +496,19 @@ export function FeedbackViewer(props: EbsViewerProps) {
           if (!cachedAudio) {
             autoGeminiQueuedRef.current.add(i);
             queueMicrotask(() => {
-              geminiFeedbackRef.current?.enqueueSegmentAfterBodyPix(i);
+              geminiFeedbackRef.current?.enqueueSegmentForFeedback(i);
             });
           }
         }
       }
     })();
   }, [
-    overlayDetector,
     sessionMode,
     overlayCacheReady,
     sessionId,
     sessionEbsData,
-    refBodyPixArtifact,
-    userBodyPixArtifact,
+    refYoloArtifact,
+    userYoloArtifact,
     ebsFingerprint,
   ]);
 
@@ -1274,6 +1278,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 onFeedbackReady={setGeminiFeedback}
                 referenceVideoUrl={activeReferenceVideoUrl}
                 userVideoUrl={activeUserVideoUrl}
+                referenceYoloArtifact={refYoloArtifact}
+                practiceYoloArtifact={userYoloArtifact}
+                referenceYoloPoseArtifact={refYoloPoseArmsArtifact}
+                practiceYoloPoseArtifact={userYoloPoseArmsArtifact}
               />
             </div>
           )}

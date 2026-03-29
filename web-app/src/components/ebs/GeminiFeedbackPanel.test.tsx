@@ -34,6 +34,77 @@ describe("GeminiFeedbackPanel", () => {
     },
   ];
   const mockEbsData = { version: "1.0", tracks: [] };
+  const mockYoloArtifact = {
+    version: 1,
+    type: "yolo",
+    side: "reference",
+    fps: 12,
+    width: 640,
+    height: 360,
+    frameCount: 1,
+    createdAt: "",
+    segments: [
+      {
+        index: 0,
+        startSec: 0,
+        endSec: 5,
+        fps: 12,
+        width: 640,
+        height: 360,
+        frameCount: 1,
+        createdAt: "",
+        video: new Blob(["v"], { type: "video/webm" }),
+        meta: {
+          segSummary: {
+            person_count: 1,
+            persons: [
+              {
+                anchor_x: 0.5,
+                anchor_y: 0.9,
+                center_x: 0.5,
+                center_y: 0.5,
+                width: 0.2,
+                height: 0.8,
+                min_x: 0.4,
+                max_x: 0.6,
+                min_y: 0.1,
+                max_y: 0.9,
+              },
+            ],
+            union: {
+              anchor_x: 0.5,
+              anchor_y: 0.9,
+              center_x: 0.5,
+              center_y: 0.5,
+              width: 0.2,
+              height: 0.8,
+              min_x: 0.4,
+              max_x: 0.6,
+              min_y: 0.1,
+              max_y: 0.9,
+            },
+          },
+          poseSummary: {
+            person_count: 1,
+            persons: [
+              {
+                anchor_x: 0.5,
+                anchor_y: 0.9,
+                center_x: 0.5,
+                center_y: 0.5,
+                width: 0.18,
+                height: 0.75,
+                min_x: 0.41,
+                max_x: 0.59,
+                min_y: 0.12,
+                max_y: 0.87,
+              },
+            ],
+          },
+        },
+      },
+    ],
+  } as const;
 
   const mockApiResponse = {
     segment_index: 0,
@@ -78,7 +149,7 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    expect(screen.getByText(/Waiting for BodyPix \/ Gemini/i)).toBeInTheDocument();
+    expect(screen.getByText(/Waiting for YOLO \/ Gemini/i)).toBeInTheDocument();
   });
 
   it("calls onSeek when a move card is clicked", async () => {
@@ -100,7 +171,7 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentAfterBodyPix(0);
+    ref.current?.enqueueSegmentForFeedback(0);
 
     const moveCard = await screen.findByText(/Move 1/i);
     fireEvent.click(moveCard);
@@ -127,14 +198,14 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentAfterBodyPix(0);
+    ref.current?.enqueueSegmentForFeedback(0);
 
     await waitFor(() => {
       expect(screen.getByText(/Segment 0: Rate limit exceeded/i)).toBeInTheDocument();
     });
   });
 
-  it("highlights the move closest to sharedTime", async () => {
+  it("keeps the move visible when sharedTime updates", async () => {
     (fetch as any).mockResolvedValue({
       ok: true,
       json: () => Promise.resolve(mockApiResponse),
@@ -152,7 +223,7 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    ref.current?.enqueueSegmentAfterBodyPix(0);
+    ref.current?.enqueueSegmentForFeedback(0);
     await screen.findByText(/Move 1/i);
 
     // Update sharedTime to be near the move (midpoint is 1.6)
@@ -167,8 +238,39 @@ describe("GeminiFeedbackPanel", () => {
       />,
     );
 
-    // The move button should have the highlight class
-    const moveButton = screen.getByText(/Move 1/i).closest("button");
-    expect(moveButton).toHaveClass("bg-indigo-50/60");
+    expect(screen.getByText(/Move 1/i)).toBeInTheDocument();
+  });
+
+  it("includes yolo context in the Gemini request", async () => {
+    (fetch as any).mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve(mockApiResponse),
+    });
+
+    const ref = createRef<GeminiFeedbackPanelHandle>();
+    render(
+      <GeminiFeedbackPanel
+        ref={ref}
+        sessionId={mockSessionId}
+        ebsData={mockEbsData as any}
+        segments={mockSegments as any}
+        sharedTime={0}
+        onSeek={vi.fn()}
+        referenceYoloArtifact={mockYoloArtifact as any}
+        practiceYoloArtifact={{ ...mockYoloArtifact, side: "practice" } as any}
+      />,
+    );
+
+    ref.current?.enqueueSegmentForFeedback(0);
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalled();
+    });
+
+    const [, init] = (fetch as any).mock.calls[0];
+    const form = init.body as FormData;
+    const raw = String(form.get("yolo_context_json") ?? "");
+    expect(raw).toContain('"source":"yolo-hybrid-segment"');
+    expect(raw).toContain('"segment_index":0');
   });
 });

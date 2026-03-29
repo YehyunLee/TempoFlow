@@ -63,6 +63,7 @@ def _call_openai_model(
     model_name: str,
     system_prompt: str,
     pose_priors_text: str | None = None,
+    yolo_context_text: str | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -92,6 +93,8 @@ def _call_openai_model(
 
     if pose_priors_text:
         content.append({"type": "text", "text": pose_priors_text})
+    if yolo_context_text:
+        content.append({"type": "text", "text": yolo_context_text})
     content.append({"type": "text", "text": move_windows_text})
 
     payload = {
@@ -129,6 +132,7 @@ def _call_model(
     api_key: str | None,
     system_prompt: str,
     pose_priors_text: str | None = None,
+    yolo_context_text: str | None = None,
 ) -> dict[str, Any]:
     if model_name.startswith("gpt-"):
         return _call_openai_model(
@@ -138,6 +142,7 @@ def _call_model(
             model_name,
             system_prompt,
             pose_priors_text=pose_priors_text,
+            yolo_context_text=yolo_context_text,
         )
 
     from src.gemini_move_feedback import call_gemini_move_feedback
@@ -149,6 +154,7 @@ def _call_model(
         api_key=api_key,
         model_name=model_name,
         pose_priors_text=pose_priors_text,
+        yolo_context_text=yolo_context_text,
     )
 
 
@@ -166,6 +172,7 @@ def run_move_feedback_pipeline(
     model_name: str | None = None,
     low_res_height: int | None = None,
     pose_priors: dict[str, Any] | None = None,
+    yolo_context: dict[str, Any] | None = None,
     burn_in_labels: bool = True,
     include_audio: bool = False,
 ) -> dict[str, Any]:
@@ -182,6 +189,7 @@ def run_move_feedback_pipeline(
         derive_moves_for_segment,
         format_move_windows,
         format_pose_priors_for_prompt,
+        format_yolo_context_for_prompt,
         prepare_segment_clip,
     )
 
@@ -205,6 +213,7 @@ def run_move_feedback_pipeline(
 
     move_text, annotated_moves = format_move_windows(moves, seg["shared_start_sec"])
     pose_priors_text = format_pose_priors_for_prompt(pose_priors) if pose_priors else None
+    yolo_context_text = format_yolo_context_for_prompt(yolo_context) if yolo_context else None
 
     logger.info(
         "Preparing clips for fan-out (%dp) segment=%d ref=[%.4f,%.4f] user=[%.4f,%.4f]",
@@ -258,6 +267,7 @@ def run_move_feedback_pipeline(
                 api_key,
                 SYSTEM_PROMPT,
                 pose_priors_text=pose_priors_text,
+                yolo_context_text=yolo_context_text,
             )
             latency = int((time.monotonic() - t0) * 1000)
             result = _annotate(raw, mname)

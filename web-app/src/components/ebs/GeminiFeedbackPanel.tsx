@@ -6,12 +6,14 @@ import { getSessionVideo } from "../../lib/videoStorage";
 import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
 import { buildGeminiSegmentDebugRows } from "../../lib/geminiDebugInfo";
 import { computePosePriorsForSegment } from "../../lib/geminiPosePriors";
+import { buildGeminiYoloSegmentContext } from "../../lib/geminiYoloContext";
 import {
   buildFeedbackSegmentKey,
   getFeedbackSegment,
   hashEbsData,
   storeFeedbackSegment,
 } from "../../lib/feedbackStorage";
+import type { OverlayArtifact } from "../../lib/overlayStorage";
 import type { GeminiFlatMove, GeminiSegmentResult } from "../../lib/geminiFeedbackTypes";
 
 export type { GeminiFlatMove, GeminiMoveResult, GeminiSegmentResult } from "../../lib/geminiFeedbackTypes";
@@ -72,11 +74,15 @@ type GeminiFeedbackPanelProps = {
   /** When set, pose-based timing priors are computed client-side and sent with each segment request. */
   referenceVideoUrl?: string | null;
   userVideoUrl?: string | null;
+  referenceYoloArtifact?: OverlayArtifact | null;
+  practiceYoloArtifact?: OverlayArtifact | null;
+  referenceYoloPoseArtifact?: OverlayArtifact | null;
+  practiceYoloPoseArtifact?: OverlayArtifact | null;
 };
 
 export type GeminiFeedbackPanelHandle = {
-  /** Queue Gemini move-feedback for this segment (call when BodyPix for that segment is ready). Runs one segment at a time. */
-  enqueueSegmentAfterBodyPix: (segmentIndex: number) => void;
+  /** Queue Gemini move-feedback for this segment once YOLO context for it is ready. Runs one segment at a time. */
+  enqueueSegmentForFeedback: (segmentIndex: number) => void;
 };
 
 const FETCH_RETRIES = 3;
@@ -92,6 +98,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     onFeedbackReady,
     referenceVideoUrl,
     userVideoUrl,
+    referenceYoloArtifact,
+    practiceYoloArtifact,
+    referenceYoloPoseArtifact,
+    practiceYoloPoseArtifact,
   } = props;
 
   const [running, setRunning] = useState(false);
@@ -260,6 +270,14 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         });
         priorsJson = JSON.stringify(priors);
       }
+      const yoloContext = buildGeminiYoloSegmentContext({
+        referenceSegArtifact: referenceYoloArtifact ?? null,
+        practiceSegArtifact: practiceYoloArtifact ?? null,
+        referencePoseArtifact: referenceYoloPoseArtifact ?? null,
+        practicePoseArtifact: practiceYoloPoseArtifact ?? null,
+        segmentIndex: segIndex,
+      });
+      const yoloContextJson = yoloContext ? JSON.stringify(yoloContext) : undefined;
 
       const ebsJson = JSON.stringify(ebsData);
       let lastErr: Error | null = null;
@@ -273,6 +291,9 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         form.append("ebs_data_json", ebsJson);
         if (priorsJson) {
           form.append("pose_priors_json", priorsJson);
+        }
+        if (yoloContextJson) {
+          form.append("yolo_context_json", yoloContextJson);
         }
         form.append("burn_in_labels", burnInLabels ? "true" : "false");
         form.append("include_audio", includeAudio ? "true" : "false");
@@ -313,6 +334,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
       processorBaseUrl,
       referenceVideoUrl,
       userVideoUrl,
+      referenceYoloArtifact,
+      practiceYoloArtifact,
+      referenceYoloPoseArtifact,
+      practiceYoloPoseArtifact,
       burnInLabels,
       includeAudio,
       ebsFingerprint,
@@ -364,7 +389,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     }
   }, [validIndices, fetchSegmentWithRetries]);
 
-  const enqueueSegmentAfterBodyPix = useCallback(
+  const enqueueSegmentForFeedback = useCallback(
     (segmentIndex: number) => {
       if (!sessionId || validIndices.length === 0) return;
       if (!validIndices.includes(segmentIndex)) return;
@@ -376,7 +401,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     [sessionId, validIndices],
   );
 
-  useImperativeHandle(ref, () => ({ enqueueSegmentAfterBodyPix }), [enqueueSegmentAfterBodyPix]);
+  useImperativeHandle(ref, () => ({ enqueueSegmentForFeedback }), [enqueueSegmentForFeedback]);
 
   useEffect(() => {
     const flat: GeminiFlatMove[] = results.flatMap((r) =>
@@ -639,11 +664,11 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
               />
             </svg>
           </div>
-          <p className="text-sm font-medium text-slate-700">Waiting for BodyPix / Gemini</p>
+          <p className="text-sm font-medium text-slate-700">Waiting for YOLO / Gemini</p>
           <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-            Feedback starts automatically when each segment&apos;s BodyPix overlay finishes. Gemini runs one segment at a
-            time on the server (retries on transient network errors). Results are cached in the browser (IndexedDB) per
-            session and analysis, like BodyPix overlays—revisits skip duplicate API calls.
+            Feedback starts automatically when each segment&apos;s YOLO segment data is ready. Gemini runs one segment at
+            a time on the server and receives the segment videos plus YOLO pose and segmentation summaries as context.
+            Results are cached in the browser (IndexedDB) per session and analysis, so revisits skip duplicate calls.
           </p>
           <p className="text-[10px] text-slate-400 mt-3">
             Requires GEMINI_API_KEY on the Python backend

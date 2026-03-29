@@ -72,6 +72,16 @@ def _parse_pose_priors_json(raw: str | None) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def _parse_context_json(raw: str | None) -> dict[str, Any] | None:
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _move_feedback_worker(
     job_id: str,
     ref_path: str,
@@ -79,6 +89,7 @@ def _move_feedback_worker(
     ebs_data: dict[str, Any],
     segment_index: int,
     pose_priors: dict[str, Any] | None,
+    yolo_context: dict[str, Any] | None,
     burn_in_labels: bool,
     include_audio: bool,
 ) -> None:
@@ -91,6 +102,7 @@ def _move_feedback_worker(
             ebs_artifact=ebs_data,
             segment_index=segment_index,
             pose_priors=pose_priors,
+            yolo_context=yolo_context,
             burn_in_labels=burn_in_labels,
             include_audio=include_audio,
         )
@@ -192,6 +204,7 @@ async def move_feedback_start(
     session_id: str | None = Form(default=None),
     ebs_data_json: str | None = Form(default=None),
     pose_priors_json: str | None = Form(default=None),
+    yolo_context_json: str | None = Form(default=None),
     burn_in_labels: str | None = Form(default=None),
     include_audio: str | None = Form(default=None),
 ):
@@ -242,12 +255,13 @@ async def move_feedback_start(
         }
 
         pose_priors = _parse_pose_priors_json(pose_priors_json)
+        yolo_context = _parse_context_json(yolo_context_json)
         burn_in = _parse_optional_bool(burn_in_labels, True)
         audio_on = _parse_optional_bool(include_audio, False)
 
         t = threading.Thread(
             target=_move_feedback_worker,
-            args=(job_id, ref_tmp, user_tmp, ebs_data, segment_index, pose_priors, burn_in, audio_on),
+            args=(job_id, ref_tmp, user_tmp, ebs_data, segment_index, pose_priors, yolo_context, burn_in, audio_on),
             daemon=True,
         )
         t.start()
@@ -271,6 +285,7 @@ async def move_feedback_sync(
     session_id: str | None = Form(default=None),
     ebs_data_json: str | None = Form(default=None),
     pose_priors_json: str | None = Form(default=None),
+    yolo_context_json: str | None = Form(default=None),
     burn_in_labels: str | None = Form(default=None),
     include_audio: str | None = Form(default=None),
 ):
@@ -305,6 +320,7 @@ async def move_feedback_sync(
             )
 
         pose_priors = _parse_pose_priors_json(pose_priors_json)
+        yolo_context = _parse_context_json(yolo_context_json)
         burn_in = _parse_optional_bool(burn_in_labels, True)
         audio_on = _parse_optional_bool(include_audio, False)
 
@@ -318,6 +334,7 @@ async def move_feedback_sync(
             None,
             None,
             pose_priors,
+            yolo_context,
             burn_in,
             audio_on,
         )

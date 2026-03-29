@@ -180,7 +180,7 @@ def test_move_feedback_worker_success(mock_pipeline, tmp_path):
     jid = "worker-direct"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
     ebs = {"segments": [{"x": 1}]}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), ebs, 0, None, True, False)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), ebs, 0, None, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "done"
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["result"] == {"ok": True}
     assert not ref.exists()
@@ -198,7 +198,7 @@ def test_move_feedback_worker_error(mock_pipeline, tmp_path):
     usr.write_bytes(b"y")
     jid = "worker-err"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, True, False)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "error"
     assert "gemini down" in main_mod.MOVE_FEEDBACK_JOBS[jid]["error"]
     del main_mod.MOVE_FEEDBACK_JOBS[jid]
@@ -376,11 +376,14 @@ def test_move_feedback_sync_segment_out_of_range(mock_save, tmp_path):
 @patch("src.main.save_upload")
 @patch("src.main.asyncio.to_thread", new_callable=AsyncMock)
 def test_move_feedback_sync_success(mock_to_thread, mock_save, tmp_path):
+    seen = {}
+
     async def mock_to_thread_impl(fn, /, *args, **kwargs):
         name = getattr(fn, "__name__", "")
         if name == "process_videos_from_paths":
             return {"segments": [{"seg": 1}]}
         if name == "run_move_feedback_pipeline":
+            seen["yolo_context"] = args[8]
             return {"sync": {"ok": True}}
         raise AssertionError(f"unexpected fn {fn!r}")
 
@@ -392,11 +395,16 @@ def test_move_feedback_sync_success(mock_to_thread, mock_save, tmp_path):
         "ref_video": ("a.mp4", b"x", "video/mp4"),
         "user_video": ("b.mp4", b"y", "video/mp4"),
     }
-    data = {"segment_index": "0", "session_id": "sync-ok"}
+    data = {
+        "segment_index": "0",
+        "session_id": "sync-ok",
+        "yolo_context_json": json.dumps({"segment_index": 0, "source": "yolo-hybrid-segment"}),
+    }
     r = client.post("/api/move-feedback", files=files, data=data)
     assert r.status_code == 200
     assert r.json() == {"sync": {"ok": True}}
     assert mock_to_thread.call_count == 2
+    assert seen["yolo_context"] == {"segment_index": 0, "source": "yolo-hybrid-segment"}
 
 
 @patch("src.main.save_upload")
@@ -436,7 +444,7 @@ def test_move_feedback_worker_finally_swallows_unlink_oserror(mock_pipeline, tmp
     usr.write_bytes(b"y")
     jid = "worker-unlink-os"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, True, False)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "done"
     del main_mod.MOVE_FEEDBACK_JOBS[jid]
 

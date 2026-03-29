@@ -14,7 +14,7 @@ import {
 } from "./overlaySegments";
 
 export const BROWSER_YOLO_OVERLAY_FPS = 12;
-export const BROWSER_YOLO_VARIANT = "yolo26n-python-hybrid-v11";
+export const BROWSER_YOLO_VARIANT = "yolo26n-python-hybrid-v15";
 
 type VideoSide = "reference" | "practice";
 type PoseLayer = "arms" | "legs";
@@ -22,6 +22,26 @@ type PoseLayer = "arms" | "legs";
 type VideoResult = {
   blob: Blob;
   mime: string;
+  summary?: OverlaySummary | null;
+};
+
+type OverlayPersonSummary = {
+  anchor_x: number;
+  anchor_y: number;
+  center_x: number;
+  center_y: number;
+  width: number;
+  height: number;
+  min_x: number;
+  max_x: number;
+  min_y: number;
+  max_y: number;
+};
+
+type OverlaySummary = {
+  person_count?: number;
+  persons?: OverlayPersonSummary[];
+  union?: OverlayPersonSummary | null;
 };
 
 type PosePersonSummary = {
@@ -79,6 +99,59 @@ function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+type PythonJobKind = "yolo" | "yolo-pose";
+
+type PythonJobRegistration = {
+  kind: PythonJobKind;
+  jobId: string;
+};
+
+function createAbortError() {
+  const error = new Error("Aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw createAbortError();
+  }
+}
+
+async function sleepWithSignal(ms: number, signal?: AbortSignal) {
+  if (!signal) {
+    await sleep(ms);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      reject(createAbortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function cancelPythonJob(job: PythonJobRegistration) {
+  const endpoint = job.kind === "yolo" ? "yolo" : "yolo-pose";
+  const form = new FormData();
+  form.append("job_id", job.jobId);
+  try {
+    await fetch(`${getOverlayBaseUrl()}/api/overlay/${endpoint}/cancel`, {
+      method: "POST",
+      body: form,
+      keepalive: true,
+    });
+  } catch {
+    // Best-effort cancellation on teardown.
+  }
+}
+
 function decodePoseSummaryHeader(value: string | null): PoseSummary | null {
   if (!value) return null;
   try {
@@ -91,16 +164,116 @@ function decodePoseSummaryHeader(value: string | null): PoseSummary | null {
   }
 }
 
-function buildNormalizationMeta(
+function decodeOverlayBoundsSummaryHeader(value: string | null): OverlaySummary | null {
+  if (!value) return null;
+  try {
+    const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const json = atob(padded);
+    return JSON.parse(json) as OverlaySummary;
+  } catch {
+    return null;
+  }
+}
+
+type NormalizationBounds = {
+  anchor_x: number;
+  anchor_y: number;
+  center_x: number;
+  center_y: number;
+  width: number;
+  height: number;
+  min_x: number;
+  max_x: number;
+  min_y: number;
+  max_y: number;
+  source: "segmentation" | "pose";
+};
+
+type MatchedPosePair = {
+  referencePerson: PosePersonSummary;
+  practicePerson: PosePersonSummary;
+};
+
+function buildBoundsFromPoseSummary(summary: PoseSummary | null): NormalizationBounds | null {
+  const people = summary?.persons ?? [];
+  if (!people.length) return null;
+
+  const min_x = Math.min(...people.map((person) => person.min_x));
+  const max_x = Math.max(...people.map((person) => person.max_x));
+  const min_y = Math.min(...people.map((person) => person.min_y));
+  const max_y = Math.max(...people.map((person) => person.max_y));
+  const center_x = (min_x + max_x) / 2;
+  const center_y = (min_y + max_y) / 2;
+
+  return {
+    min_x,
+    max_x,
+    min_y,
+    max_y,
+    center_x,
+    center_y,
+    width: Math.max(0.05, max_x - min_x),
+    height: Math.max(0.08, max_y - min_y),
+    anchor_x: center_x,
+    anchor_y: max_y,
+    source: "pose",
+  };
+}
+
+function toNormalizationBounds(summary: OverlayPersonSummary | null | undefined): NormalizationBounds | null {
+  if (!summary) return null;
+  const min_x = Number(summary.min_x);
+  const max_x = Number(summary.max_x);
+  const min_y = Number(summary.min_y);
+  const max_y = Number(summary.max_y);
+  const center_x = Number(summary.center_x);
+  const center_y = Number(summary.center_y);
+  const anchor_x = Number(summary.anchor_x);
+  const anchor_y = Number(summary.anchor_y);
+  const width = Number(summary.width);
+  const height = Number(summary.height);
+
+  if (
+    !Number.isFinite(min_x) ||
+    !Number.isFinite(max_x) ||
+    !Number.isFinite(min_y) ||
+    !Number.isFinite(max_y) ||
+    !Number.isFinite(center_x) ||
+    !Number.isFinite(center_y) ||
+    !Number.isFinite(anchor_x) ||
+    !Number.isFinite(anchor_y) ||
+    !Number.isFinite(width) ||
+    !Number.isFinite(height)
+  ) {
+    return null;
+  }
+
+  return {
+    min_x,
+    max_x,
+    min_y,
+    max_y,
+    center_x,
+    center_y,
+    anchor_x,
+    anchor_y,
+    width: Math.max(0.05, width),
+    height: Math.max(0.08, height),
+    source: "segmentation",
+  };
+}
+
+function matchPosePeople(
   referenceSummary: PoseSummary | null,
   practiceSummary: PoseSummary | null,
-) {
+): MatchedPosePair[] {
   const refPeople = [...(referenceSummary?.persons ?? [])].sort((a, b) => a.anchor_x - b.anchor_x);
   const practicePeople = [...(practiceSummary?.persons ?? [])].sort((a, b) => a.anchor_x - b.anchor_x);
-  if (!refPeople.length || !practicePeople.length) return null;
+  if (!refPeople.length || !practicePeople.length) return [];
 
   const practicePool = [...practicePeople];
-  const pairs = refPeople
+  return refPeople
     .map((referencePerson) => {
       if (!practicePool.length) return null;
       let bestIndex = 0;
@@ -108,7 +281,7 @@ function buildNormalizationMeta(
       practicePool.forEach((practicePerson, index) => {
         const distance =
           Math.abs(practicePerson.anchor_x - referencePerson.anchor_x) +
-          Math.abs(practicePerson.anchor_y - referencePerson.anchor_y) * 0.35;
+          Math.abs(practicePerson.anchor_y - referencePerson.anchor_y) * 0.45;
         if (distance < bestDistance) {
           bestDistance = distance;
           bestIndex = index;
@@ -117,36 +290,68 @@ function buildNormalizationMeta(
       const [practicePerson] = practicePool.splice(bestIndex, 1);
       return practicePerson ? { referencePerson, practicePerson } : null;
     })
-    .filter((pair): pair is { referencePerson: PosePersonSummary; practicePerson: PosePersonSummary } => pair != null);
+    .filter((pair): pair is MatchedPosePair => pair != null);
+}
 
+function choosePrimaryAnchorPair(pairs: MatchedPosePair[]): MatchedPosePair | null {
   if (!pairs.length) return null;
-
-  const buildUnionBounds = (people: PosePersonSummary[]) => ({
-    minX: Math.min(...people.map((person) => person.min_x)),
-    maxX: Math.max(...people.map((person) => person.max_x)),
-    minY: Math.min(...people.map((person) => person.min_y)),
-    maxY: Math.max(...people.map((person) => person.max_y)),
+  return pairs.reduce((best, candidate) => {
+    const bestArea = best.practicePerson.width * best.practicePerson.height;
+    const candidateArea = candidate.practicePerson.width * candidate.practicePerson.height;
+    if (candidateArea !== bestArea) {
+      return candidateArea > bestArea ? candidate : best;
+    }
+    return candidate.practicePerson.anchor_y > best.practicePerson.anchor_y ? candidate : best;
   });
+}
 
-  const referenceGroup = pairs.map((pair) => pair.referencePerson);
-  const practiceGroup = pairs.map((pair) => pair.practicePerson);
-  const referenceBounds = buildUnionBounds(referenceGroup);
-  const practiceBounds = buildUnionBounds(practiceGroup);
+function buildNormalizationMeta(
+  referenceSegSummary: OverlaySummary | null,
+  practiceSegSummary: OverlaySummary | null,
+  referencePoseSummary: PoseSummary | null,
+  practicePoseSummary: PoseSummary | null,
+) {
+  const matchedPairs = matchPosePeople(referencePoseSummary, practicePoseSummary);
+  const anchorPair = choosePrimaryAnchorPair(matchedPairs);
+  const findClosestSegPerson = (
+    summary: OverlaySummary | null,
+    posePerson: PosePersonSummary | null | undefined,
+  ) => {
+    const people = summary?.persons ?? [];
+    if (!people.length) return null;
+    if (!posePerson) return people[0] ?? null;
+    return people.reduce((best, candidate) => {
+      const bestDistance =
+        Math.abs(best.anchor_x - posePerson.anchor_x) + Math.abs(best.anchor_y - posePerson.anchor_y) * 0.45;
+      const candidateDistance =
+        Math.abs(candidate.anchor_x - posePerson.anchor_x) + Math.abs(candidate.anchor_y - posePerson.anchor_y) * 0.45;
+      return candidateDistance < bestDistance ? candidate : best;
+    });
+  };
+  const referenceScalePerson =
+    findClosestSegPerson(referenceSegSummary, anchorPair?.referencePerson) ?? anchorPair?.referencePerson ?? null;
+  const practiceScalePerson =
+    findClosestSegPerson(practiceSegSummary, anchorPair?.practicePerson) ?? anchorPair?.practicePerson ?? null;
+  const referenceBounds =
+    toNormalizationBounds(referenceSegSummary?.union) ?? buildBoundsFromPoseSummary(referencePoseSummary);
+  const practiceBounds =
+    toNormalizationBounds(practiceSegSummary?.union) ?? buildBoundsFromPoseSummary(practicePoseSummary);
+  if (!referenceBounds || !practiceBounds) return null;
 
-  const referenceWidth = Math.max(0.05, referenceBounds.maxX - referenceBounds.minX);
-  const referenceHeight = Math.max(0.08, referenceBounds.maxY - referenceBounds.minY);
-  const practiceWidth = Math.max(0.05, practiceBounds.maxX - practiceBounds.minX);
-  const practiceHeight = Math.max(0.08, practiceBounds.maxY - practiceBounds.minY);
+  const referenceScaleWidth = referenceScalePerson?.width ?? referenceBounds.width;
+  const referenceScaleHeight = referenceScalePerson?.height ?? referenceBounds.height;
+  const practiceScaleWidth = practiceScalePerson?.width ?? practiceBounds.width;
+  const practiceScaleHeight = practiceScalePerson?.height ?? practiceBounds.height;
 
-  // For overlay diff we want the reference ghost to literally fit the practice layout,
-  // so use independent width/height scaling instead of a uniform scale.
-  const scaleX = Math.max(0.2, Math.min(2.8, practiceWidth / referenceWidth));
-  const scaleY = Math.max(0.2, Math.min(2.8, practiceHeight / referenceHeight));
+  // In overlay diff we want the blue reference stack to match the size and position
+  // of a concrete practice dancer, not just the formation envelope.
+  const scaleX = Math.max(0.08, Math.min(4.0, practiceScaleWidth / Math.max(0.01, referenceScaleWidth)));
+  const scaleY = Math.max(0.08, Math.min(4.0, practiceScaleHeight / Math.max(0.01, referenceScaleHeight)));
 
-  const pivotX = (referenceBounds.minX + referenceBounds.maxX) / 2;
-  const targetX = (practiceBounds.minX + practiceBounds.maxX) / 2;
-  const pivotY = referenceBounds.maxY;
-  const targetY = practiceBounds.maxY;
+  const pivotX = referenceScalePerson?.anchor_x ?? referenceBounds.center_x;
+  const targetX = practiceScalePerson?.anchor_x ?? practiceBounds.center_x;
+  const pivotY = referenceScalePerson?.anchor_y ?? referenceBounds.max_y;
+  const targetY = practiceScalePerson?.anchor_y ?? practiceBounds.max_y;
 
   return {
     scaleX,
@@ -157,9 +362,35 @@ function buildNormalizationMeta(
     pivotY,
     referenceBounds,
     practiceBounds,
-    matchedPersonCount: pairs.length,
-    referencePersonCount: refPeople.length,
-    practicePersonCount: practicePeople.length,
+    normalizationSource: {
+      reference: referenceScalePerson && "min_x" in referenceScalePerson && referenceSegSummary?.persons?.length ? "segmentation" : referenceBounds.source,
+      practice: practiceScalePerson && "min_x" in practiceScalePerson && practiceSegSummary?.persons?.length ? "segmentation" : practiceBounds.source,
+    },
+    matchedPersonCount: matchedPairs.length,
+    anchorPair: anchorPair
+      ? {
+          reference: referencePersonSummaryToDebug(anchorPair.referencePerson),
+          practice: referencePersonSummaryToDebug(anchorPair.practicePerson),
+        }
+      : null,
+    anchorSegPair:
+      referenceScalePerson && practiceScalePerson
+        ? {
+            reference: referenceScalePerson,
+            practice: practiceScalePerson,
+          }
+        : null,
+  };
+}
+
+function referencePersonSummaryToDebug(person: PosePersonSummary) {
+  return {
+    anchor_x: person.anchor_x,
+    anchor_y: person.anchor_y,
+    center_x: person.center_x,
+    center_y: person.center_y,
+    width: person.width,
+    height: person.height,
   };
 }
 
@@ -193,10 +424,16 @@ async function startPythonYoloJob(form: FormData) {
   return json.job_id;
 }
 
-async function waitForPythonYoloJob(jobId: string, reportProgress: (progress: number) => void) {
+async function waitForPythonYoloJob(
+  jobId: string,
+  reportProgress: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   while (true) {
+    throwIfAborted(signal);
     const stRes = await fetch(
       `${getOverlayBaseUrl()}/api/overlay/yolo/status?job_id=${encodeURIComponent(jobId)}`,
+      { signal },
     );
     if (!stRes.ok) {
       const txt = await stRes.text().catch(() => "");
@@ -213,6 +450,7 @@ async function waitForPythonYoloJob(jobId: string, reportProgress: (progress: nu
     if (st.status === "done") {
       const outRes = await fetch(
         `${getOverlayBaseUrl()}/api/overlay/yolo/result?job_id=${encodeURIComponent(jobId)}`,
+        { signal },
       );
       if (!outRes.ok) {
         const txt = await outRes.text().catch(() => "");
@@ -222,14 +460,18 @@ async function waitForPythonYoloJob(jobId: string, reportProgress: (progress: nu
       return {
         blob,
         mime: outRes.headers.get("content-type") || "video/webm",
+        summary: decodeOverlayBoundsSummaryHeader(outRes.headers.get("x-tempoflow-overlay-summary")),
       } satisfies VideoResult;
     }
 
     if (st.status === "error") {
       throw new Error(st.error || "YOLO overlay job failed");
     }
+    if (st.status === "cancelled") {
+      throw createAbortError();
+    }
 
-    await sleep(400);
+    await sleepWithSignal(400, signal);
   }
 }
 
@@ -249,10 +491,16 @@ async function startPythonYoloPoseJob(form: FormData) {
   return json.job_id;
 }
 
-async function waitForPythonYoloPoseJob(jobId: string, reportProgress: (progress: number) => void) {
+async function waitForPythonYoloPoseJob(
+  jobId: string,
+  reportProgress: (progress: number) => void,
+  signal?: AbortSignal,
+) {
   while (true) {
+    throwIfAborted(signal);
     const stRes = await fetch(
       `${getOverlayBaseUrl()}/api/overlay/yolo-pose/status?job_id=${encodeURIComponent(jobId)}`,
+      { signal },
     );
     if (!stRes.ok) {
       const txt = await stRes.text().catch(() => "");
@@ -270,6 +518,7 @@ async function waitForPythonYoloPoseJob(jobId: string, reportProgress: (progress
       const loadLayer = async (layer: PoseLayer) => {
         const outRes = await fetch(
           `${getOverlayBaseUrl()}/api/overlay/yolo-pose/result?job_id=${encodeURIComponent(jobId)}&layer=${layer}`,
+          { signal },
         );
         if (!outRes.ok) {
           const txt = await outRes.text().catch(() => "");
@@ -293,8 +542,11 @@ async function waitForPythonYoloPoseJob(jobId: string, reportProgress: (progress
     if (st.status === "error") {
       throw new Error(st.error || "YOLO pose job failed");
     }
+    if (st.status === "cancelled") {
+      throw createAbortError();
+    }
 
-    await sleep(400);
+    await sleepWithSignal(400, signal);
   }
 }
 
@@ -468,6 +720,8 @@ async function runSegmentedBrowserYoloPipeline(params: {
   setPracticeLegsArtifact?: (artifact: OverlayArtifact) => void;
   onStatus: (msg: string) => void;
   onSegmentProgress?: (segmentIndex: number, progress: number) => void;
+  onSegmentComplete?: (segmentIndex: number) => void;
+  signal?: AbortSignal;
 }) {
   const {
     sessionId,
@@ -487,11 +741,32 @@ async function runSegmentedBrowserYoloPipeline(params: {
     setPracticeLegsArtifact,
     onStatus,
     onSegmentProgress,
+    onSegmentComplete,
+    signal,
   } = params;
 
   if (!overlaySegmentPlans.length) {
     return false;
   }
+
+  const videoCache = new Map<VideoSide, File | null>();
+  const startedJobs: PythonJobRegistration[] = [];
+  let cancelRequested = false;
+  const cancelStartedJobs = () => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+    startedJobs.forEach((job) => {
+      void cancelPythonJob(job);
+    });
+  };
+  signal?.addEventListener("abort", cancelStartedJobs, { once: true });
+  const rememberJob = async (job: PythonJobRegistration) => {
+    startedJobs.push(job);
+    if (signal?.aborted) {
+      await cancelPythonJob(job);
+      throw createAbortError();
+    }
+  };
 
   const total = overlaySegmentPlans.length;
   if (
@@ -506,6 +781,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
     for (const plan of overlaySegmentPlans) {
       onSegmentProgress?.(plan.index, 1);
     }
+    signal?.removeEventListener("abort", cancelStartedJobs);
     return true;
   }
 
@@ -518,8 +794,6 @@ async function runSegmentedBrowserYoloPipeline(params: {
     existingUserLegs: existingPracticeLegs,
     getVideoSize,
   });
-
-  const videoCache = new Map<VideoSide, File | null>();
   const getVideoFile = async (side: VideoSide) => {
     if (!videoCache.has(side)) {
       videoCache.set(side, await getSessionVideo(sessionId, side));
@@ -532,6 +806,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
   };
 
   for (let idx = 0; idx < overlaySegmentPlans.length; idx += 1) {
+    throwIfAborted(signal);
     const plan = overlaySegmentPlans[idx];
     const ordinal = idx + 1;
     const refSeg = getOverlaySegmentByIndex(artifacts.referenceSeg, plan.index);
@@ -576,6 +851,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
       let poseResult: PoseResult | null = null;
 
       if (!segExists) {
+        throwIfAborted(signal);
         const segForm = new FormData();
         segForm.append("video", file, file.name);
         segForm.append("color", YOLO_SEG_COLORS[side]);
@@ -585,14 +861,16 @@ async function runSegmentedBrowserYoloPipeline(params: {
         segForm.append("start_sec", String(clipRange.startSec));
         segForm.append("end_sec", String(clipRange.endSec));
         const segJobId = await startPythonYoloJob(segForm);
+        await rememberJob({ kind: "yolo", jobId: segJobId });
         segResult = await waitForPythonYoloJob(segJobId, (progress) => {
           if (side === "reference") refSegProgress = progress;
           else practiceSegProgress = progress;
           updateStatus();
-        });
+        }, signal);
       }
 
       if (!poseExists) {
+        throwIfAborted(signal);
         const poseForm = new FormData();
         poseForm.append("video", file, file.name);
         poseForm.append("arms_color", YOLO_POSE_COLORS[side].arms);
@@ -603,11 +881,12 @@ async function runSegmentedBrowserYoloPipeline(params: {
         poseForm.append("start_sec", String(clipRange.startSec));
         poseForm.append("end_sec", String(clipRange.endSec));
         const poseJobId = await startPythonYoloPoseJob(poseForm);
+        await rememberJob({ kind: "yolo-pose", jobId: poseJobId });
         poseResult = await waitForPythonYoloPoseJob(poseJobId, (progress) => {
           if (side === "reference") refPoseProgress = progress;
           else practicePoseProgress = progress;
           updateStatus();
-        });
+        }, signal);
       }
 
       return { side, clipRange, size, segResult, poseResult };
@@ -616,6 +895,8 @@ async function runSegmentedBrowserYoloPipeline(params: {
     const referenceResult = await processSide("reference");
     const practiceResult = await processSide("practice");
     const normalizationMeta = buildNormalizationMeta(
+      referenceResult.segResult?.summary ?? null,
+      practiceResult.segResult?.summary ?? null,
       referenceResult.poseResult?.summary ?? null,
       practiceResult.poseResult?.summary ?? null,
     );
@@ -633,7 +914,12 @@ async function runSegmentedBrowserYoloPipeline(params: {
             side: "reference",
             size: referenceResult.size,
             video: referenceResult.segResult,
-            meta: { layer: "seg", normalization: normalizationMeta, poseSummary: referenceResult.poseResult?.summary ?? null },
+            meta: {
+              layer: "seg",
+              normalization: normalizationMeta,
+              segSummary: referenceResult.segResult.summary ?? null,
+              poseSummary: referenceResult.poseResult?.summary ?? null,
+            },
           }),
         ),
       };
@@ -682,7 +968,11 @@ async function runSegmentedBrowserYoloPipeline(params: {
             side: "practice",
             size: practiceResult.size,
             video: practiceResult.segResult,
-            meta: { layer: "seg", poseSummary: practiceResult.poseResult?.summary ?? null },
+            meta: {
+              layer: "seg",
+              segSummary: practiceResult.segResult.summary ?? null,
+              poseSummary: practiceResult.poseResult?.summary ?? null,
+            },
           }),
         ),
       };
@@ -730,6 +1020,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
       setUserLegsArtifact: setPracticeLegsArtifact,
     });
     onSegmentProgress?.(plan.index, 1);
+    onSegmentComplete?.(plan.index);
 
     const nextPendingIndex = overlaySegmentPlans.findIndex((candidate) => {
       const index = candidate.index;
@@ -752,6 +1043,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
   }
 
   onStatus(`YOLO hybrid overlays ready. ${total}/${total} segments processed.`);
+  signal?.removeEventListener("abort", cancelStartedJobs);
   return true;
 }
 
@@ -799,6 +1091,8 @@ export async function ensureBrowserYoloOverlays(params: {
   setUserLegsArtifact?: (artifact: OverlayArtifact) => void;
   onStatus: (msg: string | null) => void;
   onSegmentProgress?: (segmentIndex: number, progress: number) => void;
+  onSegmentComplete?: (segmentIndex: number) => void;
+  signal?: AbortSignal;
 }) {
   const {
     sessionId,
@@ -819,7 +1113,27 @@ export async function ensureBrowserYoloOverlays(params: {
     setUserLegsArtifact,
     onStatus,
     onSegmentProgress,
+    onSegmentComplete,
+    signal,
   } = params;
+
+  const startedJobs: PythonJobRegistration[] = [];
+  let cancelRequested = false;
+  const cancelStartedJobs = () => {
+    if (cancelRequested) return;
+    cancelRequested = true;
+    startedJobs.forEach((job) => {
+      void cancelPythonJob(job);
+    });
+  };
+  signal?.addEventListener("abort", cancelStartedJobs, { once: true });
+  const rememberJob = async (job: PythonJobRegistration) => {
+    startedJobs.push(job);
+    if (signal?.aborted) {
+      await cancelPythonJob(job);
+      throw createAbortError();
+    }
+  };
 
   const getVideoSize = (side: VideoSide) => {
     const video = side === "reference" ? refVideo.current : userVideo.current;
@@ -848,9 +1162,12 @@ export async function ensureBrowserYoloOverlays(params: {
     setPracticeLegsArtifact: setUserLegsArtifact,
     onStatus: (msg) => onStatus(msg),
     onSegmentProgress,
+    onSegmentComplete,
+    signal,
   });
 
   if (usedSegmented) {
+    signal?.removeEventListener("abort", cancelStartedJobs);
     return;
   }
 
@@ -863,6 +1180,7 @@ export async function ensureBrowserYoloOverlays(params: {
   }
 
   onStatus("YOLO hybrid (reference segmentation)…");
+  throwIfAborted(signal);
   const referenceSegForm = new FormData();
   referenceSegForm.append("video", referenceFile, referenceFile.name);
   referenceSegForm.append("color", YOLO_SEG_COLORS.reference);
@@ -870,11 +1188,15 @@ export async function ensureBrowserYoloOverlays(params: {
   referenceSegForm.append("session_id", sessionId);
   referenceSegForm.append("side", "reference");
   const referenceSegJobId = await startPythonYoloJob(referenceSegForm);
-  const referenceSeg = await waitForPythonYoloJob(referenceSegJobId, (progress) =>
-    onStatus(`YOLO hybrid (reference segmentation) ${Math.round(progress * 100)}%`),
+  await rememberJob({ kind: "yolo", jobId: referenceSegJobId });
+  const referenceSeg = await waitForPythonYoloJob(
+    referenceSegJobId,
+    (progress) => onStatus(`YOLO hybrid (reference segmentation) ${Math.round(progress * 100)}%`),
+    signal,
   );
 
   onStatus("YOLO hybrid (reference pose)…");
+  throwIfAborted(signal);
   const referencePoseForm = new FormData();
   referencePoseForm.append("video", referenceFile, referenceFile.name);
   referencePoseForm.append("arms_color", YOLO_POSE_COLORS.reference.arms);
@@ -883,11 +1205,15 @@ export async function ensureBrowserYoloOverlays(params: {
   referencePoseForm.append("session_id", sessionId);
   referencePoseForm.append("side", "reference");
   const referencePoseJobId = await startPythonYoloPoseJob(referencePoseForm);
-  const referencePose = await waitForPythonYoloPoseJob(referencePoseJobId, (progress) =>
-    onStatus(`YOLO hybrid (reference pose) ${Math.round(progress * 100)}%`),
+  await rememberJob({ kind: "yolo-pose", jobId: referencePoseJobId });
+  const referencePose = await waitForPythonYoloPoseJob(
+    referencePoseJobId,
+    (progress) => onStatus(`YOLO hybrid (reference pose) ${Math.round(progress * 100)}%`),
+    signal,
   );
 
   onStatus("YOLO hybrid (user segmentation)…");
+  throwIfAborted(signal);
   const practiceSegForm = new FormData();
   practiceSegForm.append("video", practiceFile, practiceFile.name);
   practiceSegForm.append("color", YOLO_SEG_COLORS.practice);
@@ -895,11 +1221,15 @@ export async function ensureBrowserYoloOverlays(params: {
   practiceSegForm.append("session_id", sessionId);
   practiceSegForm.append("side", "practice");
   const practiceSegJobId = await startPythonYoloJob(practiceSegForm);
-  const practiceSeg = await waitForPythonYoloJob(practiceSegJobId, (progress) =>
-    onStatus(`YOLO hybrid (user segmentation) ${Math.round(progress * 100)}%`),
+  await rememberJob({ kind: "yolo", jobId: practiceSegJobId });
+  const practiceSeg = await waitForPythonYoloJob(
+    practiceSegJobId,
+    (progress) => onStatus(`YOLO hybrid (user segmentation) ${Math.round(progress * 100)}%`),
+    signal,
   );
 
   onStatus("YOLO hybrid (user pose)…");
+  throwIfAborted(signal);
   const practicePoseForm = new FormData();
   practicePoseForm.append("video", practiceFile, practiceFile.name);
   practicePoseForm.append("arms_color", YOLO_POSE_COLORS.practice.arms);
@@ -908,8 +1238,11 @@ export async function ensureBrowserYoloOverlays(params: {
   practicePoseForm.append("session_id", sessionId);
   practicePoseForm.append("side", "practice");
   const practicePoseJobId = await startPythonYoloPoseJob(practicePoseForm);
-  const practicePose = await waitForPythonYoloPoseJob(practicePoseJobId, (progress) =>
-    onStatus(`YOLO hybrid (user pose) ${Math.round(progress * 100)}%`),
+  await rememberJob({ kind: "yolo-pose", jobId: practicePoseJobId });
+  const practicePose = await waitForPythonYoloPoseJob(
+    practicePoseJobId,
+    (progress) => onStatus(`YOLO hybrid (user pose) ${Math.round(progress * 100)}%`),
+    signal,
   );
 
   const refArtifact = buildFullVideoArtifact({
@@ -983,4 +1316,5 @@ export async function ensureBrowserYoloOverlays(params: {
   setUserArmsArtifact?.(userArmsArtifact);
   setUserLegsArtifact?.(userLegsArtifact);
   onStatus("YOLO hybrid overlays ready.");
+  signal?.removeEventListener("abort", cancelStartedJobs);
 }

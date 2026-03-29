@@ -3,7 +3,7 @@ import type { GeminiSegmentResult } from "./geminiFeedbackTypes";
 /**
  * Bump when the move-feedback request shape or client priors logic changes enough to invalidate old cache rows.
  */
-export const GEMINI_FEEDBACK_CACHE_VERSION = "1";
+export const GEMINI_FEEDBACK_CACHE_VERSION = "2";
 
 const DB_NAME = "TempoFlowGeminiFeedback";
 const STORE_NAME = "segments";

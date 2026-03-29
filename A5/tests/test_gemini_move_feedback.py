@@ -500,6 +500,21 @@ def test_format_pose_priors_for_prompt():
     assert "behind" in text
 
 
+def test_format_yolo_context_for_prompt():
+    assert gm.format_yolo_context_for_prompt(None) == ""
+    text = gm.format_yolo_context_for_prompt(
+        {
+            "segment_index": 0,
+            "source": "yolo-hybrid-segment",
+            "reference": {"segmentation": {"person_count": 1}},
+            "practice": {"segmentation": {"person_count": 2}},
+        }
+    )
+    assert "YOLO segment context" in text
+    assert '"segment_index":0' in text
+    assert '"person_count":2' in text
+
+
 def test_apply_move_feedback_guardrails_conflict_downgrades():
     result = {
         "moves": [
@@ -539,4 +554,3 @@ def test_apply_move_feedback_guardrails_no_conflict():
     }
     out = gm.apply_move_feedback_guardrails(result, priors)
     assert out["moves"][0]["confidence"] == "high"
-

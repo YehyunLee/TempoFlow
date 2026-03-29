@@ -112,9 +112,43 @@ def test_weights_path_ends_with_models():
     assert "web-app" in p.parts and "models" in p.parts
 
 
+def test_summarize_mask_bounds_and_aggregate():
+    mask = np.zeros((10, 20), dtype=np.uint8)
+    mask[2:9, 4:15] = 255
+    summary = oa._summarize_mask_bounds(mask, 20, 10)
+    assert summary is not None
+    assert summary["min_x"] == pytest.approx(4 / 20)
+    assert summary["max_y"] == pytest.approx(8 / 10)
+
+    aggregate = oa._aggregate_bounds_summaries(
+        [
+            {"min_x": 0.2, "max_x": 0.6, "min_y": 0.1, "max_y": 0.9, "center_x": 0.4, "center_y": 0.5, "width": 0.4, "height": 0.8, "anchor_x": 0.4, "anchor_y": 0.9},
+            {"min_x": 0.3, "max_x": 0.7, "min_y": 0.2, "max_y": 0.8, "center_x": 0.5, "center_y": 0.5, "width": 0.4, "height": 0.6, "anchor_x": 0.5, "anchor_y": 0.8},
+            None,
+        ]
+    )
+    assert aggregate is not None
+    assert aggregate["min_x"] == pytest.approx(0.25)
+    assert aggregate["max_x"] == pytest.approx(0.65)
+    assert aggregate["width"] == pytest.approx(0.4)
+    assert aggregate["sample_count"] == pytest.approx(2.0)
+
+
 def test_overlay_yolo_status_404(overlay_client):
     r = overlay_client.get("/api/overlay/yolo/status?job_id=missing")
     assert r.status_code == 404
+
+
+def test_overlay_yolo_cancel_marks_job_cancelled(overlay_client):
+    jid = "yolo-cancel"
+    oa.OVERLAY_JOBS[jid] = {"status": "processing", "cancel_requested": False}
+    try:
+        r = overlay_client.post("/api/overlay/yolo/cancel", data={"job_id": jid})
+        assert r.status_code == 200
+        assert oa.OVERLAY_JOBS[jid]["status"] == "cancelled"
+        assert oa.OVERLAY_JOBS[jid]["cancel_requested"] is True
+    finally:
+        oa.OVERLAY_JOBS.pop(jid, None)
 
 
 def test_overlay_yolo_result_not_found(overlay_client):
@@ -144,6 +178,18 @@ def test_overlay_yolo_result_missing_output(overlay_client):
 
 def test_overlay_pose_status_404(overlay_client):
     assert overlay_client.get("/api/overlay/yolo-pose/status?job_id=x").status_code == 404
+
+
+def test_overlay_pose_cancel_marks_job_cancelled(overlay_client):
+    jid = "pose-cancel"
+    oa.POSE_JOBS[jid] = {"status": "processing", "cancel_requested": False}
+    try:
+        r = overlay_client.post("/api/overlay/yolo-pose/cancel", data={"job_id": jid})
+        assert r.status_code == 200
+        assert oa.POSE_JOBS[jid]["status"] == "cancelled"
+        assert oa.POSE_JOBS[jid]["cancel_requested"] is True
+    finally:
+        oa.POSE_JOBS.pop(jid, None)
 
 
 def test_overlay_pose_result_invalid_layer(overlay_client):
@@ -252,6 +298,24 @@ def test_overlay_yolo_result_200_serves_file_and_pops_job(overlay_client, tmp_pa
         assert "video/webm" in r.headers.get("content-type", "")
         assert r.content == b"webm-bytes"
         assert jid not in oa.OVERLAY_JOBS
+    finally:
+        oa.OVERLAY_JOBS.pop(jid, None)
+
+
+def test_overlay_yolo_result_200_includes_overlay_summary_header(overlay_client, tmp_path):
+    out = tmp_path / "summary.webm"
+    out.write_bytes(b"webm-bytes")
+    jid = "yolo-result-summary"
+    oa.OVERLAY_JOBS[jid] = {
+        "status": "done",
+        "tmp_out": str(out),
+        "tmp_in": None,
+        "overlay_summary": {"min_x": 0.1, "max_x": 0.7, "min_y": 0.2, "max_y": 0.9},
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo/result?job_id={jid}")
+        assert r.status_code == 200
+        assert r.headers.get("x-tempoflow-overlay-summary")
     finally:
         oa.OVERLAY_JOBS.pop(jid, None)
 

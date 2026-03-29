@@ -50,6 +50,8 @@ Inputs:
 - A list of move timestamp windows
 - Optional: independent pose-based timing hints (peak motion offset). Treat these as \
 soft priors to disambiguate early vs late; they can be wrong if pose tracking fails.
+- Optional: YOLO pose / segmentation summaries for this segment. Coordinates are normalized 0..1 \
+and serve as soft spatial grounding when motion is ambiguous.
 
 Each move is the body transition between two consecutive beats, not a static pose.
 Evaluate each move window separately.
@@ -444,6 +446,17 @@ def format_pose_priors_for_prompt(pose_priors: dict[str, Any] | None) -> str:
     return "\n".join(lines)
 
 
+def format_yolo_context_for_prompt(yolo_context: dict[str, Any] | None) -> str:
+    """Format per-segment YOLO summaries for the Gemini user message."""
+    if not yolo_context:
+        return ""
+    return (
+        "YOLO segment context (soft spatial grounding; normalized coordinates in 0..1). "
+        "Use this to understand visible person positions / scale, but trust the videos first if they disagree.\n"
+        f"{json.dumps(yolo_context, separators=(',', ':'), ensure_ascii=True)}\n"
+    )
+
+
 # Labels that imply "ahead of reference" vs "behind" for guardrail checks
 _LABEL_AHEADISH = frozenset({"early", "rushed"})
 _LABEL_BEHINDISH = frozenset({"late", "dragged"})
@@ -569,6 +582,7 @@ def _call_gemini_move_feedback_once(
     api_key: str | None = None,
     model_name: str = GEMINI_MODEL,
     pose_priors_text: str | None = None,
+    yolo_context_text: str | None = None,
 ) -> dict:
     """Single attempt: upload clips, generate, delete files, return parsed JSON."""
     import google.generativeai as genai
@@ -593,6 +607,8 @@ def _call_gemini_move_feedback_once(
     ]
     if pose_priors_text:
         user_parts.append(pose_priors_text)
+    if yolo_context_text:
+        user_parts.append(yolo_context_text)
     user_parts.append(move_windows_text)
 
     try:
@@ -617,6 +633,7 @@ def call_gemini_move_feedback(
     api_key: str | None = None,
     model_name: str = GEMINI_MODEL,
     pose_priors_text: str | None = None,
+    yolo_context_text: str | None = None,
     max_attempts: int = 4,
 ) -> dict:
     """Upload segment clips and call Gemini for micro-timing feedback (with retries)."""
@@ -630,6 +647,7 @@ def call_gemini_move_feedback(
                 api_key=api_key,
                 model_name=model_name,
                 pose_priors_text=pose_priors_text,
+                yolo_context_text=yolo_context_text,
             )
         except BaseException as exc:
             last_exc = exc
@@ -662,6 +680,7 @@ def run_move_feedback_pipeline(
     model_name: str = GEMINI_MODEL,
     low_res_height: int = LOW_RES_HEIGHT,
     pose_priors: dict[str, Any] | None = None,
+    yolo_context: dict[str, Any] | None = None,
     burn_in_labels: bool = True,
     include_audio: bool = False,
 ) -> dict:
@@ -698,6 +717,7 @@ def run_move_feedback_pipeline(
 
     move_text, annotated_moves = format_move_windows(moves, seg["shared_start_sec"])
     pose_priors_text = format_pose_priors_for_prompt(pose_priors) if pose_priors else None
+    yolo_context_text = format_yolo_context_for_prompt(yolo_context) if yolo_context else None
 
     tmp_files: list[str] = []
     try:
@@ -731,6 +751,7 @@ def run_move_feedback_pipeline(
             api_key=api_key,
             model_name=model_name,
             pose_priors_text=pose_priors_text,
+            yolo_context_text=yolo_context_text,
         )
         result = apply_move_feedback_guardrails(result, pose_priors)
 
@@ -750,4 +771,3 @@ def run_move_feedback_pipeline(
                 Path(p).unlink(missing_ok=True)
             except OSError:
                 pass
-

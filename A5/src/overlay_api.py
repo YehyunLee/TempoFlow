@@ -21,6 +21,43 @@ POSE_JOBS: dict[str, dict[str, Any]] = {}
 BODYPX_JOBS: dict[str, dict[str, Any]] = {}
 
 
+def _job_cancel_requested(job_store: dict[str, dict[str, Any]], job_id: str) -> bool:
+    job = job_store.get(job_id)
+    return bool(job and job.get("cancel_requested"))
+
+
+def _cleanup_job_files(job: dict[str, Any], *path_keys: str) -> None:
+    for key in path_keys:
+        path = job.get(key)
+        if not path:
+            continue
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _finalize_cancelled_job(job_store: dict[str, dict[str, Any]], job_id: str, *path_keys: str) -> None:
+    job = job_store.get(job_id)
+    if not job:
+        return
+    job["status"] = "cancelled"
+    job["progress"] = 0.0
+    job["error"] = None
+    _cleanup_job_files(job, *path_keys)
+
+
+def _request_job_cancel(job_store: dict[str, dict[str, Any]], job_id: str) -> JSONResponse:
+    job = job_store.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    if job.get("status") in {"done", "error", "cancelled"}:
+        return JSONResponse({"job_id": job_id, "status": job.get("status")}, status_code=200)
+    job["cancel_requested"] = True
+    job["status"] = "cancelled"
+    return JSONResponse({"job_id": job_id, "status": "cancelled"}, status_code=200)
+
+
 def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
     h = (hex_color or "#38bdf8").strip().lstrip("#")
     if len(h) == 3:
@@ -186,6 +223,162 @@ def _aggregate_pose_summaries(summary_frames: list[list[dict[str, float]]]) -> d
     return {
         "person_count": len(people),
         "persons": people,
+    }
+
+
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    sorted_values = sorted(float(value) for value in values)
+    mid = len(sorted_values) // 2
+    if len(sorted_values) % 2 == 1:
+        return sorted_values[mid]
+    return (sorted_values[mid - 1] + sorted_values[mid]) / 2.0
+
+
+def _summarize_single_mask(mask_u8: Any, w: int, h: int) -> dict[str, float] | None:
+    if mask_u8 is None:
+        return None
+
+    import numpy as np  # type: ignore
+
+    try:
+        ys, xs = np.where(mask_u8 > 16)
+    except Exception:
+        return None
+
+    if len(xs) == 0 or len(ys) == 0:
+        return None
+
+    norm_w = float(max(1, w))
+    norm_h = float(max(1, h))
+    min_x = float(xs.min()) / norm_w
+    max_x = float(xs.max()) / norm_w
+    min_y = float(ys.min()) / norm_h
+    max_y = float(ys.max()) / norm_h
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+
+    return {
+        "min_x": min_x,
+        "max_x": max_x,
+        "min_y": min_y,
+        "max_y": max_y,
+        "center_x": center_x,
+        "center_y": center_y,
+        "width": max(1.0 / norm_w, max_x - min_x),
+        "height": max(1.0 / norm_h, max_y - min_y),
+        "anchor_x": center_x,
+        "anchor_y": max_y,
+    }
+
+
+def _summarize_mask_bounds(mask_u8: Any, w: int, h: int) -> dict[str, float] | None:
+    return _summarize_single_mask(mask_u8, w, h)
+
+
+def _aggregate_bounds_summaries(summary_frames: list[dict[str, float] | None]) -> dict[str, float] | None:
+    valid_frames = [summary for summary in summary_frames if summary is not None]
+    if not valid_frames:
+        return None
+
+    min_x = _median([summary["min_x"] for summary in valid_frames])
+    max_x = _median([summary["max_x"] for summary in valid_frames])
+    min_y = _median([summary["min_y"] for summary in valid_frames])
+    max_y = _median([summary["max_y"] for summary in valid_frames])
+    center_x = (min_x + max_x) / 2.0
+    center_y = (min_y + max_y) / 2.0
+
+    return {
+        "min_x": min_x,
+        "max_x": max_x,
+        "min_y": min_y,
+        "max_y": max_y,
+        "center_x": center_x,
+        "center_y": center_y,
+        "width": max(1e-6, max_x - min_x),
+        "height": max(1e-6, max_y - min_y),
+        "anchor_x": center_x,
+        "anchor_y": max_y,
+        "sample_count": float(len(valid_frames)),
+    }
+
+
+def _summarize_mask_instances(mask_data: Any, w: int, h: int) -> list[dict[str, float]]:
+    import numpy as np  # type: ignore
+
+    try:
+        masks = np.asarray(mask_data)
+    except Exception:
+        return []
+
+    if masks.ndim == 2:
+        masks = masks[None, ...]
+    if masks.ndim != 3 or masks.shape[0] <= 0:
+        return []
+
+    summaries: list[dict[str, float]] = []
+    for idx in range(masks.shape[0]):
+        mask = masks[idx]
+        summary = _summarize_single_mask(mask, w, h)
+        if summary is not None:
+            summaries.append(summary)
+
+    return sorted(summaries, key=lambda person: person["anchor_x"])
+
+
+def _aggregate_mask_instance_summaries(summary_frames: list[list[dict[str, float]]]) -> dict[str, Any] | None:
+    if not summary_frames:
+        return None
+
+    slot_count = max(len(frame) for frame in summary_frames)
+    people: list[dict[str, float]] = []
+    keys = ("anchor_x", "anchor_y", "center_x", "center_y", "width", "height", "min_x", "max_x", "min_y", "max_y")
+
+    for slot_index in range(slot_count):
+        samples = [frame[slot_index] for frame in summary_frames if slot_index < len(frame)]
+        if not samples:
+            continue
+        person = {
+            key: _median([float(sample[key]) for sample in samples])
+            for key in keys
+        }
+        people.append(person)
+
+    people.sort(key=lambda person: person["anchor_x"])
+    union = _aggregate_bounds_summaries(
+        [
+            {
+                "min_x": min(person["min_x"] for person in frame),
+                "max_x": max(person["max_x"] for person in frame),
+                "min_y": min(person["min_y"] for person in frame),
+                "max_y": max(person["max_y"] for person in frame),
+                "center_x": 0.0,
+                "center_y": 0.0,
+                "width": 0.0,
+                "height": 0.0,
+                "anchor_x": 0.0,
+                "anchor_y": 0.0,
+            }
+            for frame in summary_frames
+            if frame
+        ]
+    )
+    if union is not None:
+        union["center_x"] = (union["min_x"] + union["max_x"]) / 2.0
+        union["center_y"] = (union["min_y"] + union["max_y"]) / 2.0
+        union["width"] = max(1e-6, union["max_x"] - union["min_x"])
+        union["height"] = max(1e-6, union["max_y"] - union["min_y"])
+        union["anchor_x"] = union["center_x"]
+        union["anchor_y"] = union["max_y"]
+
+    if not people and union is None:
+        return None
+
+    return {
+        "person_count": len(people),
+        "persons": people,
+        "union": union,
     }
 
 
@@ -447,6 +640,9 @@ def _weights_path(filename: str) -> Path:
 
 
 def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fps: int, start_sec: float | None, end_sec: float | None) -> None:
+    if _job_cancel_requested(OVERLAY_JOBS, job_id):
+        _finalize_cancelled_job(OVERLAY_JOBS, job_id, "tmp_in", "tmp_out")
+        return
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
@@ -500,8 +696,14 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
     next_out_time = 0.0
     written = 0
     last_overlay = np.zeros((h, w, 3), dtype=np.uint8)
+    overlay_summary_frames: list[list[dict[str, float]]] = []
 
     while written < expected:
+        if _job_cancel_requested(OVERLAY_JOBS, job_id):
+            cap.release()
+            writer.release()
+            _finalize_cancelled_job(OVERLAY_JOBS, job_id, "tmp_in", "tmp_out")
+            return
         ok, frame = cap.read()
         if not ok:
             break
@@ -524,6 +726,15 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
                 alpha = cv2.resize(alpha, (w, h), interpolation=cv2.INTER_CUBIC)
             alpha = cv2.GaussianBlur(alpha, (0, 0), sigmaX=0.9, sigmaY=0.9)
             alpha_u8 = (alpha * 255.0).astype(np.uint8)
+            if mm.shape[1] != h or mm.shape[2] != w:
+                resized_masks = [
+                    cv2.resize(mask.astype(np.float32), (w, h), interpolation=cv2.INTER_CUBIC)
+                    for mask in mm
+                ]
+                mm = np.stack(resized_masks, axis=0)
+            overlay_summary_frames.append(_summarize_mask_instances(mm, w, h))
+        else:
+            overlay_summary_frames.append([])
 
         overlay = np.zeros((h, w, 3), dtype=np.uint8)
         overlay[..., 0] = (alpha_u8.astype(np.uint16) * b0 // 255).astype(np.uint8)
@@ -537,6 +748,11 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
         OVERLAY_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
 
     while written < expected:
+        if _job_cancel_requested(OVERLAY_JOBS, job_id):
+            cap.release()
+            writer.release()
+            _finalize_cancelled_job(OVERLAY_JOBS, job_id, "tmp_in", "tmp_out")
+            return
         writer.write(last_overlay)
         written += 1
         OVERLAY_JOBS[job_id]["frames_written"] = written
@@ -544,6 +760,10 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
 
     cap.release()
     writer.release()
+    if _job_cancel_requested(OVERLAY_JOBS, job_id):
+        _finalize_cancelled_job(OVERLAY_JOBS, job_id, "tmp_in", "tmp_out")
+        return
+    OVERLAY_JOBS[job_id]["overlay_summary"] = _aggregate_mask_instance_summaries(overlay_summary_frames)
     OVERLAY_JOBS[job_id]["status"] = "done"
 
 
@@ -558,6 +778,9 @@ def _run_pose_overlay_job(
     start_sec: float | None = None,
     end_sec: float | None = None,
 ) -> None:
+    if _job_cancel_requested(POSE_JOBS, job_id):
+        _finalize_cancelled_job(POSE_JOBS, job_id, "tmp_in", "arms_out", "legs_out")
+        return
     try:
         import cv2  # type: ignore
         import numpy as np  # type: ignore
@@ -622,6 +845,12 @@ def _run_pose_overlay_job(
     pose_summary_frames: list[list[dict[str, float]]] = []
 
     while written < expected:
+        if _job_cancel_requested(POSE_JOBS, job_id):
+            cap.release()
+            arms_writer.release()
+            legs_writer.release()
+            _finalize_cancelled_job(POSE_JOBS, job_id, "tmp_in", "arms_out", "legs_out")
+            return
         ok, frame = cap.read()
         if not ok:
             break
@@ -656,6 +885,12 @@ def _run_pose_overlay_job(
         POSE_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
 
     while written < expected:
+        if _job_cancel_requested(POSE_JOBS, job_id):
+            cap.release()
+            arms_writer.release()
+            legs_writer.release()
+            _finalize_cancelled_job(POSE_JOBS, job_id, "tmp_in", "arms_out", "legs_out")
+            return
         arms_writer.write(last_arms)
         legs_writer.write(last_legs)
         written += 1
@@ -665,6 +900,9 @@ def _run_pose_overlay_job(
     cap.release()
     arms_writer.release()
     legs_writer.release()
+    if _job_cancel_requested(POSE_JOBS, job_id):
+        _finalize_cancelled_job(POSE_JOBS, job_id, "tmp_in", "arms_out", "legs_out")
+        return
     POSE_JOBS[job_id]["pose_summary"] = _aggregate_pose_summaries(pose_summary_frames)
     POSE_JOBS[job_id]["status"] = "done"
 
@@ -846,6 +1084,11 @@ async def overlay_yolo_status(job_id: str):
     }
 
 
+@router.post("/api/overlay/yolo/cancel")
+async def overlay_yolo_cancel(job_id: str = Form(...)):
+    return _request_job_cancel(OVERLAY_JOBS, job_id)
+
+
 @router.get("/api/overlay/yolo/result")
 async def overlay_yolo_result(job_id: str, background_tasks: BackgroundTasks):
     job = OVERLAY_JOBS.get(job_id)
@@ -860,8 +1103,17 @@ async def overlay_yolo_result(job_id: str, background_tasks: BackgroundTasks):
     background_tasks.add_task(lambda: Path(out_path).unlink(missing_ok=True))
     if tmp_in:
         background_tasks.add_task(lambda: Path(tmp_in).unlink(missing_ok=True))
+    headers = {}
+    encoded_summary = _encode_summary_header(job.get("overlay_summary"))
+    if encoded_summary:
+        headers["x-tempoflow-overlay-summary"] = encoded_summary
     OVERLAY_JOBS.pop(job_id, None)
-    return FileResponse(path=out_path, media_type="video/webm", filename=f"{job_id}_yolo_overlay.webm")
+    return FileResponse(
+        path=out_path,
+        media_type="video/webm",
+        filename=f"{job_id}_yolo_overlay.webm",
+        headers=headers,
+    )
 
 
 @router.post("/api/overlay/yolo-pose/start")
@@ -915,6 +1167,11 @@ async def overlay_yolo_pose_status(job_id: str):
         "frames_expected": job.get("frames_expected"),
         "error": job.get("error"),
     }
+
+
+@router.post("/api/overlay/yolo-pose/cancel")
+async def overlay_yolo_pose_cancel(job_id: str = Form(...)):
+    return _request_job_cancel(POSE_JOBS, job_id)
 
 
 @router.get("/api/overlay/yolo-pose/result")
