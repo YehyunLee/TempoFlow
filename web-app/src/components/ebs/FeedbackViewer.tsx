@@ -13,10 +13,7 @@ import { generateFastSamOverlayFrames } from "../../lib/fastSamOverlayGenerator"
 import { generateBodyPixOverlayFrames } from "../../lib/bodyPixOverlayGenerator";
 import { buildOverlayKey, getSessionOverlay, storeSessionOverlay, type OverlayArtifact } from "../../lib/overlayStorage";
 import { getSessionVideo } from "../../lib/videoStorage";
-import { FeedbackPanel } from "./FeedbackPanel";
-import { FeedbackOverlay } from "./FeedbackOverlay";
 import { GeminiFeedbackPanel, TIMING_LABEL_COLORS, type GeminiFlatMove } from "./GeminiFeedbackPanel";
-import type { DanceFeedback } from "../../lib/bodyPixComparison";
 
 type ManualViewerProps = {
   mode?: "manual";
@@ -93,7 +90,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [showBodyPix, setShowBodyPix] = useState(false);
   const [showFastSam, setShowFastSam] = useState(false);
   const [showFeedback, setShowFeedback] = useState(true);
-  const [danceFeedback, setDanceFeedback] = useState<DanceFeedback[]>([]);
   const [geminiFeedback, setGeminiFeedback] = useState<GeminiFlatMove[]>([]);
   const [overlayMethod, setOverlayMethod] = useState<"pose-fill" | "sam3-experimental" | "sam3-roboflow">("pose-fill");
   const [overlayBusy, setOverlayBusy] = useState(false);
@@ -334,22 +330,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
         </>
       );
     }, [sessionMode, sessionPracticeName, sessionReferenceName]);
-  const SEVERITY_COLORS: Record<string, string> = {
-    good: "#34d399",     // emerald-400
-    minor: "#fbbf24",    // amber-400
-    moderate: "#fb923c", // orange-400
-    major: "#f87171",    // red-400
-  };
-  const getSegmentAnalysisColor = useCallback((start: number, end: number) => {
-    const relevant = danceFeedback.filter(
-      (fb) => fb.timestamp >= start && fb.timestamp <= end
-    );
-
-    if (relevant.some((fb) => fb.severity === "major")) return "#f87171";    // Red
-    if (relevant.some((fb) => fb.severity === "moderate")) return "#fb923c"; // Orange
-    if (relevant.some((fb) => fb.severity === "minor")) return "#fbbf24";    // Amber
-    return null; // No errors
-  }, [danceFeedback]);
   return (
     <div className="ebs-viewer-root">
       {viewerVisible && (
@@ -449,14 +429,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     <BodyPixOverlay videoRef={userVideo} opacity={0.68} />
                   )
                 ) : null}
-                {sessionMode && showFeedback && danceFeedback.length > 0 ? (
-                  <FeedbackOverlay
-                    refVideoRef={refVideo}
-                    videoRef={userVideo}
-                    feedback={danceFeedback}
-                    sharedTime={state.sharedTime}
-                  />
-                ) : null}
               </div>
               <div className={`beat-flash${state.beatFlashOn ? " on" : ""}`} />
               <div className={`seg-pause-overlay${state.pauseOverlay.visible ? " visible" : ""}`}>
@@ -477,22 +449,11 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 sharedTime={state.sharedTime}
                 onSeek={seekToShared}
                 onFeedbackReady={setGeminiFeedback}
-              />
-            </div>
-          )}
-          {sessionMode && showFeedback && activeReferenceVideoUrl && activeUserVideoUrl && state.segments.length > 0 && (
-            <div className="mt-4 mb-2">
-              <FeedbackPanel
                 referenceVideoUrl={activeReferenceVideoUrl}
                 userVideoUrl={activeUserVideoUrl}
-                segments={state.segments}
-                sharedTime={state.sharedTime}
-                onSeek={seekToShared}
-                onFeedbackReady={setDanceFeedback}
               />
             </div>
           )}
-
           {!state.practice.enabled && hasSegments && (
             <>
               <div className="transport">
@@ -561,25 +522,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       );
                     })}
 
-                    {/* 1. HEATMAP LAYER (BodyPix strips) */}
-                    {showFeedback && danceFeedback.map((fb, i) => (
-                      <div
-                        key={`heat-${i}`}
-                        className="absolute top-0 bottom-0 w-[3px] z-[1]"
-                        style={{
-                          left: `${(fb.timestamp / sharedLen) * 100}%`,
-                          backgroundColor: SEVERITY_COLORS[fb.severity] || "#cbd5e1",
-                          boxShadow: fb.severity === 'major' ? `0 0 8px ${SEVERITY_COLORS.major}` : 'none',
-                        }}
-                      />
-                    ))}
-
-                    {/* 2. SEGMENTS LAYER (Middle Layer - Make these transparent!) */}
+                    {/* 1. SEGMENTS LAYER */}
                     {state.segments.map((segment, index) => {
-                      const analysisColor = getSegmentAnalysisColor(
-                        segment.shared_start_sec, 
-                        segment.shared_end_sec
-                      );
                       const isActive = index === state.currentSegmentIndex;
 
                       return (
@@ -593,11 +537,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                           style={{
                             left: `${(segment.shared_start_sec / sharedLen) * 100}%`,
                             width: `${((segment.shared_end_sec - segment.shared_start_sec) / sharedLen) * 100}%`,
-                            // OVERRIDE: If there's an error color, use it. 
-                            // We use a slight transparency so the "Active" blue still shows through if needed.
-                            backgroundColor: analysisColor ? `${analysisColor}${isActive ? 'CC' : '66'}` : undefined,
-                            borderColor: analysisColor || undefined,
-                            borderWidth: analysisColor ? '1px' : '0px',
                           }}
                           onClick={(event) => {
                             event.stopPropagation();

@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EbsData, EbsSegment } from "./types";
 import { getSessionVideo } from "../../lib/videoStorage";
 import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
+import { buildGeminiSegmentDebugRows } from "../../lib/geminiDebugInfo";
+import { computePosePriorsForSegment } from "../../lib/geminiPosePriors";
 
 function getProcessorBaseUrl(): string {
   return getPublicEbsProcessorUrl().replace(/\/api\/process\/?$/, "");
@@ -19,6 +21,9 @@ export type GeminiMoveResult = {
   confidence: string;
   shared_start_sec?: number;
   shared_end_sec?: number;
+  /** Model output: user timing vs reference within the move window */
+  user_relative_to_reference?: string;
+  guardrail_note?: string;
 };
 
 export type GeminiSegmentResult = {
@@ -55,6 +60,17 @@ const TIMING_BADGES: Record<
 
 const DEFAULT_BADGE = { label: "Unknown", color: "text-slate-500", bg: "bg-slate-100", dot: "bg-slate-400" };
 
+/** Plain-language hints (plan: reduce early/late vs “fast/slow” confusion). */
+const TIMING_LABEL_FRIENDLY: Record<string, string> = {
+  "on-time": "Matches the reference accent timing in this window.",
+  early: "Ahead of the reference motion or beat.",
+  late: "Behind the reference motion or beat.",
+  rushed: "Tight or sharp—often reads as quick or ahead.",
+  dragged: "Extended finish—can feel slow or behind.",
+  mixed: "Some parts early, some late in the same move.",
+  uncertain: "Not enough clear motion to judge timing.",
+};
+
 function fmtTime(sec: number) {
   const safe = Math.max(0, sec);
   const m = Math.floor(safe / 60);
@@ -68,10 +84,22 @@ type GeminiFeedbackPanelProps = {
   sharedTime: number;
   onSeek: (time: number) => void;
   onFeedbackReady?: (moves: GeminiFlatMove[]) => void;
+  /** When set, pose-based timing priors are computed client-side and sent with each segment request. */
+  referenceVideoUrl?: string | null;
+  userVideoUrl?: string | null;
 };
 
 export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
-  const { sessionId, ebsData, segments, sharedTime, onSeek, onFeedbackReady } = props;
+  const {
+    sessionId,
+    ebsData,
+    segments,
+    sharedTime,
+    onSeek,
+    onFeedbackReady,
+    referenceVideoUrl,
+    userVideoUrl,
+  } = props;
 
   const [running, setRunning] = useState(false);
   const [segmentsDone, setSegmentsDone] = useState(0);
@@ -79,11 +107,19 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
   const [results, setResults] = useState<GeminiSegmentResult[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filterLabel, setFilterLabel] = useState<string>("all");
+  const [showPipelineDebug, setShowPipelineDebug] = useState(false);
+  const [burnInLabels, setBurnInLabels] = useState(true);
+  const [includeAudio, setIncludeAudio] = useState(false);
   const hasRun = useRef(false);
   const listRef = useRef<HTMLDivElement>(null);
   const userHovering = useRef(false);
 
   const processorBaseUrl = useMemo(getProcessorBaseUrl, []);
+
+  const pipelineDebugRows = useMemo(
+    () => buildGeminiSegmentDebugRows(ebsData, segments),
+    [ebsData, segments],
+  );
 
   const flatMoves = useMemo<GeminiFlatMove[]>(
     () =>
@@ -158,6 +194,20 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
 
       const ebsJson = JSON.stringify(ebsData);
 
+      const priorsBySegment = new Map<number, string>();
+      if (referenceVideoUrl && userVideoUrl) {
+        for (const segIndex of validIndices) {
+          const priors = await computePosePriorsForSegment({
+            referenceVideoUrl,
+            userVideoUrl,
+            ebsData,
+            segments,
+            segmentIndex: segIndex,
+          });
+          priorsBySegment.set(segIndex, JSON.stringify(priors));
+        }
+      }
+
       const settled = await Promise.allSettled(
         validIndices.map(async (segIndex) => {
           const form = new FormData();
@@ -166,6 +216,12 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
           form.append("segment_index", String(segIndex));
           form.append("session_id", sessionId);
           form.append("ebs_data_json", ebsJson);
+          const pj = priorsBySegment.get(segIndex);
+          if (pj) {
+            form.append("pose_priors_json", pj);
+          }
+          form.append("burn_in_labels", burnInLabels ? "true" : "false");
+          form.append("include_audio", includeAudio ? "true" : "false");
 
           const res = await fetch(`${processorBaseUrl}/api/move-feedback`, {
             method: "POST",
@@ -202,7 +258,18 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
     } finally {
       setRunning(false);
     }
-  }, [running, segments, sessionId, ebsData, processorBaseUrl, onFeedbackReady]);
+  }, [
+    running,
+    segments,
+    sessionId,
+    ebsData,
+    processorBaseUrl,
+    onFeedbackReady,
+    referenceVideoUrl,
+    userVideoUrl,
+    burnInLabels,
+    includeAudio,
+  ]);
 
   const progressPercent =
     segmentsTotal > 0 ? Math.round((segmentsDone / segmentsTotal) * 100) : 0;
@@ -230,6 +297,7 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
               Sends each segment as a low-res video pair to Gemini 2.5 Flash-Lite for move-level micro-timing comparison.
+              Optional pose priors and REFERENCE/USER burn-in labels reduce role confusion.
             </p>
           </div>
           <button
@@ -240,6 +308,57 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
             {running ? "Analyzing..." : hasRun.current ? "Re-run" : "Run Analysis"}
           </button>
         </div>
+        <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-slate-600">
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="rounded border-slate-300"
+              checked={burnInLabels}
+              onChange={(e) => setBurnInLabels(e.target.checked)}
+              disabled={running}
+            />
+            Burn-in REFERENCE / USER on clips
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              className="rounded border-slate-300"
+              checked={includeAudio}
+              onChange={(e) => setIncludeAudio(e.target.checked)}
+              disabled={running}
+            />
+            Keep audio in clips (helps beat timing; larger uploads)
+          </label>
+        </div>
+        <button
+          type="button"
+          className="mt-2 text-[11px] text-slate-500 hover:text-indigo-600 underline-offset-2 hover:underline"
+          onClick={() => setShowPipelineDebug((v) => !v)}
+        >
+          {showPipelineDebug ? "Hide" : "Show"} pipeline debug (clip bounds vs beats)
+        </button>
+        {showPipelineDebug && (
+          <div className="mt-2 max-h-48 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-2 text-[10px] font-mono text-slate-700">
+            {pipelineDebugRows.map((row) => (
+              <div key={row.segmentIndex} className="mb-2 last:mb-0 border-b border-slate-200 pb-2 last:border-0">
+                <div className="font-semibold text-slate-800">Seg {row.segmentIndex}</div>
+                <div>
+                  shared [{row.sharedStartSec.toFixed(3)}, {row.sharedEndSec.toFixed(3)}) beat_idx{" "}
+                  {row.beatIdxRange ? `${row.beatIdxRange[0]}..${row.beatIdxRange[1]}` : "—"}
+                </div>
+                <div>
+                  ref clip [{row.refClipStartSec.toFixed(3)}, {row.refClipEndSec.toFixed(3)}] · user clip [
+                  {row.userClipStartSec.toFixed(3)}, {row.userClipEndSec.toFixed(3)}]
+                </div>
+                <div>
+                  moves: {row.moveCount}{" "}
+                  {row.moves.slice(0, 4).map((m) => `${m.moveIndex}:${m.sharedStartSec.toFixed(2)}-${m.sharedEndSec.toFixed(2)}`).join("; ")}
+                  {row.moves.length > 4 ? "…" : ""}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Progress */}
@@ -355,6 +474,7 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
                           Move {m.move_index}
                         </span>
                         <span
+                          title={TIMING_LABEL_FRIENDLY[m.micro_timing_label] ?? undefined}
                           className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold uppercase tracking-wide ${badge.bg} ${badge.color}`}
                         >
                           {badge.label}
@@ -375,8 +495,23 @@ export function GeminiFeedbackPanel(props: GeminiFeedbackPanelProps) {
                             {m.confidence}
                           </span>
                         )}
+                        {m.user_relative_to_reference && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 font-medium">
+                            vs ref: {m.user_relative_to_reference}
+                          </span>
+                        )}
                         <span className="text-[10px] text-slate-400 ml-auto">Seg {m.segmentIndex}</span>
                       </div>
+                      {TIMING_LABEL_FRIENDLY[m.micro_timing_label] && (
+                        <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                          {TIMING_LABEL_FRIENDLY[m.micro_timing_label]}
+                        </p>
+                      )}
+                      {m.guardrail_note && (
+                        <p className="text-[10px] text-amber-800 mt-1 bg-amber-50/80 rounded px-1.5 py-0.5">
+                          {m.guardrail_note}
+                        </p>
+                      )}
                       {m.micro_timing_evidence && (
                         <p className="text-[11px] text-slate-600 mt-1.5 leading-snug">
                           {m.micro_timing_evidence}

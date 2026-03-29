@@ -11,7 +11,6 @@ vi.mock("./useEbsViewer", () => ({
 // 2. Mock sub-components that perform heavy logic or WebGL
 vi.mock("../BodyPixOverlay", () => ({ BodyPixOverlay: () => <div data-testid="bodypix-live" /> }));
 vi.mock("../PrecomputedVideoOverlay", () => ({ PrecomputedVideoOverlay: () => <div data-testid="precomputed-video" /> }));
-vi.mock("./FeedbackPanel", () => ({ FeedbackPanel: () => <div data-testid="feedback-panel" /> }));
 vi.mock("./GeminiFeedbackPanel", () => ({ 
   GeminiFeedbackPanel: () => <div data-testid="gemini-panel" />,
   TIMING_LABEL_COLORS: {} 
@@ -125,7 +124,7 @@ describe("FeedbackViewer", () => {
     expect(mockActions.togglePlay).toHaveBeenCalled();
   });
 
-  it("shows Gemini and Dance feedback panels in session mode", () => {
+  it("shows Gemini feedback panel in session mode", () => {
     render(
       <FeedbackViewer
         mode="session"
@@ -136,7 +135,6 @@ describe("FeedbackViewer", () => {
       />
     );
     expect(screen.getByTestId("gemini-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("feedback-panel")).toBeInTheDocument();
   });
 
   it("switches to practice mode when requested", () => {

@@ -31,8 +31,6 @@ import {
 } from "../../lib/overlaySegments";
 import { getSessionVideo } from "../../lib/videoStorage";
 import { getPublicEbsProcessorUrl } from "../../lib/ebsProcessorUrl";
-import { FeedbackOverlay } from "./FeedbackOverlay";
-import type { DanceFeedback } from "../../lib/bodyPixComparison";
 
 type FileDropProps = {
   label: string;
@@ -166,7 +164,6 @@ export function EbsViewer(props: EbsViewerProps) {
   const [showBodyPix, setShowBodyPix] = useState(false);
   const [showFastSam, setShowFastSam] = useState(false);
   const [showFeedback, setShowFeedback] = useState(false);
-  const [danceFeedback, setDanceFeedback] = useState<DanceFeedback[]>([]);
   const [overlayMethod, setOverlayMethod] = useState<"pose-fill" | "sam3-experimental" | "sam3-roboflow">("pose-fill");
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayStatus, setOverlayStatus] = useState<string | null>(null);
@@ -1911,14 +1908,6 @@ export function EbsViewer(props: EbsViewerProps) {
                     <PoseOverlay videoRef={userVideo} color="#10b981" method={overlayMethod} />
                   )
                 ) : null}
-                {sessionMode && showFeedback && danceFeedback.length > 0 ? (
-                  <FeedbackOverlay
-                    refVideoRef={refVideo}
-                    videoRef={userVideo}
-                    feedback={danceFeedback}
-                    sharedTime={state.sharedTime}
-                  />
-                ) : null}
               </div>
               <div className={`beat-flash${state.beatFlashOn ? " on" : ""}`} />
               <div className={`seg-pause-overlay${state.pauseOverlay.visible ? " visible" : ""}`}>
@@ -1930,20 +1919,6 @@ export function EbsViewer(props: EbsViewerProps) {
               </div>
             </div>
           </div>
-{/* moved to new tab
-          {sessionMode && showFeedback && activeReferenceVideoUrl && activeUserVideoUrl && state.segments.length > 0 && (
-            <div className="mt-4 mb-2">
-              <FeedbackPanel
-                referenceVideoUrl={activeReferenceVideoUrl}
-                userVideoUrl={activeUserVideoUrl}
-                segments={state.segments}
-                sharedTime={state.sharedTime}
-                onSeek={seekToShared}
-                onFeedbackReady={setDanceFeedback}
-              />
-            </div>
-          )} */}
-
           {!state.practice.enabled && hasSegments && (
             <>
               <div className="transport">
