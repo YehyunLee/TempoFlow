@@ -15,6 +15,8 @@ import { storeSessionVideo } from '../../lib/videoStorage';
 
 export default function UploadPage() {
   const router = useRouter();
+  const stepPanelMinHeightClass = 'min-h-[540px]';
+  const stepPanelBodyMinHeightClass = 'min-h-[444px]';
   const [flowStep, setFlowStep] = useState<'intro' | 'reference' | 'practice' | 'launching'>('intro');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [practiceFile, setPracticeFile] = useState<File | null>(null);
@@ -30,6 +32,8 @@ export default function UploadPage() {
   const [recorderTarget, setRecorderTarget] = useState<'reference' | 'practice'>('practice');
   const [introFadingOut, setIntroFadingOut] = useState(false);
   const [pauseReferenceAutoAdvance, setPauseReferenceAutoAdvance] = useState(false);
+  const [stepTransitionDirection, setStepTransitionDirection] = useState<'forward' | 'backward'>('forward');
+  const [stepAnimationKey, setStepAnimationKey] = useState(0);
   const storageMode = getStorageMode();
   const analysisMode = getAnalysisMode();
   const liveVideoRef = useRef<HTMLVideoElement>(null);
@@ -43,6 +47,15 @@ export default function UploadPage() {
     if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
     if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
     return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  };
+
+  const transitionBetweenUploadSteps = (
+    nextStep: 'reference' | 'practice',
+    direction: 'forward' | 'backward',
+  ) => {
+    setStepTransitionDirection(direction);
+    setStepAnimationKey((value) => value + 1);
+    setFlowStep(nextStep);
   };
 
   useEffect(() => {
@@ -72,6 +85,7 @@ export default function UploadPage() {
       setIntroFadingOut(true);
     }, 900);
     const timeoutId = window.setTimeout(() => {
+      setStepTransitionDirection('forward');
       setFlowStep('reference');
     }, 1600);
     return () => {
@@ -86,10 +100,9 @@ export default function UploadPage() {
     if (recorderOpen) closeRecorder();
     const timeoutId = window.setTimeout(() => {
       setMessage('');
-      setFlowStep('practice');
+      transitionBetweenUploadSteps('practice', 'forward');
     }, 750);
     return () => window.clearTimeout(timeoutId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowStep, pauseReferenceAutoAdvance, referenceFile, recorderOpen]);
 
   useEffect(() => {
@@ -99,7 +112,6 @@ export default function UploadPage() {
       setFlowStep('launching');
     }, 750);
     return () => window.clearTimeout(timeoutId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flowStep, practiceFile, recorderOpen]);
 
   const handleFileChange = (type: 'reference' | 'practice') => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -404,7 +416,7 @@ export default function UploadPage() {
           onDragLeave={() => setDraggingType(null)}
           className={`
             group relative overflow-hidden rounded-[28px] border p-8 transition-all
-            min-h-[526px]
+            ${stepPanelMinHeightClass}
             ${draggingType === type ? 'border-sky-400 bg-sky-100/80 shadow-lg shadow-sky-200/60' : 'border-sky-100 bg-white/90 hover:border-sky-300 hover:shadow-lg hover:shadow-sky-100/80'}
             ${file ? 'border-sky-200 bg-gradient-to-br from-white to-sky-50/70' : ''}
           `}
@@ -419,7 +431,7 @@ export default function UploadPage() {
           />
 
           {!file ? (
-            <div className="relative flex h-full min-h-[430px] flex-col items-center justify-center text-center">
+            <div className={`relative flex h-full ${stepPanelBodyMinHeightClass} flex-col items-center justify-center text-center`}>
               <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-sky-100 bg-white text-sky-500 shadow-sm transition-transform group-hover:scale-105">
                 <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 5v14M19 12H5" />
@@ -429,7 +441,7 @@ export default function UploadPage() {
               <p className="mt-2 max-w-xs text-sm text-slate-500">Drop video or click to browse</p>
             </div>
           ) : (
-            <div className="relative flex h-full min-h-[430px] flex-col justify-between">
+            <div className={`relative flex h-full ${stepPanelBodyMinHeightClass} flex-col justify-between`}>
               <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-sky-100 text-sky-700">
                 <svg className="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
@@ -461,12 +473,14 @@ export default function UploadPage() {
     if (flowStep === 'practice') {
       setPracticeFile(null);
       setPauseReferenceAutoAdvance(true);
-      setFlowStep('reference');
+      transitionBetweenUploadSteps('reference', 'backward');
       return;
     }
 
     if (flowStep === 'reference') {
       setReferenceFile(null);
+      setStepTransitionDirection('backward');
+      setStepAnimationKey((value) => value + 1);
       setFlowStep('intro');
     }
   };
@@ -529,7 +543,13 @@ export default function UploadPage() {
               </div>
             </div>
           ) : (
-            <div className="animate-in fade-in slide-in-from-right-4 duration-500 rounded-[40px] border border-sky-100/80 bg-white/82 p-6 shadow-[0_24px_80px_rgba(14,165,233,0.1)] backdrop-blur-sm md:p-8">
+            <div
+              key={`${flowStep}-${stepAnimationKey}`}
+              data-testid="upload-step-card"
+              className={`rounded-[40px] border border-sky-100/80 bg-white/82 p-6 shadow-[0_24px_80px_rgba(14,165,233,0.1)] backdrop-blur-sm md:p-8 ${
+                stepTransitionDirection === 'forward' ? 'upload-step-enter-forward' : 'upload-step-enter-backward'
+              }`}
+            >
               <div className="mb-8 flex items-center justify-between gap-4">
                 <div>
                   <p className="text-xs font-semibold uppercase tracking-[0.32em] text-sky-600">
@@ -539,25 +559,35 @@ export default function UploadPage() {
                     {isReferenceStep ? 'Choose a reference clip' : 'Add your practice clip'}
                   </h1>
                 </div>
-                <button
-                  onClick={goToPreviousStep}
-                  className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-all hover:border-slate-300 hover:text-slate-900"
-                >
-                  Back
-                </button>
+                <div className="flex items-center gap-3">
+                  {isReferenceStep && referenceFile && pauseReferenceAutoAdvance ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPauseReferenceAutoAdvance(false);
+                        transitionBetweenUploadSteps('practice', 'forward');
+                      }}
+                      className="rounded-full bg-slate-950 px-4 py-2 text-sm font-medium text-white transition-all hover:bg-slate-800"
+                    >
+                      Continue
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={goToPreviousStep}
+                    className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-600 transition-all hover:border-slate-300 hover:text-slate-900"
+                  >
+                    Back
+                  </button>
+                </div>
               </div>
 
               <div className="grid items-stretch gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
-                <div className="flex h-full flex-col justify-between space-y-6">
+                <div className="flex h-full flex-col">
                   <UploadZone type={isReferenceStep ? 'reference' : 'practice'} file={activeFile} />
-                  {activeFile ? (
-                    <div className="rounded-3xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-sm font-medium text-emerald-800">
-                      {stepLabel} ready. {isReferenceStep ? 'Moving to practice...' : 'Opening studio...'}
-                    </div>
-                  ) : null}
                 </div>
 
-                <div className="flex min-h-[526px] h-full flex-col rounded-[32px] border border-slate-200/80 bg-slate-50/80 p-5">
+                <div className={`flex h-full ${stepPanelMinHeightClass} flex-col rounded-[32px] border border-slate-200/80 bg-slate-50/80 p-5`}>
                   <div className="flex items-start gap-3">
                     <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
                       <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">

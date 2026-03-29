@@ -3,7 +3,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import UploadPage from "./page";
 import React from "react";
 import * as sessionStorage from '../../lib/sessionStorage';
-import * as videoStorage from '../../lib/videoStorage';
 
 // 1. Mock Next.js Navigation
 const mockPush = vi.fn();
@@ -24,25 +23,38 @@ vi.mock('../../lib/videoStorage', () => ({
 }));
 
 describe("UploadPage", () => {
-  let recorderHandlers: Record<string, any> = {};
+  type MockRecorderEvent = { data: Blob };
+  type MockMediaRecorderInstance = {
+    mimeType?: string;
+    ondataavailable: ((event: MockRecorderEvent) => void) | null;
+    onstop: (() => void) | null;
+    start: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+    state: 'inactive' | 'recording';
+  };
+
+  const advanceToReferenceStep = async () => {
+    await act(async () => {
+      vi.advanceTimersByTime(1600);
+    });
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
-    // FIX: Use 'function' so it can be used as a constructor
-    global.MediaRecorder = vi.fn().mockImplementation(function(this: any) {
+    global.MediaRecorder = vi.fn().mockImplementation(function(this: MockMediaRecorderInstance) {
       this.start = vi.fn();
       this.stop = vi.fn(() => {
-        if (recorderHandlers['dataavailable']) {
-          recorderHandlers['dataavailable']({ data: new Blob(["test"], { type: "video/webm" }) });
-        }
-        if (recorderHandlers['stop']) recorderHandlers['stop']();
+        this.ondataavailable?.({ data: new Blob(["test"], { type: "video/webm" }) });
+        this.onstop?.();
       });
       this.state = 'inactive';
-      this.addEventListener = vi.fn((ev, cb) => { recorderHandlers[ev] = cb; });
-    }) as any;
-    (global.MediaRecorder as any).isTypeSupported = vi.fn().mockReturnValue(true);
+      this.ondataavailable = null;
+      this.onstop = null;
+    }) as unknown as typeof MediaRecorder;
+    Object.assign(global.MediaRecorder, {
+      isTypeSupported: vi.fn().mockReturnValue(true),
+    });
 
-    // FIX: Provide a "real" MediaStream structure for Happy DOM
     const mockStream = {
       getTracks: () => [{ stop: vi.fn(), enabled: true }],
       active: true,
@@ -61,7 +73,7 @@ describe("UploadPage", () => {
       json: () => Promise.resolve({ url: 'https://aws.com', fields: { key: 'val' } }),
     });
 
-    vi.mocked(sessionStorage.createSession).mockReturnValue({ id: 'mock-id' } as any);
+    vi.mocked(sessionStorage.createSession).mockReturnValue({ id: 'mock-id' } as ReturnType<typeof sessionStorage.createSession>);
     vi.mocked(sessionStorage.getAnalysisMode).mockReturnValue('api');
     vi.mocked(sessionStorage.getStorageMode).mockReturnValue('aws');
   });
@@ -70,16 +82,13 @@ describe("UploadPage", () => {
     cleanup();
     vi.useRealTimers();
     vi.clearAllMocks();
-    recorderHandlers = {};
   });
 
   it("handles camera access rejection gracefully", async () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(new Error("Permission Denied"));
     render(<UploadPage />);
 
-    await act(async () => {
-      vi.advanceTimersByTime(1600);
-    });
+    await advanceToReferenceStep();
     vi.useRealTimers();
 
     const recordBtn = screen.getByRole("button", { name: /record reference/i });
@@ -89,5 +98,58 @@ describe("UploadPage", () => {
       // Adjusted matcher to be case-insensitive to match your UI output
       expect(screen.getByText(/access was blocked/i)).toBeInTheDocument();
     });
+  });
+
+  it("only shows continue after going back from practice", async () => {
+    const { container } = render(<UploadPage />);
+    await advanceToReferenceStep();
+
+    expect(screen.queryByRole("button", { name: /continue/i })).not.toBeInTheDocument();
+
+    const referenceInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const referenceFile = new File(["reference"], "reference.mp4", { type: "video/mp4" });
+
+    await act(async () => {
+      fireEvent.change(referenceInput, { target: { files: [referenceFile] } });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(screen.getByText(/add your practice clip/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /continue/i })).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    });
+
+    expect(screen.getByText(/choose a reference clip/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /continue/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
+  });
+
+  it("applies forward and backward step transition classes", async () => {
+    const { container } = render(<UploadPage />);
+    await advanceToReferenceStep();
+
+    const referenceInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const referenceFile = new File(["reference"], "reference.mp4", { type: "video/mp4" });
+
+    await act(async () => {
+      fireEvent.change(referenceInput, { target: { files: [referenceFile] } });
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(750);
+    });
+
+    expect(screen.getByTestId("upload-step-card").className).toContain("upload-step-enter-forward");
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /back/i }));
+    });
+
+    expect(screen.getByTestId("upload-step-card").className).toContain("upload-step-enter-backward");
   });
 });

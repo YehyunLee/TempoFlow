@@ -12,6 +12,11 @@ import {
   BROWSER_BODYPIX_VARIANT,
   ensureBrowserBodyPixOverlays,
 } from "../../lib/ensureBrowserBodyPixOverlays";
+import {
+  BROWSER_YOLO_OVERLAY_FPS,
+  BROWSER_YOLO_VARIANT,
+  ensureBrowserYoloOverlays,
+} from "../../lib/ensureBrowserYoloOverlays";
 import { buildOverlayKey, getSessionOverlay, type OverlayArtifact } from "../../lib/overlayStorage";
 import {
   buildOverlaySegmentPlans,
@@ -66,6 +71,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [status, setStatus] = useState<{ message: string; type?: "error" | "success" } | null>(null);
   const [viewMode, setViewMode] = useState<"side" | "overlay">("side");
   const [overlayViewSource, setOverlayViewSource] = useState<"reference" | "user" | "both">("reference");
+  const [overlayDetector, setOverlayDetector] = useState<"bodypix" | "yolo">("bodypix");
   const overlayVideoRef = useRef<HTMLVideoElement>(null);
   const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
   
@@ -112,14 +118,17 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [overlayCacheReady, setOverlayCacheReady] = useState(false);
   const [refBodyPixArtifact, setRefBodyPixArtifact] = useState<OverlayArtifact | null>(null);
   const [userBodyPixArtifact, setUserBodyPixArtifact] = useState<OverlayArtifact | null>(null);
+  const [refYoloArtifact, setRefYoloArtifact] = useState<OverlayArtifact | null>(null);
+  const [userYoloArtifact, setUserYoloArtifact] = useState<OverlayArtifact | null>(null);
   const autoBodyPixStartedRef = useRef(false);
+  const autoYoloStartedRef = useRef(false);
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
   const ebsFingerprint = useMemo(() => (sessionEbsData ? hashEbsData(sessionEbsData) : ""), [sessionEbsData]);
 
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
-    const [rbp, ubp] = await Promise.all([
+    const [rbp, ubp, ryo, uyo] = await Promise.all([
       getSessionOverlay(
         buildOverlayKey({
           sessionId,
@@ -138,9 +147,29 @@ export function FeedbackViewer(props: EbsViewerProps) {
           variant: BROWSER_BODYPIX_VARIANT,
         }),
       ),
+      getSessionOverlay(
+        buildOverlayKey({
+          sessionId,
+          type: "yolo",
+          side: "reference",
+          fps: BROWSER_YOLO_OVERLAY_FPS,
+          variant: BROWSER_YOLO_VARIANT,
+        }),
+      ),
+      getSessionOverlay(
+        buildOverlayKey({
+          sessionId,
+          type: "yolo",
+          side: "practice",
+          fps: BROWSER_YOLO_OVERLAY_FPS,
+          variant: BROWSER_YOLO_VARIANT,
+        }),
+      ),
     ]);
     setRefBodyPixArtifact(rbp);
     setUserBodyPixArtifact(ubp);
+    setRefYoloArtifact(ryo);
+    setUserYoloArtifact(uyo);
   }, [sessionId]);
 
   useEffect(() => {
@@ -215,6 +244,73 @@ export function FeedbackViewer(props: EbsViewerProps) {
     sessionEbsData,
     refBodyPixArtifact,
     userBodyPixArtifact,
+  ]);
+
+  useEffect(() => {
+    if (
+      !sessionMode ||
+      !overlayCacheReady ||
+      overlayDetector !== "yolo" ||
+      overlayBusy ||
+      !sessionId ||
+      !activeReferenceVideoUrl ||
+      !activeUserVideoUrl ||
+      !sessionEbsData
+    ) {
+      return;
+    }
+
+    const plans = buildOverlaySegmentPlans(sessionEbsData);
+    const totalSegments = plans.length;
+    const refOk =
+      totalSegments > 0
+        ? isOverlayArtifactComplete(refYoloArtifact, totalSegments)
+        : overlayArtifactHasRenderableData(refYoloArtifact);
+    const userOk =
+      totalSegments > 0
+        ? isOverlayArtifactComplete(userYoloArtifact, totalSegments)
+        : overlayArtifactHasRenderableData(userYoloArtifact);
+    if (refOk && userOk) {
+      setOverlayStatus("YOLO overlays ready.");
+      return;
+    }
+    if (autoYoloStartedRef.current) return;
+
+    autoYoloStartedRef.current = true;
+    setOverlayBusy(true);
+    setOverlayStatus("Generating YOLO overlays…");
+
+    void ensureBrowserYoloOverlays({
+      sessionId,
+      referenceVideoUrl: activeReferenceVideoUrl,
+      userVideoUrl: activeUserVideoUrl,
+      ebsData: sessionEbsData,
+      refVideo,
+      userVideo,
+      existingRef: refYoloArtifact,
+      existingUser: userYoloArtifact,
+      setRefArtifact: setRefYoloArtifact,
+      setUserArtifact: setUserYoloArtifact,
+      onStatus: setOverlayStatus,
+    })
+      .catch((err) => {
+        autoYoloStartedRef.current = false;
+        setOverlayStatus(err instanceof Error ? err.message : "YOLO overlay generation failed.");
+      })
+      .finally(() => {
+        setOverlayBusy(false);
+      });
+  }, [
+    sessionMode,
+    overlayCacheReady,
+    overlayDetector,
+    overlayBusy,
+    sessionId,
+    activeReferenceVideoUrl,
+    activeUserVideoUrl,
+    sessionEbsData,
+    refYoloArtifact,
+    userYoloArtifact,
   ]);
 
   // Auto-resume: when BodyPix is already cached but Gemini is missing, auto-enqueue those segments
@@ -298,6 +394,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
   useEffect(() => {
     autoBodyPixStartedRef.current = false;
+    autoYoloStartedRef.current = false;
     setOverlayCacheReady(false);
   }, [sessionId]);
 
@@ -471,6 +568,47 @@ export function FeedbackViewer(props: EbsViewerProps) {
     currentPracticeSegment && state.practice.moves.length
       ? `${state.practice.moves.length} moves · ${(currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec).toFixed(1)}s segment · plays ${((currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec) / state.practice.playbackRate).toFixed(1)}s at ${practiceSpeedText}`
       : "";
+  const activeSideOverlayDetector = overlayDetector === "yolo" ? "YOLO" : "BodyPix";
+  const activeReferenceArtifact = overlayDetector === "yolo" ? refYoloArtifact : refBodyPixArtifact;
+  const activeUserArtifact = overlayDetector === "yolo" ? userYoloArtifact : userBodyPixArtifact;
+  const overlaySegmentPlans = useMemo(
+    () => buildOverlaySegmentPlans(sessionEbsData),
+    [sessionEbsData],
+  );
+
+  const mapArtifactToOverlayTimeline = useCallback(
+    (
+      artifact: OverlayArtifact | null,
+      side: "reference" | "practice",
+    ): OverlayArtifact | null => {
+      if (!artifact?.segments?.length || !overlaySegmentPlans.length) return artifact;
+
+      const plansByIndex = new Map(overlaySegmentPlans.map((plan) => [plan.index, plan]));
+      return {
+        ...artifact,
+        segments: artifact.segments.map((segment) => {
+          const plan = plansByIndex.get(segment.index);
+          if (!plan) return segment;
+          const nextRange = side === "reference" ? plan.practice : plan.practice;
+          return {
+            ...segment,
+            startSec: nextRange.startSec,
+            endSec: nextRange.endSec,
+          };
+        }),
+      };
+    },
+    [overlaySegmentPlans],
+  );
+
+  const overlayReferenceArtifact = useMemo(
+    () => mapArtifactToOverlayTimeline(activeReferenceArtifact, "reference"),
+    [activeReferenceArtifact, mapArtifactToOverlayTimeline],
+  );
+  const overlayUserArtifact = useMemo(
+    () => mapArtifactToOverlayTimeline(activeUserArtifact, "practice"),
+    [activeUserArtifact, mapArtifactToOverlayTimeline],
+  );
   // Overlay diff: get frame from per-segment BodyPix artifacts for current time
   const getOverlayDiffFrame = useCallback((
     artifact: OverlayArtifact | null,
@@ -491,36 +629,99 @@ export function FeedbackViewer(props: EbsViewerProps) {
     return null;
   }, []);
 
-  const refOverlayFrame = viewMode === "overlay" 
-    ? getOverlayDiffFrame(refBodyPixArtifact, overlayCurrentTime)
+  const getOverlayDiffFrameKey = useCallback((
+    artifact: OverlayArtifact | null,
+    currentTimeSec: number,
+  ): string | null => {
+    if (!artifact?.segments?.length) return null;
+
+    for (const seg of artifact.segments) {
+      if (currentTimeSec >= seg.startSec && currentTimeSec < seg.endSec) {
+        const frameCount = seg.frames?.length ?? 0;
+        if (!frameCount) return `${seg.index}:video`;
+        const segTime = currentTimeSec - seg.startSec;
+        const frameIdx = Math.max(0, Math.min(Math.floor(segTime * seg.fps), frameCount - 1));
+        return `${seg.index}:${frameIdx}`;
+      }
+    }
+
+    return null;
+  }, []);
+
+  const useFrameStyledOverlay = viewMode === "overlay" && overlayDetector === "bodypix";
+
+  const refOverlayFrame = useFrameStyledOverlay
+    ? getOverlayDiffFrame(overlayReferenceArtifact, overlayCurrentTime)
     : null;
-  const userOverlayFrame = viewMode === "overlay"
-    ? getOverlayDiffFrame(userBodyPixArtifact, overlayCurrentTime)
+  const userOverlayFrame = useFrameStyledOverlay
+    ? getOverlayDiffFrame(overlayUserArtifact, overlayCurrentTime)
     : null;
 
-  // Sync overlay video time updates to local state for frame rendering only
+  // Sync overlay video time to local state only when the rendered BodyPix frame should change.
   useEffect(() => {
-    if (viewMode !== "overlay" || !overlayVideoRef.current) return;
+    if (!useFrameStyledOverlay || !overlayVideoRef.current) return;
     const video = overlayVideoRef.current;
-    
-    const handleTimeUpdate = () => {
-      setOverlayCurrentTime(video.currentTime);
+
+    let cancelled = false;
+    let raf = 0;
+    let rvfcHandle = 0;
+    const rvfc = (video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (
+        callback: (now: number, metadata: { mediaTime?: number }) => void,
+      ) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    }).requestVideoFrameCallback;
+    const cancelRvfc = (video as HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void })
+      .cancelVideoFrameCallback;
+    let lastFrameKey = "";
+
+    const maybeUpdateTime = (timeSec: number) => {
+      const nextKey = [
+        getOverlayDiffFrameKey(overlayReferenceArtifact, timeSec),
+        getOverlayDiffFrameKey(overlayUserArtifact, timeSec),
+      ].join("|");
+      if (nextKey === lastFrameKey) return;
+      lastFrameKey = nextKey;
+      setOverlayCurrentTime(timeSec);
     };
-    
-    video.addEventListener("timeupdate", handleTimeUpdate);
-    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [viewMode]);
+
+    const onVideoFrame = (_now: number, metadata: { mediaTime?: number }) => {
+      if (cancelled) return;
+      maybeUpdateTime(metadata.mediaTime ?? video.currentTime ?? 0);
+      rvfcHandle = rvfc ? rvfc.call(video, onVideoFrame) : 0;
+    };
+
+    const onRaf = () => {
+      if (cancelled) return;
+      maybeUpdateTime(video.currentTime || 0);
+      raf = window.requestAnimationFrame(onRaf);
+    };
+
+    maybeUpdateTime(video.currentTime || 0);
+    if (rvfc) {
+      rvfcHandle = rvfc.call(video, onVideoFrame);
+    } else {
+      raf = window.requestAnimationFrame(onRaf);
+    }
+
+    return () => {
+      cancelled = true;
+      if (cancelRvfc && rvfcHandle) cancelRvfc.call(video, rvfcHandle);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, [getOverlayDiffFrameKey, overlayReferenceArtifact, overlayUserArtifact, useFrameStyledOverlay]);
 
   // Initial sync when switching to overlay mode
   useEffect(() => {
-    if (viewMode === "overlay" && overlayVideoRef.current && state.sharedTime > 0) {
-      const timeDiff = Math.abs(overlayVideoRef.current.currentTime - state.sharedTime);
+    if (viewMode === "overlay" && overlayVideoRef.current && state.ebs?.alignment) {
+      const overlayTargetTime = state.ebs.alignment.clip_2_start_sec + Math.max(0, state.sharedTime);
+      const timeDiff = Math.abs(overlayVideoRef.current.currentTime - overlayTargetTime);
       if (timeDiff > 0.1) {
-        overlayVideoRef.current.currentTime = state.sharedTime;
+        overlayVideoRef.current.currentTime = overlayTargetTime;
       }
-      setOverlayCurrentTime(state.sharedTime);
+      setOverlayCurrentTime(overlayTargetTime);
     }
-  }, [viewMode]);
+  }, [state.ebs, state.sharedTime, viewMode]);
 
   return (
     <div className="ebs-viewer-root">
@@ -559,10 +760,38 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       ? "bg-slate-800 text-white"
                       : "bg-slate-100 text-slate-600 hover:bg-slate-200"
                   }`}
-                  title="Overlay diff view (uses existing BodyPix)"
+                  title={`Overlay diff view (uses ${activeSideOverlayDetector})`}
                 >
                   Overlay
                 </button>
+                {sessionMode && (
+                  <>
+                    <span className="text-xs text-slate-400">|</span>
+                    <span className="text-xs text-slate-500">Dev:</span>
+                    <button
+                      onClick={() => setOverlayDetector("bodypix")}
+                      className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                        overlayDetector === "bodypix"
+                          ? "bg-slate-800 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                      title="Use BodyPix overlays"
+                    >
+                      BodyPix
+                    </button>
+                    <button
+                      onClick={() => setOverlayDetector("yolo")}
+                      className={`px-2 py-1 text-[10px] font-medium rounded transition-colors ${
+                        overlayDetector === "yolo"
+                          ? "bg-slate-800 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                      title="Use YOLO overlays"
+                    >
+                      YOLO
+                    </button>
+                  </>
+                )}
                 {viewMode === "overlay" && (
                   <>
                     <span className="text-xs text-slate-400">|</span>
@@ -617,13 +846,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
               <div className="video-panel">
                 <div className="video-label">
                   Reference ({sessionReferenceName || "Clip 1"})
+                  {sessionMode ? <span className="ml-2 text-[10px] text-slate-400">{activeSideOverlayDetector}</span> : null}
                   <span className="time-display">{fmtTimeFull(state.refTime)}</span>
                 </div>
                 <div className="relative">
                   <video ref={refVideo} src={activeReferenceVideoUrl ?? undefined} playsInline />
                   {sessionMode && showBodyPix ? (
                     overlayMode === "precomputed" ? (
-                      <ProgressiveOverlay videoRef={refVideo} artifact={refBodyPixArtifact} />
+                      <ProgressiveOverlay videoRef={refVideo} artifact={activeReferenceArtifact} />
                     ) : (
                       <BodyPixOverlay videoRef={refVideo} opacity={0.68} color={{ r: 50, g: 200, b: 100 }} />
                     )
@@ -641,13 +871,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
               <div className="video-panel">
                 <div className="video-label">
                   User ({sessionPracticeName || "Clip 2"})
+                  {sessionMode ? <span className="ml-2 text-[10px] text-slate-400">{activeSideOverlayDetector}</span> : null}
                   <span className="time-display">{fmtTimeFull(state.userTime)}</span>
                 </div>
                 <div className="relative">
                   <video ref={userVideo} src={activeUserVideoUrl ?? undefined} playsInline />
                   {sessionMode && showBodyPix ? (
                     overlayMode === "precomputed" ? (
-                      <ProgressiveOverlay videoRef={userVideo} artifact={userBodyPixArtifact} />
+                      <ProgressiveOverlay videoRef={userVideo} artifact={activeUserArtifact} />
                     ) : (
                       <BodyPixOverlay videoRef={userVideo} opacity={0.68} color={{ r: 255, g: 100, b: 50 }} />
                     )
@@ -664,11 +895,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
               </div>
             </div>
           ) : (
-            /* Overlay diff view - reuses existing BodyPix per-segment data */
+            /* Overlay diff view - reuses the selected per-segment detector data */
             <div className="videos single-view">
               <div className="video-panel" style={{ maxWidth: "100%", width: "100%" }}>
                 <div className="video-label">
                   <span>User ({sessionPracticeName || "Practice"})</span>
+                  <span className="ml-2 text-[10px] text-slate-400">{activeSideOverlayDetector}</span>
                 </div>
                 <div className="relative" style={{ aspectRatio: "16/9", background: "#000" }}>
                   {/* Base: User video (synced with timeline) */}
@@ -678,35 +910,48 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     className="absolute inset-0 w-full h-full object-contain z-0"
                     playsInline
                   />
-                  {/* Layer 1: Reference ghost (BodyPix overlay) - tinted green */}
-                  {(overlayViewSource === "reference" || overlayViewSource === "both") && refOverlayFrame && (
-                    <OverlayMaskLayer
-                      frame={refOverlayFrame}
-                      color={{ r: 14, g: 165, b: 233 }}
-                      fillOpacity={0.08}
-                      contourOpacity={0.88}
-                      contourRadius={2}
-                      seamOpacity={0.42}
-                      seamRadius={1}
-                      glowOpacity={0.16}
-                      glowRadius={4}
-                      className="z-10"
-                    />
-                  )}
-                  {/* Layer 2: User BodyPix overlay - tinted red-orange */}
-                  {(overlayViewSource === "user" || overlayViewSource === "both") && userOverlayFrame && (
-                    <OverlayMaskLayer
-                      frame={userOverlayFrame}
-                      color={{ r: 249, g: 115, b: 22 }}
-                      fillOpacity={0.12}
-                      contourOpacity={0.92}
-                      contourRadius={2}
-                      seamOpacity={0.5}
-                      seamRadius={1}
-                      glowOpacity={0.18}
-                      glowRadius={4}
-                      className="z-20"
-                    />
+                  {overlayDetector === "yolo" ? (
+                    <>
+                      {(overlayViewSource === "reference" || overlayViewSource === "both") && (
+                        <ProgressiveOverlay videoRef={overlayVideoRef} artifact={overlayReferenceArtifact} />
+                      )}
+                      {(overlayViewSource === "user" || overlayViewSource === "both") && (
+                        <ProgressiveOverlay videoRef={overlayVideoRef} artifact={overlayUserArtifact} />
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      {/* Layer 1: Reference ghost (BodyPix overlay) */}
+                      {(overlayViewSource === "reference" || overlayViewSource === "both") && refOverlayFrame && (
+                        <OverlayMaskLayer
+                          frame={refOverlayFrame}
+                          color={{ r: 14, g: 165, b: 233 }}
+                          fillOpacity={0.08}
+                          contourOpacity={0.88}
+                          contourRadius={2}
+                          seamOpacity={0.42}
+                          seamRadius={1}
+                          glowOpacity={0.16}
+                          glowRadius={4}
+                          className="z-10"
+                        />
+                      )}
+                      {/* Layer 2: User BodyPix overlay */}
+                      {(overlayViewSource === "user" || overlayViewSource === "both") && userOverlayFrame && (
+                        <OverlayMaskLayer
+                          frame={userOverlayFrame}
+                          color={{ r: 249, g: 115, b: 22 }}
+                          fillOpacity={0.12}
+                          contourOpacity={0.92}
+                          contourRadius={2}
+                          seamOpacity={0.5}
+                          seamRadius={1}
+                          glowOpacity={0.18}
+                          glowRadius={4}
+                          className="z-20"
+                        />
+                      )}
+                    </>
                   )}
                 </div>
               </div>
