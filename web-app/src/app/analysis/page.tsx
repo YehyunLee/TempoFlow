@@ -617,7 +617,7 @@ function AnalysisPageContent() {
   return (
     <div className="min-h-screen bg-sky-50">
       {header}
-      <div className="px-6 py-12">
+      <div className="px-4 pb-8 pt-2 md:px-6 md:pt-3">
         <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
           <FeedbackViewer
             mode="session"

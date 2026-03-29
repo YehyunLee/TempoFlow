@@ -15,6 +15,7 @@ import { storeSessionVideo } from '../../lib/videoStorage';
 
 export default function UploadPage() {
   const router = useRouter();
+  const [flowStep, setFlowStep] = useState<'intro' | 'reference' | 'practice' | 'launching'>('intro');
   const [referenceFile, setReferenceFile] = useState<File | null>(null);
   const [practiceFile, setPracticeFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
@@ -26,6 +27,7 @@ export default function UploadPage() {
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [recordedPreviewUrl, setRecordedPreviewUrl] = useState<string | null>(null);
+  const [recorderTarget, setRecorderTarget] = useState<'reference' | 'practice'>('practice');
   const storageMode = getStorageMode();
   const analysisMode = getAnalysisMode();
   const liveVideoRef = useRef<HTMLVideoElement>(null);
@@ -33,6 +35,13 @@ export default function UploadPage() {
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recordingTimerRef = useRef<number | null>(null);
+  const launchStartedRef = useRef(false);
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+    if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  };
 
   useEffect(() => {
     if (liveVideoRef.current && streamRef.current) {
@@ -54,10 +63,40 @@ export default function UploadPage() {
     };
   }, [recordedPreviewUrl]);
 
+  useEffect(() => {
+    if (flowStep !== 'intro') return;
+    const timeoutId = window.setTimeout(() => {
+      setFlowStep('reference');
+    }, 1600);
+    return () => window.clearTimeout(timeoutId);
+  }, [flowStep]);
+
+  useEffect(() => {
+    if (flowStep !== 'reference' || !referenceFile) return;
+    if (recorderOpen) closeRecorder();
+    const timeoutId = window.setTimeout(() => {
+      setMessage('');
+      setFlowStep('practice');
+    }, 750);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowStep, referenceFile, recorderOpen]);
+
+  useEffect(() => {
+    if (flowStep !== 'practice' || !practiceFile) return;
+    if (recorderOpen) closeRecorder();
+    const timeoutId = window.setTimeout(() => {
+      setFlowStep('launching');
+    }, 750);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowStep, practiceFile, recorderOpen]);
+
   const handleFileChange = (type: 'reference' | 'practice') => (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       if (type === 'reference') setReferenceFile(e.target.files[0]);
       else setPracticeFile(e.target.files[0]);
+      setMessage('');
     }
   };
 
@@ -70,6 +109,7 @@ export default function UploadPage() {
       if (droppedFile.type.startsWith('video/')) {
         if (type === 'reference') setReferenceFile(droppedFile);
         else setPracticeFile(droppedFile);
+        setMessage('');
       }
     }
   };
@@ -108,14 +148,16 @@ export default function UploadPage() {
     setRecorderOpen(false);
   };
 
-  const openRecorder = async () => {
+  const openRecorder = async (target: 'reference' | 'practice') => {
     if (!navigator.mediaDevices?.getUserMedia) {
+      setRecorderTarget(target);
       setCameraError('This browser does not support in-app video recording.');
       setRecorderOpen(true);
       return;
     }
 
     try {
+      setRecorderTarget(target);
       setRecorderOpen(true);
       setCameraError(null);
       setCameraReady(false);
@@ -169,7 +211,7 @@ export default function UploadPage() {
         const blobType = recorder.mimeType || 'video/webm';
         const blob = new Blob(recordedChunksRef.current, { type: blobType });
         const extension = blobType.includes('mp4') ? 'mp4' : 'webm';
-        const file = new File([blob], `tempoflow-practice-${Date.now()}.${extension}`, {
+        const file = new File([blob], `tempoflow-${recorderTarget}-${Date.now()}.${extension}`, {
           type: blobType,
         });
 
@@ -177,7 +219,11 @@ export default function UploadPage() {
           URL.revokeObjectURL(recordedPreviewUrl);
         }
 
-        setPracticeFile(file);
+        if (recorderTarget === 'reference') {
+          setReferenceFile(file);
+        } else {
+          setPracticeFile(file);
+        }
         setRecordedPreviewUrl(URL.createObjectURL(blob));
         setRecording(false);
 
@@ -297,63 +343,99 @@ export default function UploadPage() {
         updateSession(createdSessionId, { status: 'error', errorMessage: typedError.message });
       }
       setMessage(typedError.message);
+      launchStartedRef.current = false;
+      setFlowStep('practice');
     } finally {
       setUploading(false);
     }
   };
 
+  useEffect(() => {
+    if (flowStep !== 'launching' || !referenceFile || !practiceFile || uploading) return;
+    if (launchStartedRef.current) return;
+    launchStartedRef.current = true;
+    const timeoutId = window.setTimeout(() => {
+      void handleUpload();
+    }, 700);
+    return () => window.clearTimeout(timeoutId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [flowStep, referenceFile, practiceFile, uploading]);
+
   const UploadZone = ({ type, file }: {
     type: 'reference' | 'practice', 
     file: File | null,
-  }) => (
-    <div
-      onDrop={handleDrop(type)}
-      onDragOver={(e) => { e.preventDefault(); setDraggingType(type); }}
-      onDragLeave={() => setDraggingType(null)}
-      className={`
-        relative border-2 border-dashed rounded-[28px] p-8 text-center transition-all bg-sky-50/60
-        ${draggingType === type ? 'border-sky-500 bg-sky-100' : 'border-sky-100 hover:border-sky-300'}
-        ${file ? 'bg-white border-solid border-sky-300 shadow-sm' : ''}
-      `}
-    >
-      <input
-        type="file"
-        accept="video/*"
-        onChange={handleFileChange(type)}
-        className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-        disabled={uploading}
-      />
-      
-      {!file ? (
-        <div className="space-y-3">
-          <div className="w-12 h-12 mx-auto bg-white rounded-2xl flex items-center justify-center border border-sky-100">
-            <svg className="w-6 h-6 text-sky-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-base font-medium text-slate-900">Add {type} video</p>
-            <p className="mt-1 text-xs text-slate-500">Drop file or click to browse</p>
-          </div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="w-12 h-12 mx-auto bg-sky-100 rounded-2xl flex items-center justify-center">
-            <svg className="w-6 h-6 text-sky-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <div>
-            <p className="text-sm font-medium text-slate-900 truncate px-2">{file.name}</p>
-          </div>
-        </div>
-      )}
-    </div>
-  );
+  }) => {
+    const label = type === 'reference' ? 'Reference' : 'Practice';
+    const actionLabel = type === 'reference' ? 'Choose reference' : 'Choose practice';
 
+    return (
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-700">{label}</p>
+          {file ? (
+            <span className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-700">
+              Ready
+            </span>
+          ) : null}
+        </div>
+
+        <div
+          onDrop={handleDrop(type)}
+          onDragOver={(e) => { e.preventDefault(); setDraggingType(type); }}
+          onDragLeave={() => setDraggingType(null)}
+            className={`
+            group relative overflow-hidden rounded-[28px] border p-8 transition-all
+            ${draggingType === type ? 'border-sky-400 bg-sky-100/80 shadow-lg shadow-sky-200/60' : 'border-sky-100 bg-white/90 hover:border-sky-300 hover:shadow-lg hover:shadow-sky-100/80'}
+            ${file ? 'border-sky-200 bg-gradient-to-br from-white to-sky-50/70' : ''}
+          `}
+        >
+          <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.12),_transparent_48%)] opacity-70" />
+          <input
+            type="file"
+            accept="video/*"
+            onChange={handleFileChange(type)}
+            className="absolute inset-0 z-10 h-full w-full cursor-pointer opacity-0"
+            disabled={uploading}
+          />
+
+          {!file ? (
+            <div className="relative flex min-h-[220px] flex-col items-center justify-center text-center">
+              <div className="flex h-16 w-16 items-center justify-center rounded-3xl border border-sky-100 bg-white text-sky-500 shadow-sm transition-transform group-hover:scale-105">
+                <svg className="h-8 w-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M12 5v14M19 12H5" />
+                </svg>
+              </div>
+              <p className="mt-6 text-2xl font-semibold tracking-tight text-slate-900">{actionLabel}</p>
+              <p className="mt-2 max-w-xs text-sm text-slate-500">Drop video or click to browse</p>
+            </div>
+          ) : (
+            <div className="relative flex min-h-[220px] flex-col justify-between">
+              <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-sky-100 text-sky-700">
+                <svg className="h-7 w-7" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                </svg>
+              </div>
+
+              <div className="space-y-3">
+                <p className="text-xl font-semibold tracking-tight text-slate-900 break-words">{file.name}</p>
+                <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-slate-500">
+                  <span className="rounded-full bg-slate-100 px-3 py-1">{formatFileSize(file.size)}</span>
+                  <span className="rounded-full bg-slate-100 px-3 py-1">{file.type || 'video file'}</span>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  const stepLabel = flowStep === 'practice' ? 'Practice' : 'Reference';
+  const activeFile = flowStep === 'practice' ? practiceFile : referenceFile;
+  const isReferenceStep = flowStep === 'reference';
   return (
-    <div className="min-h-screen bg-sky-50">
-      <div className="fixed top-0 left-0 right-0 bg-white/85 backdrop-blur-md border-b border-sky-100 z-10">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f7fbff_0%,#edf7ff_34%,#f7fbff_100%)]">
+      <div className="sticky top-0 left-0 right-0 z-10 border-b border-sky-100/80 bg-white/88 backdrop-blur-md">
         <div className="flex items-center justify-between px-6 py-4">
           <Link href="/" className="flex items-center">
             <Image 
@@ -374,145 +456,158 @@ export default function UploadPage() {
         </div>
       </div>
 
-      <div className="flex flex-col items-center justify-center min-h-screen px-6 py-24 pt-28">
-        <div className="w-full max-w-4xl space-y-8">
-          <div className="text-center">
-            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-sky-600">TempoFlow EBS Session</p>
-            <h1 className="mt-3 text-4xl font-bold text-slate-900 mb-2">Start with two videos</h1>
-            <p className="text-slate-600">Upload the reference and your practice clip. We will open the beat-synced EBS session view automatically.</p>
-            <div className="mt-4 inline-flex flex-wrap items-center justify-center gap-2 text-xs font-medium">
-              <span className="rounded-full bg-white px-3 py-1 text-slate-700 border border-sky-100">
-                Storage: {storageMode === 'aws' ? 'AWS + local backup' : 'Local-only'}
-              </span>
-              <span className="rounded-full bg-sky-50 px-3 py-1 text-sky-700 border border-sky-100">
-                Analysis: {analysisMode === 'api' ? 'Local + API assist' : 'Local'}
-              </span>
-            </div>
-          </div>
-
-          <div className="rounded-[32px] border border-sky-100 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm">
-            {storageMode === 'aws'
-              ? 'Videos are saved on this device first, then uploaded to cloud storage.'
-              : 'Videos stay on this device for now so you can iterate locally without AWS setup. EBS processing happens after upload in the session page.'}
-          </div>
-
-          <div className="rounded-[32px] border border-sky-100 bg-white p-6 shadow-sm">
-            <div className="mb-5">
-              <h2 className="text-lg font-semibold text-slate-900">Upload clips</h2>
-              <p className="mt-1 text-sm text-slate-600">This replaces the old analysis flow. New sessions open directly in the EBS viewer.</p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="space-y-2">
-              <p className="text-sm font-semibold text-sky-700 uppercase tracking-wider ml-1">Reference</p>
-              <UploadZone type="reference" file={referenceFile} />
-            </div>
-            <div className="space-y-2">
-              <p className="text-sm font-semibold text-sky-700 uppercase tracking-wider ml-1">Your Practice</p>
-              <UploadZone type="practice" file={practiceFile} />
-            </div>
-          </div>
-          </div>
-
-          {referenceFile && practiceFile && !uploading && (
-            <button
-              onClick={handleUpload}
-              className="w-full py-4 text-xl font-semibold text-white bg-gradient-to-r from-sky-400 to-blue-600 rounded-full hover:opacity-95 transition-all active:scale-95 shadow-xl"
-            >
-              Open EBS Session
-            </button>
-          )}
-
-          {message && (
-            <div className={`
-              text-center py-4 px-6 rounded-[28px] transition-all animate-in fade-in slide-in-from-bottom-2 border
-              ${message.includes('✓') ? 'bg-green-50 text-green-700 border-green-100' : 'bg-white text-slate-700 font-medium border-sky-100'}
-            `}>
-              {message}
-            </div>
-          )}
-
-          {uploading && (
-            <div className="flex flex-col items-center justify-center gap-4 text-slate-600 rounded-[32px] border border-sky-100 bg-white py-8 shadow-sm">
-              <div className="w-8 h-8 border-3 border-sky-100 border-t-sky-500 rounded-full animate-spin" />
-              <p className="animate-pulse">Preparing your EBS session...</p>
-            </div>
-          )}
-
-          <div className="rounded-[32px] border border-sky-100 bg-white p-6 shadow-sm">
-            <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-slate-900">Film your practice in the app</h2>
-                <p className="text-sm text-slate-600">
-                  Keep the reference as an upload, then record a new practice take directly from your camera.
-                </p>
+      <div className="px-6 py-14 md:py-20">
+        <div className="mx-auto w-full max-w-5xl">
+          {flowStep === 'intro' ? (
+            <div className="animate-in fade-in zoom-in-95 duration-700 overflow-hidden rounded-[44px] border border-sky-100/80 bg-white/80 shadow-[0_24px_80px_rgba(14,165,233,0.12)] backdrop-blur-sm">
+              <div className="relative px-8 py-[4.5rem] text-center md:px-14 md:py-24">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_50%),linear-gradient(135deg,rgba(255,255,255,0.96),rgba(237,247,255,0.92))]" />
+                <div className="relative">
+                  <p className="text-xs font-semibold uppercase tracking-[0.32em] text-sky-600">Create Session</p>
+                  <h1 className="mt-5 text-5xl font-bold tracking-tight text-slate-950 md:text-6xl">Compare two clips</h1>
+                </div>
               </div>
-              <button
-                onClick={recorderOpen ? closeRecorder : openRecorder}
-                disabled={uploading}
-                className="rounded-full bg-sky-600 px-5 py-3 text-sm font-medium text-white transition-all hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {recorderOpen ? 'Close Recorder' : 'Record Practice Video'}
-              </button>
             </div>
+          ) : flowStep === 'launching' ? (
+            <div className="animate-in fade-in slide-in-from-bottom-4 duration-700 overflow-hidden rounded-[44px] border border-sky-100/80 bg-white/82 shadow-[0_24px_80px_rgba(14,165,233,0.12)] backdrop-blur-sm">
+              <div className="relative px-8 py-[4.5rem] text-center md:px-14 md:py-24">
+                <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.14),_transparent_50%),linear-gradient(135deg,rgba(255,255,255,0.96),rgba(237,247,255,0.92))]" />
+                <div className="relative mx-auto max-w-2xl">
+                  <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-full border border-sky-100 bg-white shadow-sm">
+                    <div className="h-8 w-8 rounded-full border-2 border-sky-100 border-t-sky-500 animate-spin" />
+                  </div>
+                  <p className="mt-6 text-xs font-semibold uppercase tracking-[0.32em] text-sky-600">Opening</p>
+                  <h1 className="mt-4 text-4xl font-bold tracking-tight text-slate-950 md:text-5xl">EBS Studio Session</h1>
+                  <p className="mt-4 text-base leading-7 text-slate-600">{message || 'Preparing your clips...'}</p>
+                  <div className="mt-8 flex flex-wrap justify-center gap-3 text-sm text-slate-500">
+                    {referenceFile ? <span className="rounded-full bg-slate-100 px-4 py-2">{referenceFile.name}</span> : null}
+                    {practiceFile ? <span className="rounded-full bg-slate-100 px-4 py-2">{practiceFile.name}</span> : null}
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="animate-in fade-in slide-in-from-right-4 duration-500 rounded-[40px] border border-sky-100/80 bg-white/82 p-6 shadow-[0_24px_80px_rgba(14,165,233,0.1)] backdrop-blur-sm md:p-8">
+              <div className="mb-8 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.32em] text-sky-600">
+                    {isReferenceStep ? 'Step 1' : 'Step 2'}
+                  </p>
+                  <h1 className="mt-3 text-4xl font-bold tracking-tight text-slate-950 md:text-5xl">
+                    {isReferenceStep ? 'Choose a reference clip' : 'Add your practice clip'}
+                  </h1>
+                </div>
+                <div className="hidden rounded-full bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-800 md:block">
+                  {isReferenceStep ? 'Reference' : 'Practice'}
+                </div>
+              </div>
 
-            {recorderOpen && (
-              <div className="mt-5 space-y-4">
-                <div className="overflow-hidden rounded-3xl bg-gray-950">
-                  {cameraReady ? (
-                    <video
-                      ref={liveVideoRef}
-                      className="aspect-video w-full object-cover"
-                      autoPlay
-                      muted
-                      playsInline
-                    />
+              <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_360px]">
+                <div className="space-y-6">
+                  <UploadZone type={isReferenceStep ? 'reference' : 'practice'} file={activeFile} />
+                  {activeFile ? (
+                    <div className="rounded-3xl border border-emerald-100 bg-emerald-50 px-5 py-4 text-sm font-medium text-emerald-800">
+                      {stepLabel} ready. {isReferenceStep ? 'Moving to practice...' : 'Opening studio...'}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="rounded-[32px] border border-slate-200/80 bg-slate-50/80 p-5">
+                  <div className="flex items-start gap-3">
+                    <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-sky-100 text-sky-700">
+                      <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h2 className="text-xl font-semibold tracking-tight text-slate-950">
+                        Record {isReferenceStep ? 'reference' : 'practice'}
+                      </h2>
+                      <p className="mt-1 text-sm text-slate-500">Use your camera instead of uploading.</p>
+                    </div>
+                  </div>
+
+                  <button
+                    onClick={() =>
+                      recorderOpen && recorderTarget === (isReferenceStep ? 'reference' : 'practice')
+                        ? closeRecorder()
+                        : openRecorder(isReferenceStep ? 'reference' : 'practice')
+                    }
+                    disabled={uploading}
+                    className={`mt-5 inline-flex w-full items-center justify-center rounded-full px-5 py-3.5 text-sm font-medium transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                      recorderOpen && recorderTarget === (isReferenceStep ? 'reference' : 'practice')
+                        ? 'bg-slate-950 text-white'
+                        : 'bg-sky-600 text-white hover:bg-sky-700'
+                    }`}
+                  >
+                    {recorderOpen && recorderTarget === (isReferenceStep ? 'reference' : 'practice')
+                      ? 'Close Recorder'
+                      : `Record ${stepLabel}`}
+                  </button>
+
+                  {recorderOpen && recorderTarget === (isReferenceStep ? 'reference' : 'practice') ? (
+                    <div className="mt-5 space-y-4">
+                      <div className="overflow-hidden rounded-3xl bg-gray-950">
+                        {cameraReady ? (
+                          <video
+                            ref={liveVideoRef}
+                            className="aspect-video w-full object-cover"
+                            autoPlay
+                            muted
+                            playsInline
+                          />
+                        ) : (
+                          <div className="flex aspect-video items-center justify-center px-6 text-center text-sm text-gray-300">
+                            {cameraError ?? 'Requesting camera access...'}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        {!recording ? (
+                          <button
+                            onClick={startRecording}
+                            disabled={!cameraReady || uploading}
+                            className="rounded-full bg-slate-950 px-5 py-3 text-sm font-medium text-white transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            Start Recording
+                          </button>
+                        ) : (
+                          <button
+                            onClick={stopRecording}
+                            className="rounded-full bg-red-600 px-5 py-3 text-sm font-medium text-white transition-all hover:bg-red-700"
+                          >
+                            Stop Recording
+                          </button>
+                        )}
+                        <span className="text-sm text-slate-500">
+                          {recording ? `Recording... ${recordingSeconds}s` : `${stepLabel} camera ready`}
+                        </span>
+                      </div>
+
+                      {recordedPreviewUrl && !recording ? (
+                        <video
+                          src={recordedPreviewUrl}
+                          controls
+                          className="aspect-video w-full rounded-2xl bg-black object-cover"
+                        />
+                      ) : null}
+                    </div>
                   ) : (
-                    <div className="flex aspect-video items-center justify-center px-6 text-center text-sm text-gray-300">
-                      {cameraError ?? 'Requesting camera access...'}
+                    <div className="mt-5 rounded-3xl border border-dashed border-slate-200 bg-white px-5 py-4 text-sm text-slate-500">
+                      {isReferenceStep ? 'Start with the clip to learn from.' : 'Now add the clip you want to compare.'}
                     </div>
                   )}
                 </div>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  {!recording ? (
-                    <button
-                      onClick={startRecording}
-                      disabled={!cameraReady || uploading}
-                      className="rounded-full bg-slate-900 px-5 py-3 text-sm font-medium text-white transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      Start Recording
-                    </button>
-                  ) : (
-                    <button
-                      onClick={stopRecording}
-                      className="rounded-full bg-red-600 px-5 py-3 text-sm font-medium text-white transition-all hover:bg-red-700"
-                    >
-                      Stop Recording
-                    </button>
-                  )}
-
-                  <span className="text-sm text-gray-600">
-                    {recording ? `Recording... ${recordingSeconds}s` : 'Tip: keep your full body in frame.'}
-                  </span>
-                </div>
-
-                {recordedPreviewUrl && !recording && (
-                  <div className="space-y-3 rounded-2xl border border-gray-200 bg-gray-50 p-4">
-                    <p className="text-sm font-medium text-gray-900">Latest recorded practice take</p>
-                    <video
-                      src={recordedPreviewUrl}
-                      controls
-                      className="aspect-video w-full rounded-2xl bg-black object-cover"
-                    />
-                    <p className="text-sm text-gray-600">
-                      This take is already selected as your practice video for analysis.
-                    </p>
-                  </div>
-                )}
               </div>
-            )}
-          </div>
+
+              {message && !uploading ? (
+                <div className="mt-6 rounded-3xl border border-red-100 bg-red-50 px-5 py-4 text-sm text-red-700">
+                  {message}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
       </div>
     </div>

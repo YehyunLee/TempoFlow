@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import UploadPage from "./page";
 import React from "react";
@@ -27,6 +27,7 @@ describe("UploadPage", () => {
   let recorderHandlers: Record<string, any> = {};
 
   beforeEach(() => {
+    vi.useFakeTimers();
     // FIX: Use 'function' so it can be used as a constructor
     global.MediaRecorder = vi.fn().mockImplementation(function(this: any) {
       this.start = vi.fn();
@@ -67,6 +68,7 @@ describe("UploadPage", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.clearAllMocks();
     recorderHandlers = {};
   });
@@ -74,8 +76,13 @@ describe("UploadPage", () => {
   it("handles camera access rejection gracefully", async () => {
     vi.mocked(navigator.mediaDevices.getUserMedia).mockRejectedValueOnce(new Error("Permission Denied"));
     render(<UploadPage />);
-    
-    const recordBtn = screen.getByRole("button", { name: /record practice video/i });
+
+    await act(async () => {
+      vi.advanceTimersByTime(1600);
+    });
+    vi.useRealTimers();
+
+    const recordBtn = screen.getByRole("button", { name: /record reference/i });
     fireEvent.click(recordBtn);
 
     await waitFor(() => {
