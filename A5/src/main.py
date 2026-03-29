@@ -56,12 +56,31 @@ SESSION_RESULTS: dict[str, dict[str, Any]] = {}
 MOVE_FEEDBACK_JOBS: dict[str, dict[str, Any]] = {}
 
 
+def _parse_optional_bool(val: str | None, default: bool) -> bool:
+    if val is None or str(val).strip() == "":
+        return default
+    return str(val).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_pose_priors_json(raw: str | None) -> dict[str, Any] | None:
+    if not raw or not str(raw).strip():
+        return None
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
 def _move_feedback_worker(
     job_id: str,
     ref_path: str,
     user_path: str,
     ebs_data: dict[str, Any],
     segment_index: int,
+    pose_priors: dict[str, Any] | None,
+    burn_in_labels: bool,
+    include_audio: bool,
 ) -> None:
     """Background worker for Gemini micro-timing move feedback."""
     try:
@@ -71,6 +90,9 @@ def _move_feedback_worker(
             user_video_path=user_path,
             ebs_artifact=ebs_data,
             segment_index=segment_index,
+            pose_priors=pose_priors,
+            burn_in_labels=burn_in_labels,
+            include_audio=include_audio,
         )
         MOVE_FEEDBACK_JOBS[job_id]["result"] = result
         MOVE_FEEDBACK_JOBS[job_id]["status"] = "done"
@@ -169,6 +191,9 @@ async def move_feedback_start(
     segment_index: int = Form(...),
     session_id: str | None = Form(default=None),
     ebs_data_json: str | None = Form(default=None),
+    pose_priors_json: str | None = Form(default=None),
+    burn_in_labels: str | None = Form(default=None),
+    include_audio: str | None = Form(default=None),
 ):
     """Start an async Gemini move-feedback job for a single EBS segment.
 
@@ -216,9 +241,13 @@ async def move_feedback_start(
             "segment_index": segment_index,
         }
 
+        pose_priors = _parse_pose_priors_json(pose_priors_json)
+        burn_in = _parse_optional_bool(burn_in_labels, True)
+        audio_on = _parse_optional_bool(include_audio, False)
+
         t = threading.Thread(
             target=_move_feedback_worker,
-            args=(job_id, ref_tmp, user_tmp, ebs_data, segment_index),
+            args=(job_id, ref_tmp, user_tmp, ebs_data, segment_index, pose_priors, burn_in, audio_on),
             daemon=True,
         )
         t.start()
@@ -241,6 +270,9 @@ async def move_feedback_sync(
     segment_index: int = Form(...),
     session_id: str | None = Form(default=None),
     ebs_data_json: str | None = Form(default=None),
+    pose_priors_json: str | None = Form(default=None),
+    burn_in_labels: str | None = Form(default=None),
+    include_audio: str | None = Form(default=None),
 ):
     """Synchronous variant — blocks until Gemini returns feedback JSON."""
     sid = (session_id or "").strip() or "default"
@@ -272,12 +304,22 @@ async def move_feedback_sync(
                 status_code=400,
             )
 
+        pose_priors = _parse_pose_priors_json(pose_priors_json)
+        burn_in = _parse_optional_bool(burn_in_labels, True)
+        audio_on = _parse_optional_bool(include_audio, False)
+
         feedback = await asyncio.to_thread(
             run_move_feedback_pipeline,
-            ref_video_path=ref_tmp,
-            user_video_path=user_tmp,
-            ebs_artifact=ebs_data,
-            segment_index=segment_index,
+            ref_tmp,
+            user_tmp,
+            ebs_data,
+            segment_index,
+            None,
+            None,
+            None,
+            pose_priors,
+            burn_in,
+            audio_on,
         )
         return JSONResponse(feedback, status_code=200)
     except Exception as exc:

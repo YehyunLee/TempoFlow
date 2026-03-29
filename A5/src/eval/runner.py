@@ -64,6 +64,7 @@ def _call_openai_model(
     move_windows_text: str,
     model_name: str,
     system_prompt: str,
+    pose_priors_text: str | None = None,
 ) -> dict[str, Any]:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
@@ -91,6 +92,8 @@ def _call_openai_model(
             "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "low"},
         })
 
+    if pose_priors_text:
+        content.append({"type": "text", "text": pose_priors_text})
     content.append({"type": "text", "text": move_windows_text})
 
     payload = {
@@ -127,15 +130,27 @@ def _call_model(
     move_windows_text: str,
     api_key: str | None,
     system_prompt: str,
+    pose_priors_text: str | None = None,
 ) -> dict[str, Any]:
     if model_name.startswith("gpt-"):
-        return _call_openai_model(ref_clip_path, user_clip_path, move_windows_text, model_name, system_prompt)
+        return _call_openai_model(
+            ref_clip_path,
+            user_clip_path,
+            move_windows_text,
+            model_name,
+            system_prompt,
+            pose_priors_text=pose_priors_text,
+        )
 
     from src.gemini_move_feedback import call_gemini_move_feedback
 
     return call_gemini_move_feedback(
-        ref_clip_path, user_clip_path, move_windows_text,
-        api_key=api_key, model_name=model_name,
+        ref_clip_path,
+        user_clip_path,
+        move_windows_text,
+        api_key=api_key,
+        model_name=model_name,
+        pose_priors_text=pose_priors_text,
     )
 
 
@@ -152,6 +167,9 @@ def run_move_feedback_pipeline(
     api_key: str | None = None,
     model_name: str | None = None,
     low_res_height: int | None = None,
+    pose_priors: dict[str, Any] | None = None,
+    burn_in_labels: bool = True,
+    include_audio: bool = False,
 ) -> dict[str, Any]:
     """Drop-in replacement for ``gemini_move_feedback.run_move_feedback_pipeline``.
 
@@ -162,9 +180,10 @@ def run_move_feedback_pipeline(
     from src.gemini_move_feedback import (
         LOW_RES_HEIGHT,
         SYSTEM_PROMPT,
-        call_gemini_move_feedback,
+        apply_move_feedback_guardrails,
         derive_moves_for_segment,
         format_move_windows,
+        format_pose_priors_for_prompt,
         prepare_segment_clip,
     )
 
@@ -187,10 +206,33 @@ def run_move_feedback_pipeline(
         return {"error": "No moves found in segment", "moves": []}
 
     move_text, annotated_moves = format_move_windows(moves, seg["shared_start_sec"])
+    pose_priors_text = format_pose_priors_for_prompt(pose_priors) if pose_priors else None
 
-    logger.info("Preparing clips for fan-out (%dp)", low_res_height)
-    ref_clip = prepare_segment_clip(ref_video_path, ref_start, ref_end, height=low_res_height)
-    user_clip = prepare_segment_clip(user_video_path, user_start, user_end, height=low_res_height)
+    logger.info(
+        "Preparing clips for fan-out (%dp) segment=%d ref=[%.4f,%.4f] user=[%.4f,%.4f]",
+        low_res_height,
+        segment_index,
+        ref_start,
+        ref_end,
+        user_start,
+        user_end,
+    )
+    ref_clip = prepare_segment_clip(
+        ref_video_path,
+        ref_start,
+        ref_end,
+        height=low_res_height,
+        strip_audio=not include_audio,
+        burn_in_text="REFERENCE" if burn_in_labels else None,
+    )
+    user_clip = prepare_segment_clip(
+        user_video_path,
+        user_start,
+        user_end,
+        height=low_res_height,
+        strip_audio=not include_audio,
+        burn_in_text="USER" if burn_in_labels else None,
+    )
 
     vid = video_id_from_filename(ref_video_path)
     segment_id = f"seg_{segment_index:02d}"
@@ -210,9 +252,18 @@ def run_move_feedback_pipeline(
     def _run_single(mname: str) -> dict[str, Any]:
         t0 = time.monotonic()
         try:
-            raw = _call_model(mname, ref_clip, user_clip, move_text, api_key, SYSTEM_PROMPT)
+            raw = _call_model(
+                mname,
+                ref_clip,
+                user_clip,
+                move_text,
+                api_key,
+                SYSTEM_PROMPT,
+                pose_priors_text=pose_priors_text,
+            )
             latency = int((time.monotonic() - t0) * 1000)
             result = _annotate(raw, mname)
+            result = apply_move_feedback_guardrails(result, pose_priors)
             write_evaluation(vid, segment_id, mname, PROMPT_VERSION, latency, result)
             return result
         except Exception as exc:
