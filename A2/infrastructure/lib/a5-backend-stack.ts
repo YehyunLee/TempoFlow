@@ -142,7 +142,52 @@ export class A5BackendStack extends cdk.Stack {
         {
           namespace: 'aws:elasticbeanstalk:environment',
           optionName: 'EnvironmentType',
-          value: 'SingleInstance',
+          value: 'LoadBalanced',
+        },
+        {
+          namespace: 'aws:elasticbeanstalk:environment',
+          optionName: 'LoadBalancerType',
+          value: 'application',
+        },
+        {
+          namespace: 'aws:autoscaling:asg',
+          optionName: 'MinSize',
+          value: '2',
+        },
+        {
+          namespace: 'aws:autoscaling:asg',
+          optionName: 'MaxSize',
+          value: '4',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'MeasureName',
+          value: 'CPUUtilization',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'Statistic',
+          value: 'Average',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'Unit',
+          value: 'Percent',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'LowerThreshold',
+          value: '30',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'UpperThreshold',
+          value: '70',
+        },
+        {
+          namespace: 'aws:autoscaling:trigger',
+          optionName: 'BreachDuration',
+          value: '2',
         },
         {
           namespace: 'aws:elasticbeanstalk:environment',

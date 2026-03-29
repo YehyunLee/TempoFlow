@@ -180,7 +180,7 @@ def test_move_feedback_worker_success(mock_pipeline, tmp_path):
     jid = "worker-direct"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
     ebs = {"segments": [{"x": 1}]}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), ebs, 0)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), ebs, 0, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "done"
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["result"] == {"ok": True}
     assert not ref.exists()
@@ -198,13 +198,13 @@ def test_move_feedback_worker_error(mock_pipeline, tmp_path):
     usr.write_bytes(b"y")
     jid = "worker-err"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "error"
     assert "gemini down" in main_mod.MOVE_FEEDBACK_JOBS[jid]["error"]
     del main_mod.MOVE_FEEDBACK_JOBS[jid]
 
 
-def _stub_move_feedback_worker(job_id, ref_path, user_path, ebs_data, segment_index):
+def _stub_move_feedback_worker(job_id, ref_path, user_path, ebs_data, segment_index, *_extra):
     import src.main as main_mod
 
     main_mod.MOVE_FEEDBACK_JOBS[job_id]["status"] = "done"
@@ -436,7 +436,7 @@ def test_move_feedback_worker_finally_swallows_unlink_oserror(mock_pipeline, tmp
     usr.write_bytes(b"y")
     jid = "worker-unlink-os"
     main_mod.MOVE_FEEDBACK_JOBS[jid] = {"status": "queued"}
-    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0)
+    main_mod._move_feedback_worker(jid, str(ref), str(usr), {"segments": [1]}, 0, None, True, False)
     assert main_mod.MOVE_FEEDBACK_JOBS[jid]["status"] == "done"
     del main_mod.MOVE_FEEDBACK_JOBS[jid]
 
