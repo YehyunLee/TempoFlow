@@ -15,4 +15,3 @@ bin/*
 web-app/package-lock.json
 /evaluations/
 .coverage
-public/*
