@@ -63,6 +63,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [refVideoUrl, setRefVideoUrl] = useState<string | null>(null);
   const [userVideoUrl, setUserVideoUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<{ message: string; type?: "error" | "success" } | null>(null);
+  const [viewMode, setViewMode] = useState<"side" | "overlay">("side");
+  const overlayVideoRef = useRef<HTMLVideoElement>(null);
+  const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
   
   const {
     state,
@@ -86,7 +89,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     setPracticeLoop,
     setPauseAtMoveEnd,
     togglePracticeSpeed,
-  } = useEbsViewer({ refVideo, userVideo });
+  } = useEbsViewer({ refVideo, userVideo, overlayVideo: viewMode === "overlay" ? overlayVideoRef : undefined });
 
   const viewerVisible = sessionMode || showViewer;
   const canLaunch = (sessionMode || refLoaded) && (sessionMode || userLoaded) && (sessionMode || jsonLoaded);
@@ -111,9 +114,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
   const ebsFingerprint = useMemo(() => (sessionEbsData ? hashEbsData(sessionEbsData) : ""), [sessionEbsData]);
-  const [viewMode, setViewMode] = useState<"side" | "overlay">("side");
-  const overlayVideoRef = useRef<HTMLVideoElement>(null);
-  const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
 
   const loadCachedOverlays = useCallback(async () => {
     if (!sessionId) return;
@@ -315,13 +315,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
     if (userVideo.current) {
       userVideo.current.playbackRate = state.mainPlaybackRate;
     }
-    const id = window.requestAnimationFrame(() => {
-      if (state.segments.length) {
+    // Only seek to segment 0 on initial load if we haven't started yet
+    if (state.sharedTime === 0 && state.segments.length) {
+      const id = window.requestAnimationFrame(() => {
         seekToSegment(0);
-      }
-    });
-    return () => window.cancelAnimationFrame(id);
-  }, [seekToSegment, state.mainPlaybackRate, state.segments.length, viewerVisible]);
+      });
+      return () => window.cancelAnimationFrame(id);
+    }
+  }, [seekToSegment, state.mainPlaybackRate, state.segments.length, state.sharedTime, viewerVisible]);
 
   useEffect(() => {
     if (!viewerVisible) return;
@@ -373,6 +374,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     state.practice.enabled,
     togglePlay,
     viewerVisible,
+    viewMode,
   ]);
 
   const fmtTime = (sec: number) => {
@@ -504,7 +506,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     ? getOverlayDiffFrame(userBodyPixArtifact, overlayCurrentTime)
     : null;
 
-  // Sync overlay video time with shared time when playing
+  // Sync overlay video time updates to local state for frame rendering only
   useEffect(() => {
     if (viewMode !== "overlay" || !overlayVideoRef.current) return;
     const video = overlayVideoRef.current;
@@ -517,13 +519,16 @@ export function FeedbackViewer(props: EbsViewerProps) {
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
   }, [viewMode]);
 
-  // Sync shared time to overlay video when switching modes or seeking
+  // Initial sync when switching to overlay mode
   useEffect(() => {
-    if (viewMode === "overlay" && overlayVideoRef.current) {
-      overlayVideoRef.current.currentTime = state.sharedTime;
+    if (viewMode === "overlay" && overlayVideoRef.current && state.sharedTime > 0) {
+      const timeDiff = Math.abs(overlayVideoRef.current.currentTime - state.sharedTime);
+      if (timeDiff > 0.1) {
+        overlayVideoRef.current.currentTime = state.sharedTime;
+      }
       setOverlayCurrentTime(state.sharedTime);
     }
-  }, [viewMode, state.sharedTime]);
+  }, [viewMode]);
 
   return (
     <div className="ebs-viewer-root">
@@ -639,17 +644,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
             /* Overlay diff view - reuses existing BodyPix per-segment data */
             <div className="videos single-view">
               <div className="video-panel" style={{ maxWidth: "100%", width: "100%" }}>
-                <div className="video-label flex justify-between">
+                <div className="video-label">
                   <span>Overlay Diff (Reference + User)</span>
-                  <span className="time-display">{fmtTimeFull(overlayCurrentTime)}</span>
                 </div>
                 <div className="relative" style={{ aspectRatio: "16/9", background: "#000" }}>
-                  {/* Base: User video */}
+                  {/* Base: User video (synced with timeline) */}
                   <video
                     ref={overlayVideoRef}
                     src={activeUserVideoUrl ?? undefined}
                     className="absolute inset-0 w-full h-full object-contain z-0"
-                    controls
                     playsInline
                   />
                   {/* Layer 1: Reference ghost (BodyPix overlay) */}
@@ -657,7 +660,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     <img
                       src={refOverlayFrame instanceof Blob ? URL.createObjectURL(refOverlayFrame) : refOverlayFrame}
                       alt="Reference ghost"
-                      className="absolute inset-0 w-full h-full object-contain pointer-events-none z-50"
+                      className="absolute inset-0 w-full h-full object-contain pointer-events-none z-10"
                       style={{
                         mixBlendMode: "difference",
                         filter: "brightness(1.5) saturate(2)",
@@ -670,7 +673,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     <img
                       src={userOverlayFrame instanceof Blob ? URL.createObjectURL(userOverlayFrame) : userOverlayFrame}
                       alt="User overlay"
-                      className="absolute inset-0 w-full h-full object-contain pointer-events-none z-[60]"
+                      className="absolute inset-0 w-full h-full object-contain pointer-events-none z-20"
                       style={{
                         mixBlendMode: "multiply",
                         opacity: 0.6,
@@ -741,7 +744,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 </div>
               </div>
 
-              <div className="timeline">
+              <div className="timeline" style={{ position: "relative", zIndex: 10 }}>
                 <div className="timeline-track relative overflow-hidden" ref={timelineTrackRef} onClick={handleTimelineClick}>
                     {/* 0. GEMINI MOVE BANDS (Bottom-most layer) */}
                     {showFeedback && geminiFeedback.map((m, i) => {
