@@ -31,6 +31,7 @@ const deleteSessionMetadataMock = vi.fn((sessionId: string) => {
 });
 const deleteSessionEbsMock = vi.fn(async () => undefined);
 const deleteSessionVideosMock = vi.fn(async () => undefined);
+const getSessionVideoMock = vi.fn(async () => null);
 
 vi.mock('next/link', () => ({
   default: ({
@@ -52,6 +53,7 @@ vi.mock('../../lib/ebsStorage', () => ({
 
 vi.mock('../../lib/videoStorage', () => ({
   deleteSessionVideos: (sessionId: string) => deleteSessionVideosMock(sessionId),
+  getSessionVideo: (sessionId: string, role: string) => getSessionVideoMock(sessionId, role),
 }));
 
 describe('Dashboard page', () => {
@@ -61,6 +63,7 @@ describe('Dashboard page', () => {
     deleteSessionMetadataMock.mockClear();
     deleteSessionEbsMock.mockClear();
     deleteSessionVideosMock.mockClear();
+    getSessionVideoMock.mockClear();
   });
 
   it('renders the empty state when there are no saved sessions', () => {

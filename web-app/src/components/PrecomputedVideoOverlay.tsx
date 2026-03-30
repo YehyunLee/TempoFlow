@@ -31,7 +31,18 @@ export function PrecomputedVideoOverlay(props: {
     ov.loop = false;
 
     let cancelled = false;
-    const syncOnce = async () => {
+    let raf = 0;
+    let rvfcHandle = 0;
+    const rvfc = (base as HTMLVideoElement & {
+      requestVideoFrameCallback?: (
+        callback: (now: number, metadata: { mediaTime?: number }) => void,
+      ) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    }).requestVideoFrameCallback;
+    const cancelRvfc = (base as HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void })
+      .cancelVideoFrameCallback;
+
+    const syncOnce = () => {
       if (cancelled) return;
       const baseT = base.currentTime || 0;
       const ovT = ov.currentTime;
@@ -48,31 +59,42 @@ export function PrecomputedVideoOverlay(props: {
         ov.currentTime = baseT;
       }
 
-      if (base.paused) {
-        if (!ov.paused) ov.pause();
-      } else {
-        if (ov.paused) {
-          await ov.play().catch(() => undefined);
-        }
+      if (!ov.paused) {
+        ov.pause();
       }
     };
 
-    const sync = async () => {
+    const sync = () => {
       if (cancelled) return;
-      try {
-        await syncOnce();
-      } finally {
-        requestAnimationFrame(sync);
+      syncOnce();
+    };
+
+    const onVideoFrame = (_now: number, metadata: { mediaTime?: number }) => {
+      if (cancelled) return;
+      if (!ov.paused) ov.pause();
+      const mediaTime = metadata.mediaTime ?? base.currentTime ?? 0;
+      if (!Number.isFinite(ov.currentTime) || Math.abs((ov.currentTime || 0) - mediaTime) > 0.008) {
+        ov.currentTime = mediaTime;
       }
+      rvfcHandle = rvfc ? rvfc.call(base, onVideoFrame) : 0;
+    };
+
+    const onRaf = () => {
+      if (cancelled) return;
+      sync();
+      raf = window.requestAnimationFrame(onRaf);
     };
 
     const onSeeked = () => {
-      if (!cancelled) ov.currentTime = base.currentTime || 0;
+      if (!cancelled) {
+        ov.currentTime = base.currentTime || 0;
+        ov.pause();
+      }
     };
     const onLoadedMetadata = () => {
       if (!cancelled) {
         ov.currentTime = base.currentTime || 0;
-        if (!base.paused) void ov.play().catch(() => undefined);
+        ov.pause();
       }
     };
 
@@ -80,22 +102,34 @@ export function PrecomputedVideoOverlay(props: {
       if (!cancelled) ov.pause();
     };
     const onPlay = () => {
-      if (!cancelled) void ov.play().catch(() => undefined);
+      if (!cancelled) sync();
     };
     base.addEventListener("seeked", onSeeked);
     base.addEventListener("seeking", onSeeked);
     ov.addEventListener("loadedmetadata", onLoadedMetadata);
     base.addEventListener("pause", onPause);
     base.addEventListener("play", onPlay);
+    base.addEventListener("ratechange", sync);
+    base.addEventListener("waiting", onPause);
+    base.addEventListener("stalled", onPause);
 
-    requestAnimationFrame(sync);
+    if (rvfc) {
+      rvfcHandle = rvfc.call(base, onVideoFrame);
+    } else {
+      raf = window.requestAnimationFrame(onRaf);
+    }
     return () => {
       cancelled = true;
+      if (cancelRvfc && rvfcHandle) cancelRvfc.call(base, rvfcHandle);
+      if (raf) window.cancelAnimationFrame(raf);
       base.removeEventListener("seeked", onSeeked);
       base.removeEventListener("seeking", onSeeked);
       ov.removeEventListener("loadedmetadata", onLoadedMetadata);
       base.removeEventListener("pause", onPause);
       base.removeEventListener("play", onPlay);
+      base.removeEventListener("ratechange", sync);
+      base.removeEventListener("waiting", onPause);
+      base.removeEventListener("stalled", onPause);
     };
   }, [videoRef]);
 

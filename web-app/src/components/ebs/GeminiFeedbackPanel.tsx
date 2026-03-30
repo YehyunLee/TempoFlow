@@ -183,6 +183,18 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     setPipelineHint(null);
   }, [sessionId]);
 
+  useEffect(() => {
+    return () => {
+      queueRef.current = [];
+      drainingRef.current = false;
+      if (rateLimitResumeTimerRef.current != null) {
+        window.clearTimeout(rateLimitResumeTimerRef.current);
+        rateLimitResumeTimerRef.current = null;
+      }
+      rateLimitResumeAtRef.current = null;
+    };
+  }, []);
+
   const pipelineDebugRows = useMemo(
     () => buildGeminiSegmentDebugRows(ebsData, segments),
     [ebsData, segments],

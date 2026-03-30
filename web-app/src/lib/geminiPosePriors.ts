@@ -6,6 +6,7 @@
  */
 import type { EbsData, EbsSegment } from "../components/ebs/types";
 import { buildMovesForSegment } from "../components/ebs/ebsViewerLogic";
+import { JOINT_ANGLES, jointAnglesDegFromKeypoints } from "./bodyPix";
 import { loadBodyPix, sampleFrame } from "./bodyPix/segmentation";
 import type { PoseKeypoint, SampledPoseFrame } from "./bodyPix/types";
 import { DEFAULT_POSE_FPS } from "./bodyPix/types";
@@ -46,6 +47,14 @@ export type MovePosePrior = {
   phase_offset_ms: number;
   user_relative_to_reference: "ahead" | "behind" | "aligned" | "unclear";
   prior_confidence: "high" | "medium" | "low";
+  peak_joint_angle_signal_pct?: number;
+  avg_joint_angle_signal_pct?: number;
+  top_joint_diffs?: Array<{
+    joint: string;
+    avg_delta_deg: number;
+    peak_delta_deg: number;
+    peak_signal_pct: number;
+  }>;
 };
 
 export type PosePriorsPayload = {
@@ -53,6 +62,58 @@ export type PosePriorsPayload = {
 };
 
 const ALIGN_FRAC = 0.12;
+
+function smallestAngleDifferenceDegrees(a: number, b: number) {
+  let delta = Math.abs(a - b);
+  if (delta > 180) delta = 360 - delta;
+  return delta;
+}
+
+function summarizeJointAngleDiffs(referenceFrames: SampledPoseFrame[], userFrames: SampledPoseFrame[]) {
+  const jointSummaries = JOINT_ANGLES.map((joint) => {
+    const deltas: number[] = [];
+    for (let index = 0; index < Math.min(referenceFrames.length, userFrames.length); index += 1) {
+      const referenceAngles = jointAnglesDegFromKeypoints(referenceFrames[index]!.keypoints);
+      const userAngles = jointAnglesDegFromKeypoints(userFrames[index]!.keypoints);
+      const referenceAngle = referenceAngles[joint.name];
+      const userAngle = userAngles[joint.name];
+      if (!Number.isFinite(referenceAngle) || !Number.isFinite(userAngle)) continue;
+      deltas.push(smallestAngleDifferenceDegrees(referenceAngle, userAngle));
+    }
+
+    if (deltas.length === 0) return null;
+    const avg_delta_deg = deltas.reduce((sum, value) => sum + value, 0) / deltas.length;
+    const peak_delta_deg = Math.max(...deltas);
+    const peak_signal_pct = (peak_delta_deg / 30) * 100;
+    return {
+      joint: joint.name,
+      avg_delta_deg,
+      peak_delta_deg,
+      peak_signal_pct,
+    };
+  }).filter((value): value is NonNullable<typeof value> => value != null);
+
+  if (jointSummaries.length === 0) {
+    return {
+      peak_joint_angle_signal_pct: 0,
+      avg_joint_angle_signal_pct: 0,
+      top_joint_diffs: [],
+    };
+  }
+
+  const sorted = [...jointSummaries].sort((a, b) => b.peak_signal_pct - a.peak_signal_pct);
+  return {
+    peak_joint_angle_signal_pct: sorted[0]?.peak_signal_pct ?? 0,
+    avg_joint_angle_signal_pct:
+      jointSummaries.reduce((sum, summary) => sum + summary.peak_signal_pct, 0) / jointSummaries.length,
+    top_joint_diffs: sorted.slice(0, 4).map((summary) => ({
+      joint: summary.joint,
+      avg_delta_deg: Math.round(summary.avg_delta_deg),
+      peak_delta_deg: Math.round(summary.peak_delta_deg),
+      peak_signal_pct: Math.round(summary.peak_signal_pct),
+    })),
+  };
+}
 
 /**
  * Sample poses in shared time for each beat-to-beat move in one segment; estimate
@@ -172,6 +233,7 @@ export async function computePosePriorsForSegment(opts: {
       phase_offset_ms,
       user_relative_to_reference,
       prior_confidence,
+      ...summarizeJointAngleDiffs(refFrames, userFrames),
     });
   }
 

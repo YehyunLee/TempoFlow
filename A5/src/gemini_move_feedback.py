@@ -79,6 +79,9 @@ centered, shifting left to right, shifting right to left
 - do not comment on style or overall quality
 - if evidence is weak because of blur, occlusion, cropping, or angle, say so briefly
 - keep micro_timing_label consistent with user_relative_to_reference when possible
+- do NOT force a problem label for every move
+- if timing evidence is weak or joint-angle support is low, prefer "on-time" or "uncertain"
+- only use early/late/rushed/dragged when the mismatch is clearly visible and repeatable, not from one ambiguous frame
 
 Use exactly one label per move:
 - on-time
@@ -431,7 +434,8 @@ def format_pose_priors_for_prompt(pose_priors: dict[str, Any] | None) -> str:
         return ""
     lines = [
         "Independent pose-based timing estimates (from MoveNet/BodyPix sampling in the browser). "
-        "Use as a soft prior; they may be wrong if the dancer was occluded or off-frame.\n",
+        "Use as a soft prior; they may be wrong if the dancer was occluded or off-frame. "
+        "High joint-angle support means the pose mismatch is visually real; low joint-angle support means you should be conservative.\n",
     ]
     for m in moves:
         if not isinstance(m, dict):
@@ -441,7 +445,34 @@ def format_pose_priors_for_prompt(pose_priors: dict[str, Any] | None) -> str:
         off = m.get("phase_offset_ms")
         conf = m.get("prior_confidence", "medium")
         off_s = f", phase_offset_ms≈{off:.1f}" if isinstance(off, (int, float)) else ""
-        lines.append(f"- Move {idx}: user_relative_to_reference≈{rel}{off_s} (prior_confidence={conf})")
+        peak_signal = m.get("peak_joint_angle_signal_pct")
+        avg_signal = m.get("avg_joint_angle_signal_pct")
+        top_joint_diffs = m.get("top_joint_diffs")
+        angle_bits: list[str] = []
+        if isinstance(peak_signal, (int, float)):
+            angle_bits.append(f"peak_joint_angle_signal_pct≈{float(peak_signal):.0f}%")
+        if isinstance(avg_signal, (int, float)):
+            angle_bits.append(f"avg_joint_angle_signal_pct≈{float(avg_signal):.0f}%")
+        if isinstance(top_joint_diffs, list) and top_joint_diffs:
+            top_parts: list[str] = []
+            for item in top_joint_diffs[:3]:
+                if not isinstance(item, dict):
+                    continue
+                joint = item.get("joint")
+                peak_deg = item.get("peak_delta_deg")
+                peak_pct = item.get("peak_signal_pct")
+                if isinstance(joint, str):
+                    detail = str(joint)
+                    if isinstance(peak_deg, (int, float)):
+                        detail += f" {float(peak_deg):.0f}deg"
+                    if isinstance(peak_pct, (int, float)):
+                        detail += f" ({float(peak_pct):.0f}%)"
+                    top_parts.append(detail)
+            if top_parts:
+                angle_bits.append("top_joint_diffs=" + ", ".join(top_parts))
+
+        angle_s = f", {'; '.join(angle_bits)}" if angle_bits else ""
+        lines.append(f"- Move {idx}: user_relative_to_reference≈{rel}{off_s} (prior_confidence={conf}{angle_s})")
     lines.append("")
     return "\n".join(lines)
 

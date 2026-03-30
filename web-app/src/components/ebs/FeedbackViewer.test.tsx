@@ -314,6 +314,13 @@ describe("FeedbackViewer", () => {
     expect(mockActions.setPauseAtSegmentEnd).toHaveBeenCalledWith(true);
   });
 
+  it("toggles mute state from the transport control", () => {
+    render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
+    const muteBtn = screen.getByLabelText(/Unmute audio/i);
+    fireEvent.click(muteBtn);
+    expect(screen.getByLabelText(/Mute audio/i)).toBeInTheDocument();
+  });
+
   it("enables 'Pause at feedback' by default", () => {
     render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
     expect(screen.getByLabelText(/Pause at feedback/i)).toBeChecked();
@@ -408,6 +415,49 @@ describe("FeedbackViewer", () => {
     });
   });
 
+  it("filters Gemini timing feedback when pose angle support is too weak", async () => {
+    const makeAlignedSample = (segmentIndex: number, timestamp: number) => ({
+      timestamp,
+      segmentIndex,
+      frameWidth: 64,
+      frameHeight: 48,
+      keypoints: Array.from({ length: 17 }, (_, index) => ({
+        name: `kp-${index}`,
+        x: 20 + index,
+        y: 10 + index,
+        score: 0.95,
+      })),
+      partCoverage: {
+        head: 1,
+        arms: 1,
+        torso: 1,
+        legs: 1,
+        full_body: 1,
+      },
+    });
+
+    buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
+      feedback: [],
+      refSamples: [makeAlignedSample(0, 4.2), makeAlignedSample(0, 4.8)],
+      userSamples: [makeAlignedSample(0, 4.2), makeAlignedSample(0, 4.8)],
+    });
+
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 10 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".overlay-feedback-card-gemini")).toBeNull();
+      expect(container.querySelector(".timeline-feedback-marker.gemini")).toBeNull();
+    });
+  });
+
   it("shows clickable visual and Gemini markers on the section timeline", async () => {
     const { container } = render(
       <FeedbackViewer
@@ -427,7 +477,65 @@ describe("FeedbackViewer", () => {
     expect(container.querySelector(".timeline-feedback-marker.gemini.minor")).not.toBeNull();
   });
 
-  it("shows an overlay difference score and joint angle bars above the section timeline when yolo samples are available", async () => {
+  it("hides micro timing feedback cues and markers when toggled off", async () => {
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 10 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".overlay-feedback-card-gemini")).not.toBeNull();
+      expect(container.querySelector(".timeline-feedback-marker.gemini")).not.toBeNull();
+    });
+
+    fireEvent.click(screen.getByLabelText("Toggle Micro Timing feedback"));
+
+    await waitFor(() => {
+      expect(container.querySelector(".overlay-feedback-card-gemini")).toBeNull();
+      expect(container.querySelector(".timeline-feedback-marker.gemini")).toBeNull();
+    });
+  });
+
+  it("hides angle feedback cues and markers when toggled off", async () => {
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        sharedTime: 2.5,
+        refTime: 2.5,
+        userTime: 2.5,
+      },
+      ...mockActions,
+    });
+
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 5 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".timeline-feedback-marker.visual")).not.toBeNull();
+    });
+    expect(await screen.findByText("Position diff")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("Toggle Angle feedback"));
+
+    await waitFor(() => {
+      expect(container.querySelector(".timeline-feedback-marker.visual")).toBeNull();
+      expect(screen.queryByText("Position diff")).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows a score and angle skeleton above the section timeline when yolo samples are available", async () => {
     const makeSample = (
       segmentIndex: number,
       timestamp: number,
@@ -505,13 +613,13 @@ describe("FeedbackViewer", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("Overlay diff")).toBeInTheDocument();
-      expect(screen.getByText("left elbow")).toBeInTheDocument();
+      expect(screen.getAllByText("Score").length).toBeGreaterThan(0);
+      expect(screen.getByLabelText("Angle score skeleton")).toBeInTheDocument();
       expect(container.querySelector(".timeline-score-chip")).not.toBeNull();
     });
 
     expect(container.querySelector(".timeline-score-number.high, .timeline-score-number.medium, .timeline-score-number.low")).not.toBeNull();
-    expect(container.querySelector(".timeline-score-max.high, .timeline-score-max.medium, .timeline-score-max.low")).toBeNull();
+    expect(container.querySelector(".timeline-angle-skeleton")).not.toBeNull();
   });
 
   it("seeks when a timeline feedback marker is clicked", async () => {

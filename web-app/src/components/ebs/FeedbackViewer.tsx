@@ -121,6 +121,19 @@ function getGeminiMarkerSeriousness(label: string | null | undefined): TimelineF
 
 const FEEDBACK_DIFFICULTY_STORAGE_KEY = "tempoflow-feedback-difficulty";
 const OVERLAY_SCORE_CONFIDENCE = 0.35;
+const ANGLE_SCORE_FULL_MISMATCH_DEGREES = 120;
+const ANGLE_SCORE_CURVE_EXPONENT = 0.7;
+const ANGLE_SCORE_DEADZONE_DEGREES = 30;
+const GEMINI_MIN_ANGLE_SUPPORT_PCT: Record<FeedbackDifficulty, number> = {
+  beginner: 140,
+  standard: 110,
+  advanced: 85,
+};
+const GEMINI_MIN_ANGLE_SUPPORT_FRAMES: Record<FeedbackDifficulty, number> = {
+  beginner: 2,
+  standard: 2,
+  advanced: 1,
+};
 
 type OverlayNormalization = {
   scaleX: number;
@@ -149,6 +162,8 @@ type JointAngleDiffBar = {
   barPct: number;
   tone: "low" | "medium" | "high" | "unknown";
 };
+
+type SkeletonStrokeTone = JointAngleDiffBar["tone"];
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value);
@@ -235,6 +250,17 @@ function getNearestSegmentSample(
   return best;
 }
 
+function getSegmentSamplesInWindow(
+  samples: SampledPoseFrame[],
+  segmentIndex: number,
+  startTime: number,
+  endTime: number,
+) {
+  return samples.filter(
+    (sample) => sample.segmentIndex === segmentIndex && sample.timestamp >= startTime && sample.timestamp <= endTime,
+  );
+}
+
 function computePoseBounds(keypoints: PoseKeypoint[]) {
   const visible = keypoints.filter((keypoint) => (keypoint.score ?? 0) >= OVERLAY_SCORE_CONFIDENCE);
   if (visible.length < 4) return null;
@@ -292,18 +318,37 @@ function computeAngleDifferenceScore(referenceKeypoints: PoseKeypoint[], practic
     const referenceAngle = referenceAngles[key];
     const practiceAngle = practiceAngles[key];
     if (!isFiniteNumber(referenceAngle) || !isFiniteNumber(practiceAngle)) continue;
-    total += Math.abs(referenceAngle - practiceAngle);
+    const deltaDeg = smallestAngleDifferenceDegrees(referenceAngle, practiceAngle);
+    total += Math.max(0, deltaDeg - ANGLE_SCORE_DEADZONE_DEGREES);
     count += 1;
   }
 
   if (count <= 0) return 0;
-  return clamp01((total / count) / 70);
+  return clamp01((total / count) / Math.max(1, ANGLE_SCORE_FULL_MISMATCH_DEGREES - ANGLE_SCORE_DEADZONE_DEGREES));
 }
 
 function smallestAngleDifferenceDegrees(a: number, b: number) {
   let delta = Math.abs(a - b);
   if (delta > 180) delta = 360 - delta;
   return delta;
+}
+
+function computeFrameMaxAngleSignalPct(referenceKeypoints: PoseKeypoint[], practiceKeypoints: PoseKeypoint[]) {
+  const referenceAngles = jointAnglesDegFromKeypoints(referenceKeypoints);
+  const practiceAngles = jointAnglesDegFromKeypoints(practiceKeypoints);
+  let maxSignalPct = 0;
+  let count = 0;
+
+  for (const key of Object.keys(referenceAngles)) {
+    const referenceAngle = referenceAngles[key];
+    const practiceAngle = practiceAngles[key];
+    if (!isFiniteNumber(referenceAngle) || !isFiniteNumber(practiceAngle)) continue;
+    const signalPct = (smallestAngleDifferenceDegrees(referenceAngle, practiceAngle) / ANGLE_SIGNAL_STANDARD_DEGREES) * 100;
+    maxSignalPct = Math.max(maxSignalPct, signalPct);
+    count += 1;
+  }
+
+  return count > 0 ? maxSignalPct : null;
 }
 
 function getJointAngleDiffBars(referenceKeypoints: PoseKeypoint[], practiceKeypoints: PoseKeypoint[]): JointAngleDiffBar[] {
@@ -335,6 +380,66 @@ function getJointAngleDiffBars(referenceKeypoints: PoseKeypoint[], practiceKeypo
       tone: signalPct >= 200 ? "high" : signalPct >= 100 ? "medium" : "low",
     } satisfies JointAngleDiffBar;
   });
+}
+
+function computeAngleMatchScore(referenceKeypoints: PoseKeypoint[], practiceKeypoints: PoseKeypoint[]) {
+  const mismatch = computeAngleDifferenceScore(referenceKeypoints, practiceKeypoints);
+  const softenedMatch = 1 - Math.pow(mismatch, ANGLE_SCORE_CURVE_EXPONENT);
+  return Math.max(0, Math.min(100, Math.round(softenedMatch * 100)));
+}
+
+function jointBarsToSkeletonTones(joints: JointAngleDiffBar[]) {
+  const toneFor = (...keys: string[]): SkeletonStrokeTone => {
+    const matched = joints.filter((joint) => keys.includes(joint.key));
+    if (!matched.length) return "unknown";
+    if (matched.some((joint) => joint.tone === "high")) return "high";
+    if (matched.some((joint) => joint.tone === "medium")) return "medium";
+    if (matched.some((joint) => joint.tone === "low")) return "low";
+    return "unknown";
+  };
+
+  return {
+    head: toneFor("left shoulder", "right shoulder"),
+    torso: toneFor("left shoulder", "right shoulder", "left hip", "right hip"),
+    leftArm: toneFor("left shoulder", "left elbow"),
+    rightArm: toneFor("right shoulder", "right elbow"),
+    leftLeg: toneFor("left hip", "left knee"),
+    rightLeg: toneFor("right hip", "right knee"),
+  };
+}
+
+function toneToSkeletonColor(tone: SkeletonStrokeTone) {
+  switch (tone) {
+    case "low":
+      return "#10b981";
+    case "medium":
+      return "#f59e0b";
+    case "high":
+      return "#ef4444";
+    case "unknown":
+    default:
+      return "#94a3b8";
+  }
+}
+
+function AngleDiffSkeleton(props: { joints: JointAngleDiffBar[] }) {
+  const tones = jointBarsToSkeletonTones(props.joints);
+  const strokeFor = (tone: SkeletonStrokeTone) => toneToSkeletonColor(tone);
+
+  return (
+    <div className="timeline-angle-skeleton" aria-label="Angle score skeleton">
+      <svg viewBox="0 0 120 160" role="img" aria-hidden="true">
+        <circle cx="60" cy="22" r="14" className="timeline-angle-skeleton-node" style={{ stroke: strokeFor(tones.head) }} />
+        <path d="M60 36 L60 88" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.torso) }} />
+        <path d="M42 46 L78 46" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.torso) }} />
+        <path d="M42 48 L30 80 L24 110" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.leftArm) }} />
+        <path d="M78 48 L90 80 L96 110" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.rightArm) }} />
+        <path d="M48 92 L40 120 L34 146" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.leftLeg) }} />
+        <path d="M72 92 L80 120 L86 146" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.rightLeg) }} />
+        <path d="M48 90 L72 90" className="timeline-angle-skeleton-line" style={{ stroke: strokeFor(tones.torso) }} />
+      </svg>
+    </div>
+  );
 }
 
 function computeOverlayDifferenceScore(params: {
@@ -494,12 +599,17 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const overlayMode: "precomputed" | "live" = "precomputed";
   const showBodyPix = true;
   const showFeedback = true;
+  const [isMuted, setIsMuted] = useState(true);
+  const [showMicroTimingFeedback, setShowMicroTimingFeedback] = useState(true);
+  const [showAngleFeedback, setShowAngleFeedback] = useState(true);
   const [geminiFeedback, setGeminiFeedback] = useState<GeminiFlatMove[]>([]);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayStatus, setOverlayStatus] = useState<string | null>(null);
   const [visualFeedbackRows, setVisualFeedbackRows] = useState<DanceFeedback[]>([]);
   const [visualReferenceSamples, setVisualReferenceSamples] = useState<SampledPoseFrame[]>([]);
   const [visualUserSamples, setVisualUserSamples] = useState<SampledPoseFrame[]>([]);
+  const [showFinalScoreCelebration, setShowFinalScoreCelebration] = useState(false);
+  const finalScoreCelebratedKeyRef = useRef<string | null>(null);
   const [geminiPipelineProgress, setGeminiPipelineProgress] = useState({ done: 0, total: 0 });
   const [bodyPixSegmentProgress, setBodyPixSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [yoloSegmentProgress, setYoloSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
@@ -517,7 +627,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
   const previousFeedbackCueKeyRef = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
   const ebsFingerprint = useMemo(() => (sessionEbsData ? hashEbsData(sessionEbsData) : ""), [sessionEbsData]);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -769,6 +887,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
         setYoloSegmentProgress({ segmentIndex, progress: 1 });
         autoGeminiQueuedRef.current.add(segmentIndex);
         queueMicrotask(() => {
+          if (!isMountedRef.current) return;
           geminiFeedbackRef.current?.enqueueSegmentForFeedback(segmentIndex);
         });
       },
@@ -857,6 +976,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
           if (!cachedAudio) {
             autoGeminiQueuedRef.current.add(i);
             queueMicrotask(() => {
+              if (!isMountedRef.current) return;
               geminiFeedbackRef.current?.enqueueSegmentForFeedback(i);
             });
           }
@@ -974,8 +1094,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
   useEffect(() => {
     if (!viewerVisible) return;
+    if (refVideo.current) {
+      refVideo.current.muted = isMuted;
+    }
     if (userVideo.current) {
-      userVideo.current.muted = true;
+      userVideo.current.muted = isMuted;
+    }
+    if (overlayVideoRef.current) {
+      overlayVideoRef.current.muted = isMuted;
     }
     if (refVideo.current) {
       refVideo.current.playbackRate = state.mainPlaybackRate;
@@ -990,7 +1116,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
       });
       return () => window.cancelAnimationFrame(id);
     }
-  }, [seekToSegment, state.mainPlaybackRate, state.segments.length, state.sharedTime, viewerVisible]);
+  }, [isMuted, seekToSegment, state.mainPlaybackRate, state.segments.length, state.sharedTime, viewerVisible]);
 
   useEffect(() => {
     if (!viewerVisible) return;
@@ -1187,6 +1313,74 @@ export function FeedbackViewer(props: EbsViewerProps) {
       ) ?? null
     );
   }, []);
+  const filteredGeminiFeedback = useMemo(() => {
+    return geminiFeedback.filter((move) => {
+      if (!passesGeminiFeedbackDifficulty(move, feedbackDifficulty)) {
+        return false;
+      }
+
+      const startTime = move.shared_start_sec ?? 0;
+      const endTime = Math.max(startTime, move.shared_end_sec ?? startTime);
+      const referenceSegment = getRenderableSegment(refYoloArtifact, move.segmentIndex);
+      const normalization = readOverlayNormalization(referenceSegment);
+      const referenceWindowSamples = getSegmentSamplesInWindow(
+        visualReferenceSamples,
+        move.segmentIndex,
+        startTime,
+        endTime,
+      );
+      const practiceWindowSamples = getSegmentSamplesInWindow(
+        visualUserSamples,
+        move.segmentIndex,
+        startTime,
+        endTime,
+      );
+
+      if (referenceWindowSamples.length === 0 || practiceWindowSamples.length === 0) {
+        return true;
+      }
+
+      const supportSignals = referenceWindowSamples
+        .map((referenceSample) => {
+          const practiceSample = getNearestSegmentSample(
+            practiceWindowSamples,
+            move.segmentIndex,
+            referenceSample.timestamp,
+          );
+          if (!practiceSample) return null;
+          return computeFrameMaxAngleSignalPct(
+            toOverlaySpaceKeypoints(referenceSample, normalization),
+            toOverlaySpaceKeypoints(practiceSample, null),
+          );
+        })
+        .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+
+      if (supportSignals.length === 0) {
+        return false;
+      }
+
+      const thresholdPct = GEMINI_MIN_ANGLE_SUPPORT_PCT[feedbackDifficulty];
+      const sustainedFrameThresholdPct = thresholdPct * 0.75;
+      const strongestSignals = [...supportSignals].sort((a, b) => b - a).slice(0, Math.min(3, supportSignals.length));
+      const supportPct =
+        strongestSignals.reduce((sum, value) => sum + value, 0) / Math.max(1, strongestSignals.length);
+      const supportedFrameCount = supportSignals.filter((value) => value >= sustainedFrameThresholdPct).length;
+      const strongestSignal = strongestSignals[0] ?? 0;
+
+      return (
+        strongestSignal >= thresholdPct &&
+        supportedFrameCount >= GEMINI_MIN_ANGLE_SUPPORT_FRAMES[feedbackDifficulty] &&
+        supportPct >= sustainedFrameThresholdPct
+      );
+    });
+  }, [
+    feedbackDifficulty,
+    geminiFeedback,
+    getRenderableSegment,
+    refYoloArtifact,
+    visualReferenceSamples,
+    visualUserSamples,
+  ]);
   const activeMoveReadiness = useMemo(() => {
     const inFlight = overlayDetector === "yolo" ? yoloSegmentProgress : bodyPixSegmentProgress;
     const readySharedCutoffBySegment = new Map<number, number>();
@@ -1297,7 +1491,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
   const feedbackBySegment = useMemo(() => {
     const bySegment = new Map<number, GeminiFlatMove[]>();
-    geminiFeedback.forEach((move) => {
+    filteredGeminiFeedback.forEach((move) => {
       const segmentIndex = Number(move.segmentIndex);
       if (!Number.isFinite(segmentIndex)) return;
       const existing = bySegment.get(segmentIndex) ?? [];
@@ -1305,7 +1499,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
       bySegment.set(segmentIndex, existing);
     });
     return bySegment;
-  }, [geminiFeedback]);
+  }, [filteredGeminiFeedback]);
 
   const segmentFeedbackStyles = useMemo(() => {
     const severityByLabel: Record<string, number> = {
@@ -1360,7 +1554,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [feedbackBySegment, state.segments]);
 
   const timelineFeedbackMarkers = useMemo<TimelineFeedbackMarker[]>(() => {
-    const visualMarkers = state.segments.flatMap<TimelineFeedbackMarker>((segment, segmentIndex) => {
+    const visualMarkers = !showAngleFeedback
+      ? []
+      : state.segments.flatMap<TimelineFeedbackMarker>((segment, segmentIndex) => {
       if (feedbackDifficulty === "advanced") {
         const duration = Math.max(0.001, segment.shared_end_sec - segment.shared_start_sec);
         const halfWindowSec = Math.min(0.28, Math.max(0.12, duration * 0.04));
@@ -1417,21 +1613,22 @@ export function FeedbackViewer(props: EbsViewerProps) {
           return !previous || previous.title !== marker.title || Math.abs(previous.time - marker.time) > 0.08;
         })
         .filter((marker, index) => feedbackDifficulty !== "beginner" || index < 2);
-    });
-
-    const geminiMarkers = geminiFeedback
-      .filter((move) => passesGeminiFeedbackDifficulty(move, feedbackDifficulty))
-      .map<TimelineFeedbackMarker>((move) => {
-        const start = move.shared_start_sec ?? 0;
-        return {
-          id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label ?? "cue"}`,
-          time: start,
-          kind: "gemini",
-          seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
-          label: "Gemini cue",
-          title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
-        };
       });
+
+    const geminiMarkers = !showMicroTimingFeedback
+      ? []
+      : filteredGeminiFeedback
+          .map<TimelineFeedbackMarker>((move) => {
+            const start = move.shared_start_sec ?? 0;
+            return {
+              id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label ?? "cue"}`,
+              time: start,
+              kind: "gemini",
+              seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
+              label: "Gemini cue",
+              title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
+            };
+          });
 
     return [...visualMarkers, ...geminiMarkers]
       .sort((a, b) => a.time - b.time)
@@ -1439,7 +1636,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
         const previous = markers[index - 1];
         return !previous || previous.id !== marker.id;
       });
-  }, [feedbackDifficulty, geminiFeedback, state.segments, visualFeedbackRows]);
+  }, [feedbackDifficulty, filteredGeminiFeedback, showAngleFeedback, showMicroTimingFeedback, state.segments, visualFeedbackRows]);
 
   const mapArtifactToOverlayTimeline = useCallback(
     (
@@ -1669,6 +1866,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [state.ebs, state.sharedTime, viewMode]);
 
   const activeVisualFeedbackRows = useMemo(() => {
+    if (!showAngleFeedback) return [];
     const segment = activeVideoSegmentIndex >= 0 ? state.segments[activeVideoSegmentIndex] ?? null : null;
     if (!segment || activeVideoSegmentIndex < 0) return [];
 
@@ -1687,9 +1885,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
         if (b.deviation !== a.deviation) return b.deviation - a.deviation;
         return a.timestamp - b.timestamp;
       });
-  }, [activeVideoSegmentIndex, feedbackDifficulty, state.segments, state.sharedTime, visualFeedbackRows]);
+  }, [activeVideoSegmentIndex, feedbackDifficulty, showAngleFeedback, state.segments, state.sharedTime, visualFeedbackRows]);
 
   const activeVisualFeedback = useMemo(() => {
+    if (!showAngleFeedback) return null;
     const segment = activeVideoSegmentIndex >= 0 ? state.segments[activeVideoSegmentIndex] ?? null : null;
     return pickActiveSegmentFeedback({
       feedback: visualFeedbackRows,
@@ -1698,7 +1897,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
       sharedTime: state.sharedTime,
       difficulty: feedbackDifficulty,
     });
-  }, [activeVideoSegmentIndex, feedbackDifficulty, state.segments, state.sharedTime, visualFeedbackRows]);
+  }, [activeVideoSegmentIndex, feedbackDifficulty, showAngleFeedback, state.segments, state.sharedTime, visualFeedbackRows]);
 
   const overlayVisualCue = useMemo(
     () => {
@@ -1747,17 +1946,17 @@ export function FeedbackViewer(props: EbsViewerProps) {
     ],
   );
 
-  const overlayDifferenceScore = useMemo(() => {
+  const liveAngleScore = useMemo(() => {
     if (!sessionMode || overlayDetector !== "yolo" || activeVideoSegmentIndex < 0) return null;
     const referenceSample = getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
     const practiceSample = getNearestSegmentSample(visualUserSamples, activeVideoSegmentIndex, state.sharedTime);
     if (!referenceSample || !practiceSample) return null;
     const referenceSegment = getRenderableSegment(overlayCueReferenceArtifact, activeVideoSegmentIndex);
-    return computeOverlayDifferenceScore({
-      referenceSample,
-      practiceSample,
-      referenceSegment,
-    });
+    const normalization = readOverlayNormalization(referenceSegment);
+    return computeAngleMatchScore(
+      toOverlaySpaceKeypoints(referenceSample, normalization),
+      toOverlaySpaceKeypoints(practiceSample, null),
+    );
   }, [
     activeVideoSegmentIndex,
     getRenderableSegment,
@@ -1768,15 +1967,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
     visualReferenceSamples,
     visualUserSamples,
   ]);
-  const overlayDifferenceMax = 100;
-  const overlayDifferenceTone =
-    overlayDifferenceScore == null
+  const liveAngleScoreTone =
+    liveAngleScore == null
       ? null
-      : overlayDifferenceScore >= 80
-        ? "low"
-        : overlayDifferenceScore >= 70
+      : liveAngleScore >= 82
+        ? "high"
+        : liveAngleScore >= 62
           ? "medium"
-          : "high";
+          : "low";
   const jointAngleDiffBars = useMemo(() => {
     if (!sessionMode || overlayDetector !== "yolo" || activeVideoSegmentIndex < 0) return [];
     const referenceSample = getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
@@ -1798,16 +1996,68 @@ export function FeedbackViewer(props: EbsViewerProps) {
     visualReferenceSamples,
     visualUserSamples,
   ]);
+  const averageFinalAngleScore = useMemo(() => {
+    if (!sessionMode || overlayDetector !== "yolo" || state.segments.length === 0) return null;
+    if (visualFeedbackReadySegments < state.segments.length) return null;
+
+    let total = 0;
+    let count = 0;
+
+    for (let segmentIndex = 0; segmentIndex < state.segments.length; segmentIndex += 1) {
+      const referenceSegment = getRenderableSegment(overlayCueReferenceArtifact, segmentIndex);
+      const normalization = readOverlayNormalization(referenceSegment);
+      const referenceSegmentSamples = visualReferenceSamples.filter((sample) => sample.segmentIndex === segmentIndex);
+      const practiceSegmentSamples = visualUserSamples.filter((sample) => sample.segmentIndex === segmentIndex);
+      const frameCount = Math.min(referenceSegmentSamples.length, practiceSegmentSamples.length);
+      for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+        total += computeAngleMatchScore(
+          toOverlaySpaceKeypoints(referenceSegmentSamples[frameIndex]!, normalization),
+          toOverlaySpaceKeypoints(practiceSegmentSamples[frameIndex]!, null),
+        );
+        count += 1;
+      }
+    }
+
+    if (count <= 0) return null;
+    return Math.max(0, Math.min(100, Math.round(total / count)));
+  }, [
+    getRenderableSegment,
+    overlayCueReferenceArtifact,
+    overlayDetector,
+    sessionMode,
+    state.segments,
+    visualFeedbackReadySegments,
+    visualReferenceSamples,
+    visualUserSamples,
+  ]);
+
+  useEffect(() => {
+    const celebrationKey =
+      sessionId && averageFinalAngleScore != null && visualFeedbackReadySegments >= state.segments.length
+        ? `${sessionId}:${averageFinalAngleScore}`
+        : null;
+    if (!celebrationKey || celebrationKey === finalScoreCelebratedKeyRef.current) {
+      return;
+    }
+
+    finalScoreCelebratedKeyRef.current = celebrationKey;
+    setShowFinalScoreCelebration(true);
+    const timeout = window.setTimeout(() => {
+      setShowFinalScoreCelebration(false);
+    }, 4200);
+    return () => window.clearTimeout(timeout);
+  }, [averageFinalAngleScore, sessionId, state.segments.length, visualFeedbackReadySegments]);
 
   const activeGeminiMove = useMemo(() => {
-    if (!geminiFeedback.length) return null;
+    if (!showMicroTimingFeedback) return null;
+    if (!filteredGeminiFeedback.length) return null;
 
-    return geminiFeedback.find((move) => {
+    return filteredGeminiFeedback.find((move) => {
       const start = move.shared_start_sec ?? 0;
       const end = move.shared_end_sec ?? start;
       return state.sharedTime >= start && state.sharedTime < end;
     });
-  }, [geminiFeedback, state.sharedTime]);
+  }, [filteredGeminiFeedback, showMicroTimingFeedback, state.sharedTime]);
 
   const overlayGeminiCue = useMemo(
     () =>
@@ -1867,6 +2117,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
   return (
     <div className="ebs-viewer-root">
+      {showFinalScoreCelebration && averageFinalAngleScore != null ? (
+        <div className="final-score-pop" aria-live="polite">
+          <div className="final-score-pop-card">
+            <div className="final-score-pop-label">Final Score</div>
+            <div className="final-score-pop-value">{averageFinalAngleScore}</div>
+            <div className="final-score-pop-note">All segments processed</div>
+          </div>
+        </div>
+      ) : null}
       {viewerVisible && (
         <div className="ebs-viewer visible">
           <div className="ebs-top-bar">
@@ -1931,6 +2190,36 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 ) : null}
                 {showFeedback ? (
                   <div className="viewer-controls-right">
+                    <div className="mode-group mode-group-compact feedback-type-group" role="group" aria-label="Feedback type filters">
+                      <div className="mode-switch mode-switch-soft">
+                        <button
+                          type="button"
+                          onClick={() => setShowMicroTimingFeedback((current) => !current)}
+                          className={[
+                            "mode-pill mode-pill-soft mode-pill-compact",
+                            showMicroTimingFeedback ? "active soft" : "",
+                          ].join(" ")}
+                          aria-pressed={showMicroTimingFeedback}
+                          aria-label="Toggle Micro Timing feedback"
+                          title="Toggle Micro Timing feedback"
+                        >
+                          Micro Timing
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowAngleFeedback((current) => !current)}
+                          className={[
+                            "mode-pill mode-pill-soft mode-pill-compact",
+                            showAngleFeedback ? "active soft" : "",
+                          ].join(" ")}
+                          aria-pressed={showAngleFeedback}
+                          aria-label="Toggle Angle feedback"
+                          title="Toggle Angle feedback"
+                        >
+                          Angle
+                        </button>
+                      </div>
+                    </div>
                     <div className="mode-group mode-group-compact feedback-difficulty-group">
                       <div className="mode-switch mode-switch-soft">
                         {FEEDBACK_DIFFICULTY_OPTIONS.map((option) => (
@@ -2153,6 +2442,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     {state.mainPlaybackRate === 1 ? "1x" : state.mainPlaybackRate === 0.5 ? "0.5x" : "0.25x"}
                   </button>
                   <button
+                    className="transport-btn"
+                    onClick={() => setIsMuted((current) => !current)}
+                    title={isMuted ? "Unmute audio" : "Mute audio"}
+                    aria-label={isMuted ? "Unmute audio" : "Mute audio"}
+                  >
+                    {isMuted ? "🔇" : "🔊"}
+                  </button>
+                  <button
                     className="transport-btn practice-btn"
                     onClick={() => {
                       if (state.currentSegmentIndex >= 0) {
@@ -2185,17 +2482,20 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 <div className="timeline-header">
                   <div className="timeline-header-main">
                     <div className="move-tl-label">Section Timeline</div>
-                    {overlayDifferenceScore != null ? (
-                      <div className="timeline-score-chip" aria-live="polite">
-                        <span className="timeline-score-label">Overlay diff</span>
-                        <span className="timeline-score-value">
-                          <span className={`timeline-score-number ${overlayDifferenceTone ?? ""}`}>
-                            {overlayDifferenceScore}
+                    {liveAngleScore != null ? (
+                      <div className="timeline-score-wrap" aria-live="polite">
+                        {jointAngleDiffBars.length > 0 ? <AngleDiffSkeleton joints={jointAngleDiffBars} /> : null}
+                        <div className="timeline-score-chip">
+                          <span className="timeline-score-label">Score</span>
+                          <span className="timeline-score-value">
+                            <span className={`timeline-score-number ${liveAngleScoreTone ?? ""}`}>
+                              {liveAngleScore}
+                            </span>
+                            <span className="timeline-score-max">
+                              /100
+                            </span>
                           </span>
-                          <span className="timeline-score-max">
-                            /{overlayDifferenceMax}
-                          </span>
-                        </span>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -2222,30 +2522,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     </label>
                   </div>
                 </div>
-                {jointAngleDiffBars.length > 0 ? (
-                  <div className="timeline-joint-diff-grid" aria-live="polite">
-                    {jointAngleDiffBars.map((joint) => (
-                      <div
-                        key={joint.key}
-                        className={`timeline-joint-diff-card ${joint.tone}`}
-                        title={joint.deltaDeg == null ? "Angle delta unavailable in this frame" : `${Math.round(joint.deltaDeg)}° off the guide`}
-                      >
-                        <div className="timeline-joint-diff-topline">
-                          <span className="timeline-joint-diff-label">{joint.label}</span>
-                          <span className="timeline-joint-diff-value">
-                            {joint.deltaDeg == null ? "--" : `${Math.round(joint.signalPct)}%`}
-                          </span>
-                        </div>
-                        <div className="timeline-joint-diff-bar">
-                          <span
-                            className={`timeline-joint-diff-fill ${joint.tone}`}
-                            style={{ width: `${joint.deltaDeg == null ? 18 : joint.barPct}%` }}
-                          />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : null}
                 <div className="relative">
                   <div className="timeline-track relative" ref={timelineTrackRef} onClick={handleTimelineClick}>
                       {/* 1. SEGMENTS LAYER */}
@@ -2338,20 +2614,20 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     {segmentMoves[index]?.length ? (
                       overlayDetector === "yolo" ? (
                         <div
-                          className={`text-[10px] ${
-                            activeMoveReadiness.segmentReadyByIndex[index] ? "text-emerald-600" : "text-slate-400"
+                          className={`segment-status ${
+                            activeMoveReadiness.segmentReadyByIndex[index] ? "ready" : "processing"
                           }`}
                         >
                           {activeMoveReadiness.segmentReadyByIndex[index] ? "Section ready" : "Section processing"}
                         </div>
                       ) : (
                         <div
-                          className={`text-[10px] ${
+                          className={`segment-status ${
                             activeMoveReadiness.moveReadyBySegment[index]?.every(Boolean)
-                              ? "text-emerald-600"
+                              ? "ready"
                               : activeMoveReadiness.moveReadyBySegment[index]?.some(Boolean)
-                                ? "text-amber-600"
-                                : "text-slate-400"
+                                ? "partial"
+                                : "processing"
                           }`}
                         >
                           {activeMoveReadiness.moveReadyBySegment[index]?.filter(Boolean).length ?? 0}/
@@ -2436,6 +2712,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   </button>
                   <button className="transport-btn" onClick={seekToNextMove}>
                     ▶▶
+                  </button>
+                  <button
+                    className="transport-btn"
+                    onClick={() => setIsMuted((current) => !current)}
+                    title={isMuted ? "Unmute audio" : "Mute audio"}
+                    aria-label={isMuted ? "Unmute audio" : "Mute audio"}
+                  >
+                    {isMuted ? "🔇" : "🔊"}
                   </button>
                   <button className="transport-btn practice-active" onClick={togglePracticeSpeed}>
                     {practiceSpeedText}

@@ -250,6 +250,10 @@
   gap: 4px;
 }
 
+.viewer-controls-right .feedback-type-group {
+  align-items: center;
+}
+
 .viewer-controls-right .mode-group-label {
   width: 100%;
   text-align: left;
@@ -303,6 +307,10 @@
 .feedback-difficulty-group {
   align-items: flex-start;
   gap: 6px;
+  min-width: fit-content;
+}
+
+.feedback-type-group {
   min-width: fit-content;
 }
 
@@ -1038,6 +1046,13 @@
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
 }
 
+.timeline-score-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
 .timeline-score-label {
   font-size: 10px;
   font-weight: 700;
@@ -1077,88 +1092,91 @@
   color: #dc2626;
 }
 
-.timeline-joint-diff-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
-  gap: 8px;
-  margin-bottom: 10px;
+.timeline-angle-skeleton {
+  width: 54px;
+  min-width: 54px;
+  height: 66px;
+  padding: 4px;
+  border-radius: 18px;
+  background: radial-gradient(circle at top, rgba(255, 255, 255, 0.99), rgba(241, 245, 249, 0.96) 74%);
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 6px 18px rgba(148, 163, 184, 0.14);
 }
 
-.timeline-joint-diff-card {
-  padding: 8px 10px;
-  border-radius: 12px;
-  border: 1px solid #dbeafe;
-  background: rgba(248, 250, 252, 0.96);
+.timeline-angle-skeleton svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
 
-.timeline-joint-diff-card.low {
-  border-color: #a7f3d0;
+.timeline-angle-skeleton-line,
+.timeline-angle-skeleton-node {
+  fill: none;
+  stroke-width: 6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 180ms ease, transform 180ms ease;
 }
 
-.timeline-joint-diff-card.medium {
-  border-color: #fdba74;
+.timeline-angle-skeleton-node {
+  fill: rgba(255, 255, 255, 0.95);
 }
 
-.timeline-joint-diff-card.high {
-  border-color: #fca5a5;
+.final-score-pop {
+  position: fixed;
+  top: 22px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  pointer-events: none;
+  animation: final-score-pop-in 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.timeline-joint-diff-card.unknown {
-  border-color: #cbd5e1;
-  opacity: 0.75;
+.final-score-pop-card {
+  min-width: 220px;
+  padding: 16px 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(14, 165, 233, 0.24);
+  background:
+    radial-gradient(circle at top, rgba(125, 211, 252, 0.45), transparent 42%),
+    linear-gradient(135deg, rgba(14, 116, 144, 0.96), rgba(15, 23, 42, 0.96));
+  box-shadow: 0 20px 48px rgba(15, 23, 42, 0.22);
+  text-align: center;
+  color: #e0f2fe;
 }
 
-.timeline-joint-diff-topline {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.timeline-joint-diff-label {
+.final-score-pop-label {
   font-size: 11px;
   font-weight: 700;
-  color: #334155;
-  text-transform: capitalize;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  opacity: 0.8;
 }
 
-.timeline-joint-diff-value {
-  font-size: 11px;
+.final-score-pop-value {
+  margin-top: 6px;
+  font-size: 48px;
   font-weight: 800;
-  color: #0f172a;
+  line-height: 1;
+  color: #f8fafc;
 }
 
-.timeline-joint-diff-bar {
-  position: relative;
-  height: 8px;
-  border-radius: 999px;
-  background: #e2e8f0;
-  overflow: hidden;
+.final-score-pop-note {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  opacity: 0.88;
 }
 
-.timeline-joint-diff-fill {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #94a3b8;
-  transition: width 160ms ease;
-}
-
-.timeline-joint-diff-fill.low {
-  background: linear-gradient(90deg, #34d399, #10b981);
-}
-
-.timeline-joint-diff-fill.medium {
-  background: linear-gradient(90deg, #fb923c, #f97316);
-}
-
-.timeline-joint-diff-fill.high {
-  background: linear-gradient(90deg, #f87171, #ef4444);
-}
-
-.timeline-joint-diff-fill.unknown {
-  background: #94a3b8;
+@keyframes final-score-pop-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-10px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
 }
 
 .timeline-track,
@@ -1197,6 +1215,17 @@
   color: #0f172a99;
 }
 
+.timeline-segment .seg-num,
+.timeline-segment .seg-time {
+  color: rgba(15, 23, 42, 0.9);
+}
+
+.timeline-segment.active .seg-num,
+.timeline-segment.active .seg-time {
+  color: rgba(255, 255, 255, 0.98);
+  text-shadow: 0 1px 2px rgba(15, 23, 42, 0.18);
+}
+
 .timeline-segment {
   background: var(--seg-inactive);
 }
@@ -1232,6 +1261,48 @@
   background: #d1fae5;
   border-color: #6ee7b7;
   color: #047857;
+}
+
+.segment-status {
+  margin-top: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.22);
+}
+
+.segment-status.processing {
+  color: rgba(15, 23, 42, 0.76);
+}
+
+.segment-status.partial {
+  color: #92400e;
+}
+
+.segment-status.ready {
+  color: #065f46;
+}
+
+.timeline-segment.active .segment-status {
+  text-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+}
+
+.timeline-segment.active .segment-status.processing,
+.timeline-segment.active .segment-status.partial,
+.timeline-segment.active .segment-status.ready {
+  color: #fff;
+}
+
+.seg-chip.active .segment-status.processing,
+.seg-chip.active .segment-status.partial,
+.seg-chip.active .segment-status.ready {
+  color: #fff;
+  text-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+}
+
+.timeline-segment.done .segment-status.ready {
+  color: #065f46;
+  text-shadow: none;
 }
 
 .timeline-playhead,
@@ -1396,7 +1467,7 @@
   margin: 6px auto 0;
   font-size: 10px;
   color: var(--accent2);
-  opacity: 0;
+  opacity: 1;
   transition: opacity 0.15s;
   cursor: pointer;
   background: none;
@@ -1405,7 +1476,40 @@
   border-radius: 999px;
 }
 
+.timeline-segment .seg-practice-btn {
+  opacity: 1;
+  margin-top: 8px;
+  padding: 5px 12px;
+  background: rgba(255, 255, 255, 0.22);
+  color: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  font-weight: 700;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.timeline-segment.active .seg-practice-btn {
+  background: rgba(37, 99, 235, 0.24);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.seg-chip.active .seg-practice-btn {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.timeline-segment.done .seg-practice-btn {
+  background: rgba(255, 255, 255, 0.62);
+  color: #065f46;
+  border-color: rgba(16, 185, 129, 0.2);
+}
+
 .seg-chip:hover .seg-practice-btn {
+  opacity: 1;
+}
+
+.seg-chip.active .seg-practice-btn {
   opacity: 1;
 }
 

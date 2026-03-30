@@ -5,7 +5,6 @@ import { signOut, useSession } from 'next-auth/react';
 import Link from 'next/link';
 import Image from 'next/image';
 
-const vibeTags = ['Pose trail', 'Beat check', 'Flow notes'];
 const motionBadges = ['8-count', 'On beat', 'Replay mode'];
 const beatBars = [30, 58, 38, 72, 44, 62, 34];
 
@@ -66,14 +65,16 @@ export default function Home() {
       </div>
 
       <header className="relative z-10 flex items-center justify-between px-6 py-6 md:px-10">
-        <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-2xl border border-white/70 bg-white/80 shadow-[0_14px_30px_rgba(14,165,233,0.12)] backdrop-blur">
-            <span className="text-sm font-black uppercase tracking-[0.2em] text-sky-700">TF</span>
-          </div>
-          <div className="hidden md:block">
-            <p className="text-sm font-semibold tracking-[0.24em] text-slate-500 uppercase">TempoFlow</p>
-          </div>
-        </div>
+        <Link href="/" className="flex items-center">
+          <Image
+            src="/logo.png"
+            alt="TempoFlow"
+            width={168}
+            height={52}
+            className="h-10 w-auto md:h-12"
+            priority
+          />
+        </Link>
 
         <div className="flex items-center gap-3">
           {session ? (
@@ -112,17 +113,8 @@ export default function Home() {
       </header>
 
       <main className="relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-10 pt-4 md:px-10 md:pb-14">
-        <section className="mx-auto grid w-full max-w-6xl items-center gap-10 lg:grid-cols-[1.1fr_0.9fr]">
+        <section className="mx-auto grid w-full max-w-6xl items-center gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
           <div className="relative">
-            <div className="home-float-slow absolute -left-6 top-6 hidden h-24 w-24 rounded-[2rem] border border-white/80 bg-white/70 shadow-[0_20px_40px_rgba(56,189,248,0.14)] backdrop-blur lg:flex lg:items-center lg:justify-center">
-              <svg className="h-10 w-10 text-sky-500" viewBox="0 0 64 64" fill="none" aria-hidden="true">
-                <path d="M12 44C21 39 26 27 26 17" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
-                <path d="M29 16C31 13 37 11 41 15C46 20 44 29 36 34L27 39" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
-                <path d="M25 34L36 49" stroke="currentColor" strokeWidth="4" strokeLinecap="round" />
-                <circle cx="28" cy="10" r="5" fill="currentColor" />
-              </svg>
-            </div>
-
             <div className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/60 p-6 shadow-[0_30px_90px_rgba(56,189,248,0.16)] backdrop-blur-xl md:p-8">
               <div className="flex flex-wrap items-center gap-3">
                 <span className="rounded-full bg-slate-950 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.3em] text-cyan-200">
@@ -163,6 +155,9 @@ export default function Home() {
                 <p className="mt-3 text-sm font-medium uppercase tracking-[0.32em] text-sky-700/80">
                   Clean takes. Sharp feedback.
                 </p>
+                <p className="mt-5 text-base text-slate-600 md:text-lg">
+                  Beat sync. Segment replay. Overlay compare.
+                </p>
 
                 <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
                   <Link
@@ -178,28 +173,17 @@ export default function Home() {
                     {session ? 'Open Dashboard' : 'Log In'}
                   </Link>
                 </div>
-
-                <div className="mt-8 flex flex-wrap justify-center gap-2">
-                  {vibeTags.map((tag) => (
-                    <span
-                      key={tag}
-                      className="rounded-full border border-sky-100 bg-white/80 px-4 py-2 text-sm font-medium text-slate-600 shadow-sm"
-                    >
-                      {tag}
-                    </span>
-                  ))}
-                </div>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-1">
+          <div className="grid gap-4">
             <div className="home-float-fast rounded-[1.75rem] border border-slate-950/8 bg-slate-950 px-5 py-5 text-white shadow-[0_24px_50px_rgba(15,23,42,0.2)]">
               <div className="mb-4 flex items-center justify-between">
                 <span className="rounded-full bg-white/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-cyan-200">
                   Cue
                 </span>
-                <span className="text-xs uppercase tracking-[0.28em] text-white/45">Live</span>
+                <span className="text-xs uppercase tracking-[0.28em] text-white/45">Sync</span>
               </div>
               <p className="text-2xl font-black tracking-[-0.04em]">Move cleaner</p>
               <div className="mt-5 flex items-end gap-2">
@@ -224,9 +208,13 @@ export default function Home() {
               </div>
               <p className="mt-5 text-2xl font-black tracking-[-0.04em] text-slate-950">See the beat land</p>
               <div className="mt-5 rounded-[1.5rem] bg-[linear-gradient(135deg,#e0f2fe,#ffffff)] p-4">
-                <div className="flex items-center gap-2">
-                  <span className="h-2.5 w-2.5 rounded-full bg-sky-500" />
-                  <span className="text-sm font-medium text-slate-600">Pose trace locked</span>
+                <div className="flex flex-wrap gap-2">
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-sky-700 shadow-sm">
+                    128 BPM
+                  </span>
+                  <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-700 shadow-sm">
+                    6 segments
+                  </span>
                 </div>
                 <div className="mt-4 h-20 rounded-[1.2rem] bg-[radial-gradient(circle_at_top,#bae6fd_0%,#eff6ff_58%,#ffffff_100%)]" />
               </div>
@@ -235,7 +223,7 @@ export default function Home() {
             <div className="rounded-[1.75rem] border border-white/70 bg-[linear-gradient(135deg,rgba(255,255,255,0.95),rgba(240,249,255,0.78))] p-5 shadow-[0_22px_48px_rgba(125,211,252,0.14)] backdrop-blur">
               <div className="flex items-center justify-between">
                 <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-500">
-                  Energy
+                  Overlay
                 </span>
                 <svg className="home-spin-slow h-8 w-8 text-sky-400" viewBox="0 0 48 48" fill="none" aria-hidden="true">
                   <path d="M24 4C18 12 18 18 24 24C30 30 30 36 24 44" stroke="currentColor" strokeWidth="3.5" strokeLinecap="round" />
@@ -244,16 +232,9 @@ export default function Home() {
               </div>
               <div className="mt-5 space-y-3">
                 <p className="text-2xl font-black tracking-[-0.04em] text-slate-950">Stay in pocket</p>
-                <div className="flex gap-2">
-                  {['L', 'R', 'Spin'].map((cue) => (
-                    <span
-                      key={cue}
-                      className="rounded-full bg-slate-950 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-cyan-100"
-                    >
-                      {cue}
-                    </span>
-                  ))}
-                </div>
+                <span className="inline-flex rounded-full bg-slate-950 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.22em] text-cyan-100">
+                  YOLO
+                </span>
               </div>
             </div>
           </div>

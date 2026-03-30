@@ -240,21 +240,20 @@ function SegmentedVideoOverlay(props: {
     ov.loop = false;
 
     let cancelled = false;
+    let raf = 0;
+    let rvfcHandle = 0;
+    const rvfc = (base as HTMLVideoElement & {
+      requestVideoFrameCallback?: (
+        callback: (now: number, metadata: { mediaTime?: number }) => void,
+      ) => number;
+      cancelVideoFrameCallback?: (handle: number) => void;
+    }).requestVideoFrameCallback;
+    const cancelRvfc = (base as HTMLVideoElement & { cancelVideoFrameCallback?: (handle: number) => void })
+      .cancelVideoFrameCallback;
 
-    const applyPlaybackState = async () => {
+    const sync = (forcedBaseTime?: number) => {
       if (cancelled) return;
-      if (base.paused) {
-        if (!ov.paused) ov.pause();
-        return;
-      }
-      if (ov.paused) {
-        await ov.play().catch(() => undefined);
-      }
-    };
-
-    const sync = async () => {
-      if (cancelled) return;
-      const baseTime = base.currentTime || 0;
+      const baseTime = forcedBaseTime ?? (base.currentTime || 0);
       const segment = findActiveSegment(segments, baseTime);
 
       if (!segment?.video) {
@@ -263,7 +262,6 @@ function SegmentedVideoOverlay(props: {
         ov.pause();
         ov.style.visibility = "hidden";
         setSegmentStyle(getSegmentStyle?.(null));
-        requestAnimationFrame(() => void sync());
         return;
       }
 
@@ -291,8 +289,9 @@ function SegmentedVideoOverlay(props: {
         ov.playbackRate = base.playbackRate || 1;
       }
 
-      await applyPlaybackState();
-      requestAnimationFrame(() => void sync());
+      if (!ov.paused) {
+        ov.pause();
+      }
     };
 
     const onLoadedMetadata = () => {
@@ -302,7 +301,7 @@ function SegmentedVideoOverlay(props: {
       } catch {
         return;
       }
-      void applyPlaybackState();
+      ov.pause();
     };
 
     const onSeeked = () => {
@@ -314,20 +313,48 @@ function SegmentedVideoOverlay(props: {
       } catch {
         return;
       }
+      ov.pause();
+    };
+    const onBasePauseLike = () => {
+      ov.pause();
+    };
+
+    const onVideoFrame = (_now: number, metadata: { mediaTime?: number }) => {
+      if (cancelled) return;
+      sync(metadata.mediaTime ?? base.currentTime ?? 0);
+      rvfcHandle = rvfc ? rvfc.call(base, onVideoFrame) : 0;
+    };
+
+    const onRaf = () => {
+      if (cancelled) return;
+      sync();
+      raf = window.requestAnimationFrame(onRaf);
     };
 
     ov.addEventListener("loadedmetadata", onLoadedMetadata);
     base.addEventListener("seeked", onSeeked);
     base.addEventListener("seeking", onSeeked);
+    base.addEventListener("pause", onBasePauseLike);
+    base.addEventListener("waiting", onBasePauseLike);
+    base.addEventListener("stalled", onBasePauseLike);
 
-    requestAnimationFrame(() => void sync());
+    if (rvfc) {
+      rvfcHandle = rvfc.call(base, onVideoFrame);
+    } else {
+      raf = window.requestAnimationFrame(onRaf);
+    }
 
     return () => {
       cancelled = true;
+      if (cancelRvfc && rvfcHandle) cancelRvfc.call(base, rvfcHandle);
+      if (raf) window.cancelAnimationFrame(raf);
       ov.pause();
       ov.removeEventListener("loadedmetadata", onLoadedMetadata);
       base.removeEventListener("seeked", onSeeked);
       base.removeEventListener("seeking", onSeeked);
+      base.removeEventListener("pause", onBasePauseLike);
+      base.removeEventListener("waiting", onBasePauseLike);
+      base.removeEventListener("stalled", onBasePauseLike);
     };
   }, [segments, videoRef]);
 

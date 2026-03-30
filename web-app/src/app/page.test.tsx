@@ -49,11 +49,9 @@ describe('Home page', () => {
     render(React.createElement(Home));
 
     expect(screen.getByText(/catch the groove/i)).toBeInTheDocument();
-    expect(screen.getByText(/pose trail/i)).toBeInTheDocument();
-    expect(screen.getByText(/beat check/i)).toBeInTheDocument();
-    expect(screen.getByText(/flow notes/i)).toBeInTheDocument();
     expect(screen.getByText(/move cleaner/i)).toBeInTheDocument();
     expect(screen.getByText(/stay in pocket/i)).toBeInTheDocument();
+    expect(screen.getByText(/^yolo$/i)).toBeInTheDocument();
   });
 
   it('shows dashboard and sign out controls for signed in users', () => {
