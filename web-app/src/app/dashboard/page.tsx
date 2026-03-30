@@ -12,7 +12,6 @@ import {
   type TempoFlowSession,
 } from '../../lib/sessionStorage';
 import {
-  ensureSessionProcessing,
   pauseSessionProcessing,
   resumeSessionProcessing,
 } from '../../lib/sessionProcessing';
@@ -96,7 +95,6 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<TempoFlowSession[]>(() => getSessions());
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
-  const queuedProcessingIdsRef = useRef<Set<string>>(new Set());
   const loadingPreviewIdsRef = useRef<Set<string>>(new Set());
   const previewUrlsRef = useRef<Record<string, string>>({});
 
@@ -110,24 +108,6 @@ export default function DashboardPage() {
   useEffect(() => {
     previewUrlsRef.current = previewUrls;
   }, [previewUrls]);
-
-  useEffect(() => {
-    const nextQueuedIds = new Set<string>();
-
-    sessions.forEach((session) => {
-      if (!isSessionInProcess(session)) return;
-      nextQueuedIds.add(session.id);
-      if (queuedProcessingIdsRef.current.has(session.id)) return;
-      queuedProcessingIdsRef.current.add(session.id);
-      void ensureSessionProcessing(session.id);
-    });
-
-    queuedProcessingIdsRef.current.forEach((sessionId) => {
-      if (!nextQueuedIds.has(sessionId)) {
-        queuedProcessingIdsRef.current.delete(sessionId);
-      }
-    });
-  }, [sessions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -230,8 +210,6 @@ export default function DashboardPage() {
                           className="h-full w-full object-cover"
                           muted
                           playsInline
-                          autoPlay
-                          loop
                           preload="metadata"
                         />
                       ) : (
@@ -257,7 +235,7 @@ export default function DashboardPage() {
 
                       {isProcessing ? (
                         <p className="mt-3 text-sm text-amber-700">
-                          Processing continues in the background while you browse.
+                          Processing is in progress for this session.
                         </p>
                       ) : null}
                       {session.ebsStatus === 'paused' ? (

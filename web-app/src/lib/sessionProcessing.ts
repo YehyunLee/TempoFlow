@@ -14,7 +14,7 @@ import {
   getPublicEbsProcessorUrl,
   isLocalDevProcessorUrl,
 } from "./ebsProcessorUrl";
-import { getGeminiProcessableSegmentCount, mergePostProcessMeta } from "./sessionPostProcessing";
+import { mergePostProcessMeta } from "./sessionPostProcessing";
 
 const MAX_EBS_PROCESSING_SECONDS = 5 * 60;
 const PROCESSING_POLL_MS = 1200;
@@ -106,22 +106,13 @@ function getFriendlyProcessorError(message: string, processorUrl: string) {
 async function adoptArtifact(sessionId: string, data: EbsData) {
   userPausedSessionIds.delete(sessionId);
   const currentSession = getSession(sessionId);
-  const shouldRemainPaused = currentSession?.ebsStatus === "paused";
   await storeSessionEbs(sessionId, data);
-  const nextMeta = buildEbsMeta(data, currentSession?.ebsMeta);
   updateSession(sessionId, {
     status: "analyzed",
-    ebsStatus: shouldRemainPaused ? "paused" : "processing",
+    ebsStatus: "ready",
     ebsErrorMessage: undefined,
     errorMessage: undefined,
-    ebsMeta: {
-      ...nextMeta,
-      postProcessStatus: shouldRemainPaused ? "paused" : "processing",
-      yoloReadySegments: currentSession?.ebsMeta?.yoloReadySegments ?? 0,
-      visualReadySegments: currentSession?.ebsMeta?.visualReadySegments ?? 0,
-      geminiReadySegments: currentSession?.ebsMeta?.geminiReadySegments ?? 0,
-      geminiTotalSegments: getGeminiProcessableSegmentCount(data),
-    },
+    ebsMeta: buildEbsMeta(data, currentSession?.ebsMeta),
   });
 }
 

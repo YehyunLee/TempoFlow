@@ -24,7 +24,6 @@ import {
   pauseSessionProcessing,
   resumeSessionProcessing,
 } from "../../lib/sessionProcessing";
-import { isSessionPostProcessComplete } from "../../lib/sessionPostProcessing";
 
 const LOADING_STEPS = [
   {
@@ -110,24 +109,19 @@ function AnalysisPageContent() {
           setEbsData(cachedEbs);
           setPageError(null);
           setElapsedSeconds(0);
-          const shouldMarkReady = isSessionPostProcessComplete(nextSession);
           const updatedSession =
             updateSession(sessionId, {
               status: "analyzed",
-              ebsStatus: shouldMarkReady ? "ready" : nextSession.ebsStatus === "paused" ? "paused" : "processing",
+              ebsStatus: "ready",
               ebsErrorMessage: undefined,
               errorMessage: undefined,
-              ebsMeta: buildEbsMeta(cachedEbs, nextSession.ebsMeta),
+              ebsMeta: buildEbsMeta(cachedEbs),
             }) ?? nextSession;
           setSession(updatedSession);
           setStatusMessage(
-            shouldMarkReady
-              ? (
-                  cachedEbs.segments.length
-                    ? "Cached EBS session ready."
-                    : "Cached EBS result loaded. This clip aligned successfully but did not produce any playable segments."
-                )
-              : "Cached EBS loaded. Continuing segmentation and feedback processing in the background.",
+            cachedEbs.segments.length
+              ? "Cached EBS session ready."
+              : "Cached EBS result loaded. This clip aligned successfully but did not produce any playable segments.",
           );
         } else {
           setStatusMessage(
@@ -231,7 +225,7 @@ function AnalysisPageContent() {
       return;
     }
     if (session.ebsStatus === "processing") {
-      setStatusMessage("Matching beat, timing, and replay moments in the background.");
+      setStatusMessage("Matching beat, timing, and replay moments.");
       return;
     }
     if (session.ebsStatus === "ready" && session.ebsMeta?.segmentCount != null) {

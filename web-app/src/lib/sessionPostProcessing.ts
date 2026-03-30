@@ -22,21 +22,9 @@ export function mergePostProcessMeta(
 }
 
 export function isSessionPostProcessComplete(session: TempoFlowSession | null | undefined) {
-  const meta = session?.ebsMeta;
-  if (!meta) return false;
-  if (meta.postProcessStatus === "ready") return true;
-
-  const totalSegments = Math.max(0, meta.segmentCount ?? 0);
-  const geminiTotalSegments = Math.max(0, meta.geminiTotalSegments ?? totalSegments);
-  const yoloReady = meta.yoloReadySegments ?? 0;
-  const visualReady = meta.visualReadySegments ?? 0;
-  const geminiReady = meta.geminiReadySegments ?? 0;
-
-  if (totalSegments > 0 && yoloReady >= totalSegments && visualReady >= totalSegments && geminiReady >= geminiTotalSegments) {
-    return true;
-  }
-
-  return meta.finalScore != null && totalSegments > 0;
+  if (!session) return false;
+  if (session.ebsStatus === "ready") return true;
+  return session.ebsMeta?.finalScore != null && (session.ebsMeta?.segmentCount ?? 0) > 0;
 }
 
 export function shouldTreatSessionAsInProcess(session: TempoFlowSession | null | undefined) {
@@ -44,9 +32,5 @@ export function shouldTreatSessionAsInProcess(session: TempoFlowSession | null |
   if (session.ebsStatus === "paused" || session.ebsStatus === "error") return false;
   if (session.ebsStatus === "processing") return true;
   if (session.status === "analyzing") return true;
-  if (session.ebsMeta?.postProcessStatus === "processing") return true;
-  if (session.ebsMeta && !isSessionPostProcessComplete(session) && (session.ebsStatus === "ready" || session.status === "analyzed")) {
-    return true;
-  }
   return false;
 }
