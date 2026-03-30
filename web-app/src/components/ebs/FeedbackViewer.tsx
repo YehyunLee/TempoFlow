@@ -40,7 +40,13 @@ import {
   getFeedbackSegment,
   hashEbsData,
 } from "../../lib/feedbackStorage";
-import { jointAnglesDegFromKeypoints, type DanceFeedback, type PoseKeypoint, type SampledPoseFrame } from "../../lib/bodyPix";
+import {
+  JOINT_ANGLES,
+  jointAnglesDegFromKeypoints,
+  type DanceFeedback,
+  type PoseKeypoint,
+  type SampledPoseFrame,
+} from "../../lib/bodyPix";
 import { normalizeKeypoints } from "../../lib/bodyPix/geometry";
 import { buildVisualFeedbackKey, getVisualFeedbackRun, storeVisualFeedbackRun } from "../../lib/visualFeedbackStorage";
 import {
@@ -132,6 +138,14 @@ type PoseBounds = {
   area: number;
   anchorX: number;
   anchorY: number;
+};
+
+type JointAngleDiffBar = {
+  key: string;
+  label: string;
+  deltaDeg: number | null;
+  percent: number;
+  tone: "low" | "medium" | "high" | "unknown";
 };
 
 function isFiniteNumber(value: unknown): value is number {
@@ -282,6 +296,41 @@ function computeAngleDifferenceScore(referenceKeypoints: PoseKeypoint[], practic
 
   if (count <= 0) return 0;
   return clamp01((total / count) / 70);
+}
+
+function smallestAngleDifferenceDegrees(a: number, b: number) {
+  let delta = Math.abs(a - b);
+  if (delta > 180) delta = 360 - delta;
+  return delta;
+}
+
+function getJointAngleDiffBars(referenceKeypoints: PoseKeypoint[], practiceKeypoints: PoseKeypoint[]): JointAngleDiffBar[] {
+  const referenceAngles = jointAnglesDegFromKeypoints(referenceKeypoints);
+  const practiceAngles = jointAnglesDegFromKeypoints(practiceKeypoints);
+
+  return JOINT_ANGLES.map((joint) => {
+    const referenceAngle = referenceAngles[joint.name];
+    const practiceAngle = practiceAngles[joint.name];
+    if (!isFiniteNumber(referenceAngle) || !isFiniteNumber(practiceAngle)) {
+      return {
+        key: joint.name,
+        label: joint.name,
+        deltaDeg: null,
+        percent: 0,
+        tone: "unknown",
+      } satisfies JointAngleDiffBar;
+    }
+
+    const deltaDeg = smallestAngleDifferenceDegrees(referenceAngle, practiceAngle);
+    const percent = clamp01(deltaDeg / 90) * 100;
+    return {
+      key: joint.name,
+      label: joint.name,
+      deltaDeg,
+      percent,
+      tone: deltaDeg >= 35 ? "high" : deltaDeg >= 15 ? "medium" : "low",
+    } satisfies JointAngleDiffBar;
+  });
 }
 
 function computeOverlayDifferenceScore(params: {
@@ -1643,6 +1692,27 @@ export function FeedbackViewer(props: EbsViewerProps) {
   ]);
   const overlayDifferenceTone =
     overlayDifferenceScore == null ? null : overlayDifferenceScore >= 67 ? "high" : overlayDifferenceScore >= 34 ? "medium" : "low";
+  const jointAngleDiffBars = useMemo(() => {
+    if (!sessionMode || overlayDetector !== "yolo" || activeVideoSegmentIndex < 0) return [];
+    const referenceSample = getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
+    const practiceSample = getNearestSegmentSample(visualUserSamples, activeVideoSegmentIndex, state.sharedTime);
+    if (!referenceSample || !practiceSample) return [];
+    const referenceSegment = getRenderableSegment(overlayCueReferenceArtifact, activeVideoSegmentIndex);
+    const normalization = readOverlayNormalization(referenceSegment);
+    return getJointAngleDiffBars(
+      toOverlaySpaceKeypoints(referenceSample, normalization),
+      toOverlaySpaceKeypoints(practiceSample, null),
+    );
+  }, [
+    activeVideoSegmentIndex,
+    getRenderableSegment,
+    overlayCueReferenceArtifact,
+    overlayDetector,
+    sessionMode,
+    state.sharedTime,
+    visualReferenceSamples,
+    visualUserSamples,
+  ]);
 
   const activeGeminiMove = useMemo(() => {
     if (!geminiFeedback.length) return null;
@@ -2063,6 +2133,26 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     </label>
                   </div>
                 </div>
+                {jointAngleDiffBars.length > 0 ? (
+                  <div className="timeline-joint-diff-grid" aria-live="polite">
+                    {jointAngleDiffBars.map((joint) => (
+                      <div key={joint.key} className={`timeline-joint-diff-card ${joint.tone}`}>
+                        <div className="timeline-joint-diff-topline">
+                          <span className="timeline-joint-diff-label">{joint.label}</span>
+                          <span className="timeline-joint-diff-value">
+                            {joint.deltaDeg == null ? "--" : `${Math.round(joint.deltaDeg)}°`}
+                          </span>
+                        </div>
+                        <div className="timeline-joint-diff-bar">
+                          <span
+                            className={`timeline-joint-diff-fill ${joint.tone}`}
+                            style={{ width: `${joint.deltaDeg == null ? 18 : Math.max(8, joint.percent)}%` }}
+                          />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
                 <div className="relative">
                   <div className="timeline-track relative" ref={timelineTrackRef} onClick={handleTimelineClick}>
                       {/* 1. SEGMENTS LAYER */}

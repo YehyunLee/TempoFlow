@@ -426,18 +426,26 @@ describe("FeedbackViewer", () => {
     expect(container.querySelector(".timeline-feedback-marker.gemini.minor")).not.toBeNull();
   });
 
-  it("shows an overlay difference score above the section timeline when yolo samples are available", async () => {
-    const makeSample = (segmentIndex: number, timestamp: number, xOffset: number) => ({
+  it("shows an overlay difference score and joint angle bars above the section timeline when yolo samples are available", async () => {
+    const makeSample = (
+      segmentIndex: number,
+      timestamp: number,
+      overrides: Record<number, { x: number; y: number }>,
+    ) => ({
       timestamp,
       segmentIndex,
       frameWidth: 64,
       frameHeight: 48,
-      keypoints: Array.from({ length: 17 }, (_, index) => ({
-        name: `kp-${index}`,
-        x: 18 + index * 0.6 + xOffset,
-        y: 10 + index * 0.7,
-        score: 0.95,
-      })),
+      keypoints: Array.from({ length: 17 }, (_, index) => {
+        const fallback = { x: 20 + index * 0.4, y: 8 + index * 0.5 };
+        const point = overrides[index] ?? fallback;
+        return {
+          name: `kp-${index}`,
+          x: point.x,
+          y: point.y,
+          score: 0.95,
+        };
+      }),
       partCoverage: {
         head: 1,
         arms: 1,
@@ -449,8 +457,40 @@ describe("FeedbackViewer", () => {
 
     buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
       feedback: [],
-      refSamples: [makeSample(0, 4.5, 0)],
-      userSamples: [makeSample(0, 4.5, 2)],
+      refSamples: [
+        makeSample(0, 4.5, {
+          0: { x: 32, y: 8 },
+          5: { x: 24, y: 16 },
+          6: { x: 40, y: 16 },
+          7: { x: 22, y: 24 },
+          8: { x: 42, y: 24 },
+          9: { x: 20, y: 34 },
+          10: { x: 44, y: 34 },
+          11: { x: 26, y: 30 },
+          12: { x: 38, y: 30 },
+          13: { x: 27, y: 40 },
+          14: { x: 37, y: 40 },
+          15: { x: 28, y: 46 },
+          16: { x: 36, y: 46 },
+        }),
+      ],
+      userSamples: [
+        makeSample(0, 4.5, {
+          0: { x: 33, y: 8 },
+          5: { x: 25, y: 16 },
+          6: { x: 41, y: 16 },
+          7: { x: 23, y: 24 },
+          8: { x: 43, y: 24 },
+          9: { x: 29, y: 28 },
+          10: { x: 47, y: 38 },
+          11: { x: 27, y: 30 },
+          12: { x: 39, y: 30 },
+          13: { x: 29, y: 40 },
+          14: { x: 35, y: 39 },
+          15: { x: 32, y: 46 },
+          16: { x: 34, y: 45 },
+        }),
+      ],
     });
 
     const { container } = render(
@@ -465,6 +505,7 @@ describe("FeedbackViewer", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Overlay diff")).toBeInTheDocument();
+      expect(screen.getByText("left elbow")).toBeInTheDocument();
       expect(container.querySelector(".timeline-score-chip")).not.toBeNull();
     });
   });
