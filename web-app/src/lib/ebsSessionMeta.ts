@@ -10,5 +10,10 @@ export function buildEbsMeta(data: EbsData, previousMeta?: EbsSessionMeta): EbsS
     generatedAt: new Date().toISOString(),
     processingStartedAt: previousMeta?.processingStartedAt,
     finalScore: previousMeta?.finalScore,
+    postProcessStatus: previousMeta?.postProcessStatus,
+    yoloReadySegments: previousMeta?.yoloReadySegments,
+    visualReadySegments: previousMeta?.visualReadySegments,
+    geminiReadySegments: previousMeta?.geminiReadySegments,
+    geminiTotalSegments: previousMeta?.geminiTotalSegments,
   };
 }

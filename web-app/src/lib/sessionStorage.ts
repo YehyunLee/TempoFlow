@@ -55,6 +55,11 @@ export interface EbsSessionMeta {
   generatedAt: string;
   processingStartedAt?: string;
   finalScore?: number;
+  postProcessStatus?: 'idle' | 'processing' | 'paused' | 'ready' | 'error';
+  yoloReadySegments?: number;
+  visualReadySegments?: number;
+  geminiReadySegments?: number;
+  geminiTotalSegments?: number;
 }
 
 export interface TempoFlowSession {

@@ -883,7 +883,12 @@ def _clip_overlay_to_mask(overlay: Any, mask_u8: Any | None) -> Any:
 
 
 def _weights_path(filename: str) -> Path:
-    # A5/src -> A5 -> repo root
+    # Prefer weights bundled directly with A5 so the EB source bundle is self-contained.
+    a5_bundled = (Path(__file__).resolve().parents[1] / "models" / filename).resolve()
+    if a5_bundled.exists():
+        return a5_bundled
+
+    # Fallback for local monorepo layouts where models live under the web app.
     return (Path(__file__).resolve().parents[2] / "web-app" / "public" / "models" / filename).resolve()
 
 

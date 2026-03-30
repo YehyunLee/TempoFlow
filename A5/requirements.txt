@@ -13,7 +13,7 @@ pandas
 httpx
 certifi
 tqdm
-opencv-python
+opencv-python-headless
 torch==2.11.0
 torchvision==0.26.0
 ultralytics

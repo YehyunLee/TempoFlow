@@ -225,7 +225,7 @@ function AnalysisPageContent() {
       return;
     }
     if (session.ebsStatus === "processing") {
-      setStatusMessage("Matching beat, timing, and replay moments in the background.");
+      setStatusMessage("Matching beat, timing, and replay moments.");
       return;
     }
     if (session.ebsStatus === "ready" && session.ebsMeta?.segmentCount != null) {

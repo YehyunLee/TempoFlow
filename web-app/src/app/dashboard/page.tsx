@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 
 import { AppHeader } from '../../components/AppHeader';
@@ -12,10 +12,13 @@ import {
   type TempoFlowSession,
 } from '../../lib/sessionStorage';
 import {
-  ensureSessionProcessing,
   pauseSessionProcessing,
   resumeSessionProcessing,
 } from '../../lib/sessionProcessing';
+import {
+  isSessionPostProcessComplete,
+  shouldTreatSessionAsInProcess,
+} from '../../lib/sessionPostProcessing';
 import { deleteSessionVideos, getSessionVideo } from '../../lib/videoStorage';
 
 function formatUpdatedAt(value: string) {
@@ -32,10 +35,7 @@ function getSessionScore(session: TempoFlowSession) {
 }
 
 function isSessionInProcess(session: TempoFlowSession) {
-  return (
-    session.ebsStatus === 'processing' ||
-    (session.status === 'analyzing' && session.ebsStatus !== 'paused' && session.ebsStatus !== 'ready' && session.ebsStatus !== 'error')
-  );
+  return shouldTreatSessionAsInProcess(session);
 }
 
 function canResumeSession(session: TempoFlowSession) {
@@ -45,7 +45,7 @@ function canResumeSession(session: TempoFlowSession) {
 function SessionStatusChip({ session }: { session: TempoFlowSession }) {
   const score = getSessionScore(session);
 
-  if (session.ebsStatus === 'ready' && score != null) {
+  if (isSessionPostProcessComplete(session) && score != null) {
     return (
       <div className="rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
         Score {score}/100
@@ -53,7 +53,7 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
     );
   }
 
-  if (session.ebsStatus === 'ready') {
+  if (isSessionPostProcessComplete(session)) {
     return (
       <div className="rounded-full bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700">
         Ready
@@ -94,7 +94,9 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
 
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<TempoFlowSession[]>(() => getSessions());
-  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const loadingPreviewIdsRef = useRef<Set<string>>(new Set());
+  const previewUrlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     const refresh = () => setSessions(getSessions());
@@ -104,54 +106,68 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    sessions.forEach((session) => {
-      if (isSessionInProcess(session)) {
-        void ensureSessionProcessing(session.id);
-      }
+    previewUrlsRef.current = previewUrls;
+  }, [previewUrls]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const sessionIds = new Set(sessions.map((session) => session.id));
+
+    setPreviewUrls((previous) => {
+      const next = { ...previous };
+      let changed = false;
+      Object.keys(next).forEach((sessionId) => {
+        if (sessionIds.has(sessionId)) return;
+        URL.revokeObjectURL(next[sessionId]!);
+        delete next[sessionId];
+        loadingPreviewIdsRef.current.delete(sessionId);
+        changed = true;
+      });
+      return changed ? next : previous;
     });
+
+    sessions.forEach((session) => {
+      if (previewUrlsRef.current[session.id]) return;
+      if (loadingPreviewIdsRef.current.has(session.id)) return;
+      loadingPreviewIdsRef.current.add(session.id);
+
+      void (async () => {
+        try {
+          const file = await getSessionVideo(session.id, 'practice');
+          if (!file || cancelled) return;
+          const url = URL.createObjectURL(file);
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          setPreviewUrls((previous) => {
+            if (previous[session.id] === url) return previous;
+            const next = { ...previous, [session.id]: url };
+            const prior = previous[session.id];
+            if (prior && prior !== url) {
+              URL.revokeObjectURL(prior);
+            }
+            return next;
+          });
+        } catch {
+          // Keep the fallback placeholder when a preview cannot be generated.
+        } finally {
+          loadingPreviewIdsRef.current.delete(session.id);
+        }
+      })();
+    });
+
+    return () => {
+      cancelled = true;
+    };
   }, [sessions]);
 
   useEffect(() => {
-    let active = true;
-    const createdUrls: string[] = [];
-
-    const loadThumbnails = async () => {
-      const entries = await Promise.all(
-        sessions.map(async (session) => {
-          try {
-            const file = await getSessionVideo(session.id, 'practice');
-            if (!file) return null;
-            const url = URL.createObjectURL(file);
-            return { id: session.id, url };
-          } catch {
-            return null;
-          }
-        }),
-      );
-
-      if (!active) {
-        entries.forEach((entry) => {
-          if (entry) URL.revokeObjectURL(entry.url);
-        });
-        return;
-      }
-
-      const nextMap: Record<string, string> = {};
-      entries.forEach((entry) => {
-        if (!entry) return;
-        createdUrls.push(entry.url);
-        nextMap[entry.id] = entry.url;
-      });
-      setThumbnailUrls(nextMap);
-    };
-
-    void loadThumbnails();
-
     return () => {
-      active = false;
-      createdUrls.forEach((url) => URL.revokeObjectURL(url));
+      Object.values(previewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
+      previewUrlsRef.current = {};
     };
-  }, [sessions]);
+  }, []);
 
   const handleDelete = async (sessionId: string) => {
     await Promise.all([deleteSessionVideos(sessionId), deleteSessionEbs(sessionId)]);
@@ -188,9 +204,9 @@ export default function DashboardPage() {
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="relative aspect-video overflow-hidden rounded-2xl bg-slate-100 lg:w-52 lg:flex-none">
-                      {thumbnailUrls[session.id] ? (
+                      {previewUrls[session.id] ? (
                         <video
-                          src={thumbnailUrls[session.id]}
+                          src={previewUrls[session.id]}
                           className="h-full w-full object-cover"
                           muted
                           playsInline
@@ -219,7 +235,7 @@ export default function DashboardPage() {
 
                       {isProcessing ? (
                         <p className="mt-3 text-sm text-amber-700">
-                          Processing continues in the background while you browse.
+                          Processing is in progress for this session.
                         </p>
                       ) : null}
                       {session.ebsStatus === 'paused' ? (
