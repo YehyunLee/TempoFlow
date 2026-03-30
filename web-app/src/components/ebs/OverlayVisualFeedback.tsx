@@ -125,8 +125,10 @@ export function computeOverlayCardPlacement(params: {
 export function OverlayVisualFeedback(props: {
   cue: OverlayVisualCue;
   mediaRef?: RefObject<HTMLVideoElement | null>;
+  showFocus?: boolean;
+  variant?: "visual" | "gemini";
 }) {
-  const { cue, mediaRef } = props;
+  const { cue, mediaRef, showFocus = true, variant = "visual" } = props;
   const stageRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [mediaBox, setMediaBox] = useState<RelativeBox>({
@@ -245,21 +247,38 @@ export function OverlayVisualFeedback(props: {
   }, [cue.horizontalAlign, cue.id, focusLeft]);
 
   return (
-    <div ref={stageRef} className="overlay-feedback-stage" data-testid="overlay-feedback-stage">
-      <div className="overlay-feedback-focus" style={focusStyle}>
-        <div className="overlay-feedback-focus-core" />
-      </div>
+    <div
+      ref={stageRef}
+      className={[
+        "overlay-feedback-stage",
+        variant === "gemini" ? "overlay-feedback-stage-gemini" : "",
+      ].join(" ")}
+      data-testid="overlay-feedback-stage"
+    >
+      {showFocus ? (
+        <div className="overlay-feedback-focus" style={focusStyle}>
+          <div className="overlay-feedback-focus-core" />
+        </div>
+      ) : null}
       <div
         ref={cardRef}
         className={[
           "overlay-feedback-card",
           `overlay-feedback-card-${cue.verticalAlign}`,
+          variant === "gemini" ? "overlay-feedback-card-gemini" : "",
         ].join(" ")}
         style={cardStyle}
         data-testid="overlay-feedback-card"
       >
         <div className="overlay-feedback-card-row">
-          <span className="overlay-feedback-chip">{cue.title}</span>
+          <span
+            className={[
+              "overlay-feedback-chip",
+              variant === "gemini" ? "overlay-feedback-chip-gemini" : "",
+            ].join(" ")}
+          >
+            {cue.title}
+          </span>
           <span className="overlay-feedback-severity">{cue.severityLabel}</span>
         </div>
         <div className="overlay-feedback-copy">{cue.message}</div>

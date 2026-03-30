@@ -43,6 +43,7 @@ vi.mock("./GeminiFeedbackPanel", () => {
     GeminiFeedbackPanel: React.forwardRef((props: {
       onFeedbackReady?: (moves: unknown[]) => void;
       feedbackDifficulty?: "beginner" | "standard" | "advanced";
+      renderUi?: boolean;
     }, ref: unknown) => {
       React.useImperativeHandle(ref, () => ({
         enqueueSegmentForFeedback: vi.fn(),
@@ -56,13 +57,15 @@ vi.mock("./GeminiFeedbackPanel", () => {
             shared_end_sec: 6,
             micro_timing_label: "early",
             confidence: "high",
+            coaching_note: "Delay the right step slightly to match the guide.",
+            micro_timing_evidence: "The step starts a touch ahead of the reference.",
+            body_parts_involved: ["legs"],
           },
         ];
         props.onFeedbackReady?.(props.feedbackDifficulty === "beginner" ? [] : moves);
       }, [props.feedbackDifficulty, props.onFeedbackReady]);
-      return <div data-testid="gemini-panel" />;
+      return props.renderUi === false ? null : <div data-testid="gemini-panel" />;
     }),
-    TIMING_LABEL_COLORS: {},
   };
 });
 
@@ -103,6 +106,12 @@ vi.mock("../../lib/bodyPix", () => ({
   compareWithBodyPix: compareWithBodyPixMock,
 }));
 
+vi.mock("../../lib/visualFeedbackStorage", () => ({
+  buildVisualFeedbackKey: vi.fn(() => "visual-cache-key"),
+  getVisualFeedbackRun: vi.fn().mockResolvedValue(null),
+  storeVisualFeedbackRun: vi.fn().mockResolvedValue(undefined),
+}));
+
 describe("FeedbackViewer", () => {
   const mockState = {
     sharedTime: 10,
@@ -121,6 +130,8 @@ describe("FeedbackViewer", () => {
         moves: [], 
         doneMoveIndexes: [],
         segmentIndex: -1,
+        currentMoveIndex: -1,
+        pauseAtMoveEnd: false,
         playbackRate: 1.0, 
     },
     beats: [1, 2, 3, 4],
@@ -140,13 +151,16 @@ describe("FeedbackViewer", () => {
     seekToNextSegment: vi.fn(),
     seekToPrevSegment: vi.fn(),
     togglePlay: vi.fn(),
+    pausePlayback: vi.fn(),
     setPauseAtSegmentEnd: vi.fn(),
     toggleMainSpeed: vi.fn(),
     openPracticeMode: vi.fn(),
     closePracticeMode: vi.fn(),
     replayCurrentMove: vi.fn(),
     setPracticeRepeatMode: vi.fn(),
+    setPauseAtMoveEnd: vi.fn(),
     hidePauseOverlay: vi.fn(),
+    showPauseOverlay: vi.fn(),
   };
 
   beforeEach(() => {
@@ -193,9 +207,6 @@ describe("FeedbackViewer", () => {
       />
     );
     expect(screen.getByText(/Reference \(Clip 1\)/i)).toBeInTheDocument();
-    await waitFor(() => {
-      expect(screen.getByTestId("gemini-panel")).toBeInTheDocument();
-    });
     expect(screen.getByTitle(/Side-by-side view/i)).toBeInTheDocument();
     expect(screen.getByTitle(/Overlay view/i)).toBeInTheDocument();
   });
@@ -219,6 +230,11 @@ describe("FeedbackViewer", () => {
     const checkbox = screen.getByLabelText(/Pause at section end/i);
     fireEvent.click(checkbox);
     expect(mockActions.setPauseAtSegmentEnd).toHaveBeenCalledWith(true);
+  });
+
+  it("enables 'Pause at feedback' by default", () => {
+    render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
+    expect(screen.getByLabelText(/Pause at feedback/i)).toBeChecked();
   });
 
   it("handles keyboard shortcuts (Space to toggle play)", () => {
@@ -258,7 +274,28 @@ describe("FeedbackViewer", () => {
     expect(mockActions.replayCurrentMove).not.toHaveBeenCalled();
   });
 
-  it("shows Gemini feedback panel in session mode", () => {
+  it("starts with 'Pause at move end' off in practice mode", () => {
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        practice: {
+          ...mockState.practice,
+          enabled: true,
+          currentMoveIndex: 0,
+          pauseAtMoveEnd: false,
+          moves: [
+            { idx: 0, num: 1, startSec: 0, endSec: 1, isTransition: false },
+          ],
+        },
+      },
+      ...mockActions,
+    });
+
+    render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
+    expect(screen.getByLabelText(/Pause at move end/i)).not.toBeChecked();
+  });
+
+  it("does not render the old Gemini panel UI in session mode", () => {
     render(
       <FeedbackViewer
         mode="session"
@@ -268,10 +305,10 @@ describe("FeedbackViewer", () => {
         ebsData={{ segments: [{}], alignment: {} } as any}
       />
     );
-    expect(screen.getByTestId("gemini-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("gemini-panel")).not.toBeInTheDocument();
   });
 
-  it("seeks to the feedback marker start when a feedback pin is clicked", async () => {
+  it("shows Gemini feedback as an on-video caption", async () => {
     render(
       <FeedbackViewer
         mode="session"
@@ -282,10 +319,7 @@ describe("FeedbackViewer", () => {
       />,
     );
 
-    const marker = await screen.findByTitle("Move 2: early");
-    fireEvent.click(marker);
-
-    expect(mockActions.seekToShared).toHaveBeenCalledWith(4);
+    expect(await screen.findByText(/Delay the right step slightly to match the guide/i)).toBeInTheDocument();
   });
 
   it("switches to practice mode when requested", () => {
@@ -338,12 +372,12 @@ describe("FeedbackViewer", () => {
       />,
     );
 
-    expect(await screen.findByTitle("Move 2: early")).toBeInTheDocument();
+    expect(await screen.findByText(/Delay the right step slightly to match the guide/i)).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText("Difficulty: Beginner"));
 
     await waitFor(() => {
-      expect(screen.queryByTitle("Move 2: early")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Delay the right step slightly to match the guide/i)).not.toBeInTheDocument();
     });
   });
 

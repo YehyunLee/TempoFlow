@@ -564,7 +564,7 @@
 
 .overlay-feedback-card {
   position: absolute;
-  width: min(280px, calc(100vw - 64px));
+  width: min(280px, calc(100% - 24px));
   padding: 12px 14px;
   border-radius: 18px;
   border: 1px solid rgba(191, 219, 254, 0.35);
@@ -574,6 +574,27 @@
     0 20px 42px rgba(2, 6, 23, 0.34),
     0 0 0 1px rgba(148, 163, 184, 0.08);
   animation: overlay-feedback-enter 260ms ease-out;
+}
+
+.overlay-feedback-stage-gemini {
+  z-index: 45;
+}
+
+.overlay-feedback-card-gemini {
+  width: min(312px, calc(100% - 24px));
+  border-color: color-mix(in srgb, var(--overlay-feedback-tone) 30%, rgba(191, 219, 254, 0.28));
+  background:
+    linear-gradient(180deg, rgba(16, 24, 42, 0.9) 0%, rgba(13, 21, 38, 0.84) 100%),
+    radial-gradient(circle at top left, color-mix(in srgb, var(--overlay-feedback-tone) 16%, transparent) 0%, transparent 60%);
+  box-shadow:
+    0 20px 42px rgba(2, 6, 23, 0.3),
+    0 0 0 1px rgba(148, 163, 184, 0.08),
+    0 0 30px color-mix(in srgb, var(--overlay-feedback-tone) 10%, transparent);
+  backdrop-filter: blur(16px);
+}
+
+.overlay-feedback-card-gemini::after {
+  background: rgba(14, 22, 39, 0.9);
 }
 
 .overlay-feedback-card::after {
@@ -628,6 +649,12 @@
   font-weight: 800;
   letter-spacing: 0.02em;
   white-space: nowrap;
+}
+
+.overlay-feedback-chip-gemini {
+  border-color: color-mix(in srgb, var(--overlay-feedback-tone) 68%, rgba(255, 255, 255, 0.24));
+  background: color-mix(in srgb, var(--overlay-feedback-tone) 18%, rgba(255, 255, 255, 0.02));
+  color: #f8fafc;
 }
 
 .overlay-feedback-severity {
@@ -830,6 +857,14 @@
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.timeline-inline-toggle-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .repeat-inline-control {

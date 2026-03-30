@@ -64,6 +64,7 @@ export type EbsViewerApi = {
   loadFromJson: (data: EbsData) => void;
   resetViewer: () => void;
   hidePauseOverlay: () => void;
+  showPauseOverlay: (label: string, completionLabel: string) => void;
   seekToShared: (sec: number) => void;
   seekToSegment: (idx: number) => void;
   seekToPrevSegment: () => void;
@@ -92,7 +93,7 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
   const [beats, setBeats] = useState<number[]>([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const [mainPlaybackRate, setMainPlaybackRate] = useState(1);
-  const [pauseAtSegmentEnd, setPauseAtSegmentEnd] = useState(true);
+  const [pauseAtSegmentEnd, setPauseAtSegmentEnd] = useState(false);
   const [currentSegmentIndex, setCurrentSegmentIndex] = useState(-1);
   const [lastBeatIndex, setLastBeatIndex] = useState(-1);
   const [beatFlashOn, setBeatFlashOn] = useState(false);
@@ -113,7 +114,7 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
     doneMoveIndexes: [],
     loopSegment: false,
     loopMove: false,
-    pauseAtMoveEnd: true,
+    pauseAtMoveEnd: false,
     playbackRate: 0.5,
   });
 
@@ -333,7 +334,7 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
       doneMoveIndexes: [],
       loopSegment: false,
       loopMove: false,
-      pauseAtMoveEnd: true,
+      pauseAtMoveEnd: false,
       playbackRate: 0.5,
     });
     setPauseOverlay({
@@ -381,7 +382,7 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
         doneMoveIndexes: [],
         loopSegment: false,
         loopMove: false,
-        pauseAtMoveEnd: true,
+        pauseAtMoveEnd: false,
         playbackRate: 0.5,
       });
       const refElement = refVideo.current;
@@ -646,6 +647,7 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
     loadFromJson,
     resetViewer,
     hidePauseOverlay,
+    showPauseOverlay,
     seekToShared,
     seekToSegment,
     seekToPrevSegment,

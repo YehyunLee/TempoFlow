@@ -32,7 +32,6 @@ import {
 } from "../../lib/overlaySegments";
 import {
   GeminiFeedbackPanel,
-  TIMING_LABEL_COLORS,
   type GeminiFeedbackPanelHandle,
   type GeminiFlatMove,
 } from "./GeminiFeedbackPanel";
@@ -42,12 +41,13 @@ import {
   hashEbsData,
 } from "../../lib/feedbackStorage";
 import { compareWithBodyPix, type DanceFeedback, type SampledPoseFrame } from "../../lib/bodyPix";
+import { buildVisualFeedbackKey, getVisualFeedbackRun, storeVisualFeedbackRun } from "../../lib/visualFeedbackStorage";
 import {
   FEEDBACK_DIFFICULTY_OPTIONS,
   isFeedbackDifficulty,
   type FeedbackDifficulty,
 } from "./feedbackDifficulty";
-import { buildOverlayVisualCue, pickActiveSegmentFeedback } from "./overlayFeedbackCue";
+import { buildGeminiOverlayCue, buildOverlayVisualCue, pickActiveSegmentFeedback } from "./overlayFeedbackCue";
 import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
 
 type ManualViewerProps = {
@@ -121,6 +121,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [overlayViewSource, setOverlayViewSource] = useState<"reference" | "user" | "both">("both");
   const [overlayDetector] = useState<"bodypix" | "yolo">("yolo");
   const [feedbackDifficulty, setFeedbackDifficulty] = useState<FeedbackDifficulty>("standard");
+  const [pauseAtFeedback, setPauseAtFeedback] = useState(true);
   const overlayVideoRef = useRef<HTMLVideoElement>(null);
   const [overlayCurrentTime, setOverlayCurrentTime] = useState(0);
   
@@ -129,6 +130,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     loadFromJson,
     resetViewer,
     hidePauseOverlay,
+    showPauseOverlay,
     seekToShared,
     seekToSegment,
     seekToPrevSegment,
@@ -182,6 +184,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const visualFeedbackStartedRef = useRef(false);
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
+  const previousFeedbackCueKeyRef = useRef<string | null>(null);
   const ebsFingerprint = useMemo(() => (sessionEbsData ? hashEbsData(sessionEbsData) : ""), [sessionEbsData]);
 
   useEffect(() => {
@@ -568,24 +571,44 @@ export function FeedbackViewer(props: EbsViewerProps) {
     visualFeedbackStartedRef.current = true;
     let cancelled = false;
 
-    void compareWithBodyPix({
-      referenceVideoUrl: activeReferenceVideoUrl,
-      userVideoUrl: activeUserVideoUrl,
-      segments: state.segments,
-      poseFps: 4,
-    })
-      .then((result) => {
+    void (async () => {
+      try {
+        const cacheKey =
+          sessionId && ebsFingerprint
+            ? buildVisualFeedbackKey({
+                sessionId,
+                ebsFingerprint,
+              })
+            : null;
+        const cached = cacheKey ? await getVisualFeedbackRun(cacheKey) : null;
+        if (cached) {
+          if (cancelled) return;
+          setVisualFeedbackRows(cached.feedback ?? []);
+          setVisualReferenceSamples(cached.refSamples ?? []);
+          setVisualUserSamples(cached.userSamples ?? []);
+          return;
+        }
+
+        const result = await compareWithBodyPix({
+          referenceVideoUrl: activeReferenceVideoUrl,
+          userVideoUrl: activeUserVideoUrl,
+          segments: state.segments,
+          poseFps: 4,
+        });
         if (cancelled) return;
         setVisualFeedbackRows(result.feedback ?? []);
         setVisualReferenceSamples(result.refSamples ?? []);
         setVisualUserSamples(result.userSamples ?? []);
-      })
-      .catch(() => {
+        if (cacheKey) {
+          await storeVisualFeedbackRun(cacheKey, result);
+        }
+      } catch {
         if (cancelled) return;
         setVisualFeedbackRows([]);
         setVisualReferenceSamples([]);
         setVisualUserSamples([]);
-      });
+      }
+    })();
 
     return () => {
       cancelled = true;
@@ -593,6 +616,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [
     activeReferenceVideoUrl,
     activeUserVideoUrl,
+    ebsFingerprint,
+    sessionId,
     sessionMode,
     state.segments,
     viewerVisible,
@@ -1249,6 +1274,52 @@ export function FeedbackViewer(props: EbsViewerProps) {
     ],
   );
 
+  const activeGeminiMove = useMemo(() => {
+    if (!geminiFeedback.length) return null;
+
+    const active = geminiFeedback.find((move) => {
+      const start = move.shared_start_sec ?? 0;
+      const end = move.shared_end_sec ?? start;
+      return state.sharedTime >= start && state.sharedTime < end;
+    });
+    if (active) return active;
+
+    return geminiFeedback.reduce<GeminiFlatMove | null>((best, move) => {
+      const mid = ((move.shared_start_sec ?? 0) + (move.shared_end_sec ?? 0)) / 2;
+      const bestMid = best ? ((best.shared_start_sec ?? 0) + (best.shared_end_sec ?? 0)) / 2 : Infinity;
+      return !best || Math.abs(mid - state.sharedTime) < Math.abs(bestMid - state.sharedTime) ? move : best;
+    }, null);
+  }, [geminiFeedback, state.sharedTime]);
+
+  const overlayGeminiCue = useMemo(
+    () =>
+      buildGeminiOverlayCue({
+        move: activeGeminiMove,
+        practiceArtifact: overlayCuePracticeArtifact,
+        referenceArtifact: overlayCueReferenceArtifact,
+      }),
+    [activeGeminiMove, overlayCuePracticeArtifact, overlayCueReferenceArtifact],
+  );
+
+  useEffect(() => {
+    const activeFeedbackCueKey = [overlayVisualCue?.id ?? "", overlayGeminiCue?.id ?? ""]
+      .filter(Boolean)
+      .join("|") || null;
+    const previousCueKey = previousFeedbackCueKeyRef.current;
+
+    if (
+      pauseAtFeedback &&
+      state.isPlaying &&
+      activeFeedbackCueKey &&
+      activeFeedbackCueKey !== previousCueKey
+    ) {
+      pausePlayback();
+      showPauseOverlay("Feedback", "Feedback cue");
+    }
+
+    previousFeedbackCueKeyRef.current = activeFeedbackCueKey;
+  }, [overlayGeminiCue?.id, overlayVisualCue?.id, pauseAtFeedback, pausePlayback, showPauseOverlay, state.isPlaying]);
+
   return (
     <div className="ebs-viewer-root">
       {viewerVisible && (
@@ -1393,6 +1464,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       mediaRef={userVideo}
                     />
                   ) : null}
+                  {sessionMode && showFeedback && overlayGeminiCue ? (
+                    <OverlayVisualFeedback
+                      key={`side-gemini-${overlayGeminiCue.id}`}
+                      cue={overlayGeminiCue}
+                      mediaRef={userVideo}
+                      showFocus={false}
+                      variant="gemini"
+                    />
+                  ) : null}
                 </div>
                 <div className={`beat-flash${state.beatFlashOn ? " on" : ""}`} />
                 <div className={`seg-pause-overlay${state.pauseOverlay.visible ? " visible" : ""}`}>
@@ -1467,30 +1547,37 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   {sessionMode && showFeedback && overlayVisualCue ? (
                     <OverlayVisualFeedback cue={overlayVisualCue} mediaRef={overlayVideoRef} />
                   ) : null}
+                  {sessionMode && showFeedback && overlayGeminiCue ? (
+                    <OverlayVisualFeedback
+                      cue={overlayGeminiCue}
+                      mediaRef={overlayVideoRef}
+                      showFocus={false}
+                      variant="gemini"
+                    />
+                  ) : null}
                 </div>
               </div>
               {videoProcessingOverlay}
             </div>
           )}
           {sessionMode && showFeedback && sessionId && sessionEbsData && state.segments.length > 0 && (
-            <div className="mt-4 mb-2">
-              <GeminiFeedbackPanel
-                ref={geminiFeedbackRef}
-                sessionId={sessionId}
-                ebsData={sessionEbsData}
-                segments={state.segments}
-                sharedTime={state.sharedTime}
-                feedbackDifficulty={feedbackDifficulty}
-                onSeek={seekToShared}
-                onFeedbackReady={setGeminiFeedback}
-                referenceVideoUrl={activeReferenceVideoUrl}
-                userVideoUrl={activeUserVideoUrl}
-                referenceYoloArtifact={refYoloArtifact}
-                practiceYoloArtifact={userYoloArtifact}
-                referenceYoloPoseArtifact={refYoloPoseArmsArtifact}
-                practiceYoloPoseArtifact={userYoloPoseArmsArtifact}
-              />
-            </div>
+            <GeminiFeedbackPanel
+              ref={geminiFeedbackRef}
+              sessionId={sessionId}
+              ebsData={sessionEbsData}
+              segments={state.segments}
+              sharedTime={state.sharedTime}
+              feedbackDifficulty={feedbackDifficulty}
+              renderUi={false}
+              onSeek={seekToShared}
+              onFeedbackReady={setGeminiFeedback}
+              referenceVideoUrl={activeReferenceVideoUrl}
+              userVideoUrl={activeUserVideoUrl}
+              referenceYoloArtifact={refYoloArtifact}
+              practiceYoloArtifact={userYoloArtifact}
+              referenceYoloPoseArtifact={refYoloPoseArmsArtifact}
+              practiceYoloPoseArtifact={userYoloPoseArmsArtifact}
+            />
           )}
           {!state.practice.enabled && hasSegments && (
             <>
@@ -1540,16 +1627,28 @@ export function FeedbackViewer(props: EbsViewerProps) {
               <div className="timeline" style={{ position: "relative", zIndex: 10 }}>
                 <div className="timeline-header">
                   <div className="move-tl-label">Section Timeline</div>
-                  <label className="timeline-inline-toggle" htmlFor="chk-pause">
-                    <span>Pause at section end</span>
-                    <input
-                      id="chk-pause"
-                      type="checkbox"
-                      className="ebs-toggle-switch"
-                      checked={state.pauseAtSegmentEnd}
-                      onChange={(e) => setPauseAtSegmentEnd(e.target.checked)}
-                    />
-                  </label>
+                  <div className="timeline-inline-toggle-group">
+                    <label className="timeline-inline-toggle" htmlFor="chk-pause-feedback">
+                      <span>Pause at feedback</span>
+                      <input
+                        id="chk-pause-feedback"
+                        type="checkbox"
+                        className="ebs-toggle-switch"
+                        checked={pauseAtFeedback}
+                        onChange={(e) => setPauseAtFeedback(e.target.checked)}
+                      />
+                    </label>
+                    <label className="timeline-inline-toggle" htmlFor="chk-pause">
+                      <span>Pause at section end</span>
+                      <input
+                        id="chk-pause"
+                        type="checkbox"
+                        className="ebs-toggle-switch"
+                        checked={state.pauseAtSegmentEnd}
+                        onChange={(e) => setPauseAtSegmentEnd(e.target.checked)}
+                      />
+                    </label>
+                  </div>
                 </div>
                 <div className="relative">
                   <div className="timeline-track relative" ref={timelineTrackRef} onClick={handleTimelineClick}>
@@ -1589,43 +1688,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         style={{ left: `${sharedLen > 0 ? (state.sharedTime / sharedLen) * 100 : 0}%` }}
                       />
                   </div>
-                  {showFeedback && sharedLen > 0 && (
-                    <div className="pointer-events-none absolute inset-x-0 top-0 z-[9] h-[52px] overflow-visible">
-                      {geminiFeedback.map((move, index) => {
-                        const start = move.shared_start_sec ?? 0;
-                        const markerTime = start;
-                        const color = TIMING_LABEL_COLORS[move.micro_timing_label] ?? "#94a3b8";
-                        return (
-                          <button
-                            key={`gflag-${index}`}
-                            type="button"
-                            className="pointer-events-auto absolute z-[8] -translate-x-1/2 cursor-pointer bg-transparent p-0 border-0"
-                            title={`Move ${move.move_index}: ${move.micro_timing_label}`}
-                            style={{
-                              left: `${(markerTime / sharedLen) * 100}%`,
-                              top: "0px",
-                              height: "52px",
-                              width: "16px",
-                            }}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              seekToShared(markerTime);
-                            }}
-                          >
-                            <span
-                              className="absolute left-1/2 top-[4px] -translate-x-1/2 rounded-full"
-                              style={{
-                                width: "3px",
-                                height: "42px",
-                                backgroundColor: color,
-                                boxShadow: `0 0 0 1px rgba(255,255,255,0.95), 0 0 12px ${color}`,
-                              }}
-                            />
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
                 </div>
                 <div className="beat-markers">
                   {state.beats.map((beat, index) => (
@@ -1772,6 +1834,16 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       checked={state.practice.pauseAtMoveEnd}
                       onChange={(event) => setPauseAtMoveEnd(event.target.checked)}
                       disabled={practiceRepeatMode !== "off"}
+                    />
+                  </label>
+                  <label className="timeline-inline-toggle" htmlFor="chk-pause-feedback-practice">
+                    <span>Pause at feedback</span>
+                    <input
+                      id="chk-pause-feedback-practice"
+                      type="checkbox"
+                      className="ebs-toggle-switch"
+                      checked={pauseAtFeedback}
+                      onChange={(event) => setPauseAtFeedback(event.target.checked)}
                     />
                   </label>
                   <div className="repeat-inline-control">

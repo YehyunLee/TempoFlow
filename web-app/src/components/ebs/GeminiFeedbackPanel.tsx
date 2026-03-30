@@ -71,6 +71,7 @@ type GeminiFeedbackPanelProps = {
   segments: EbsSegment[];
   sharedTime: number;
   feedbackDifficulty?: FeedbackDifficulty;
+  renderUi?: boolean;
   onSeek: (time: number) => void;
   onFeedbackReady?: (moves: GeminiFlatMove[]) => void;
   /** When set, pose-based timing priors are computed client-side and sent with each segment request. */
@@ -132,6 +133,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     segments,
     sharedTime,
     feedbackDifficulty = "standard",
+    renderUi = true,
     onSeek,
     onFeedbackReady,
     referenceVideoUrl,
@@ -532,6 +534,9 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     filterLabel === "all"
       ? `All moves (${difficultyFilteredMoves.length})`
       : `${TIMING_BADGES[filterLabel]?.label ?? filterLabel} (${labelCounts[filterLabel] ?? 0})`;
+  if (!renderUi) {
+    return null;
+  }
   return (
     <div className="overflow-hidden rounded-[24px] border border-sky-100 bg-white shadow-sm">
       {/* Progress */}

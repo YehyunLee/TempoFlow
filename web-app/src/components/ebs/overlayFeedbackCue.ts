@@ -1,5 +1,6 @@
 import type { DanceFeedback, FeedbackFeatureFamily, FeedbackSeverity, SampledPoseFrame } from "../../lib/bodyPix";
 import { normalizeKeypoints } from "../../lib/bodyPix/geometry";
+import type { GeminiFlatMove } from "../../lib/geminiFeedbackTypes";
 import type { OverlayArtifact, OverlaySegmentArtifact } from "../../lib/overlayStorage";
 import { getOverlaySegmentByIndex } from "../../lib/overlaySegments";
 import { passesVisualFeedbackDifficulty, type FeedbackDifficulty } from "./feedbackDifficulty";
@@ -73,6 +74,16 @@ const SEVERITY_COLORS: Record<FeedbackSeverity, string> = {
   minor: "#f59e0b",
   moderate: "#fb923c",
   major: "#ef4444",
+};
+
+const GEMINI_LABEL_COLORS: Record<string, string> = {
+  "on-time": "#34d399",
+  early: "#fbbf24",
+  late: "#fbbf24",
+  rushed: "#fb923c",
+  dragged: "#fb923c",
+  mixed: "#a78bfa",
+  uncertain: "#94a3b8",
 };
 
 const ARM_KEYPOINTS: SideKeypointSet = {
@@ -331,6 +342,27 @@ function getCueSize(
   }
 }
 
+function clampBoundsAnchor(value: number, bodyMin: number, bodyMax: number) {
+  return clamp(value, Math.max(0.08, bodyMin - 0.08), Math.min(0.92, bodyMax + 0.08));
+}
+
+function inferGeminiBodyRegion(move: GeminiFlatMove) {
+  const parts = (move.body_parts_involved ?? []).map((part) => part.toLowerCase());
+  if (parts.some((part) => part.includes("arm") || part.includes("shoulder") || part.includes("hand"))) {
+    return "arms" as const;
+  }
+  if (parts.some((part) => part.includes("leg") || part.includes("hip") || part.includes("knee") || part.includes("foot"))) {
+    return "legs" as const;
+  }
+  if (parts.some((part) => part.includes("head") || part.includes("face"))) {
+    return "head" as const;
+  }
+  if (parts.some((part) => part.includes("torso") || part.includes("core") || part.includes("chest"))) {
+    return "torso" as const;
+  }
+  return "full_body" as const;
+}
+
 function chooseStrongest(feedback: DanceFeedback[]) {
   return [...feedback].sort((a, b) => {
     if (b.deviation !== a.deviation) return b.deviation - a.deviation;
@@ -423,5 +455,42 @@ export function buildOverlayVisualCue(params: {
     focusSizePct: getCueSize(feedback.bodyRegion, bounds),
     horizontalAlign: anchor.x < 0.26 ? "left" : anchor.x > 0.74 ? "right" : "center",
     verticalAlign: anchor.y < 0.28 ? "below" : "above",
+  } satisfies OverlayVisualCue;
+}
+
+export function buildGeminiOverlayCue(params: {
+  move: GeminiFlatMove | null;
+  practiceArtifact: OverlayArtifact | null;
+  referenceArtifact?: OverlayArtifact | null;
+}) {
+  const { move, practiceArtifact, referenceArtifact = null } = params;
+  if (!move) return null;
+
+  const practiceSegment = getOverlaySegmentByIndex(practiceArtifact, move.segmentIndex);
+  const referenceSegment = getOverlaySegmentByIndex(referenceArtifact, move.segmentIndex);
+  const bounds = getSegmentBounds(practiceSegment) ?? getSegmentBounds(referenceSegment) ?? DEFAULT_BOUNDS;
+  const bodyRegion = inferGeminiBodyRegion(move);
+  const bodyAnchor = getCueAnchor(bodyRegion, bounds);
+  const anchorX = clampBoundsAnchor(bounds.center_x, bounds.min_x, bounds.max_x);
+  const anchorY = clampBoundsAnchor(
+    Math.min(bodyAnchor.y, bounds.min_y + bounds.height * 0.32),
+    bounds.min_y,
+    bounds.max_y,
+  );
+  const focusSizePct = clamp(getCueSize(bodyRegion, bounds) * 0.56, 0.12, 0.18);
+
+  return {
+    id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label}`,
+    title: "Timing note",
+    message: cleanText(
+      move.coaching_note || move.micro_timing_evidence || "Adjust this move to better match the guide.",
+    ),
+    severityLabel: move.micro_timing_label ? move.micro_timing_label.replace(/(^|-)(\w)/g, (_, p1, p2) => `${p1}${p2.toUpperCase()}`) : "Cue",
+    color: GEMINI_LABEL_COLORS[move.micro_timing_label] ?? "#38bdf8",
+    xPct: anchorX,
+    yPct: anchorY,
+    focusSizePct,
+    horizontalAlign: anchorX < 0.28 ? "left" as const : anchorX > 0.72 ? "right" as const : "center" as const,
+    verticalAlign: bounds.min_y > 0.2 ? "above" as const : "below" as const,
   } satisfies OverlayVisualCue;
 }

@@ -47,6 +47,8 @@ describe("useEbsViewer", () => {
     const { result } = renderHook(() => useEbsViewer(mockRefs));
     expect(result.current.state.isPlaying).toBe(false);
     expect(result.current.state.sharedTime).toBe(0);
+    expect(result.current.state.pauseAtSegmentEnd).toBe(false);
+    expect(result.current.state.practice.pauseAtMoveEnd).toBe(false);
   });
 
   it("loads data correctly via loadFromJson", () => {
