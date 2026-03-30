@@ -2,12 +2,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FeedbackViewer } from "./FeedbackViewer";
 import { useEbsViewer } from "./useEbsViewer";
+import { getSessionOverlay } from "../../lib/overlayStorage";
 
 const { ensureBrowserYoloOverlaysMock } = vi.hoisted(() => ({
   ensureBrowserYoloOverlaysMock: vi.fn().mockResolvedValue(undefined),
 }));
-const { compareWithBodyPixMock } = vi.hoisted(() => ({
-  compareWithBodyPixMock: vi.fn().mockResolvedValue({
+const { buildVisualFeedbackFromYoloArtifactsMock } = vi.hoisted(() => ({
+  buildVisualFeedbackFromYoloArtifactsMock: vi.fn().mockReturnValue({
     feedback: [
       {
         timestamp: 2.5,
@@ -73,13 +74,89 @@ vi.mock("./GeminiFeedbackPanel", () => {
 // 3. Mock Storage Utils — return cached BodyPix frames so Gemini isn’t blocked
 vi.mock("../../lib/overlayStorage", () => ({
   getSessionOverlay: vi.fn(async (key: string) => {
+    const side = key.endsWith("-practice") ? "practice" : "reference";
+    const baseSegment = {
+      index: 0,
+      startSec: 0,
+      endSec: 5,
+      fps: 12,
+      width: 64,
+      height: 48,
+      frameCount: 1,
+      createdAt: "",
+      video: new Blob(["x"], { type: "video/webm" }),
+      videoMime: "video/webm",
+    };
+
+    if (key.startsWith("mock-key-yolo-")) {
+      return {
+        version: 1,
+        type: "yolo",
+        side,
+        fps: 12,
+        width: 64,
+        height: 48,
+        frameCount: 1,
+        createdAt: "",
+        segments: [
+          {
+            ...baseSegment,
+            meta: {
+              segSummary: { person_count: 1, persons: [] },
+              poseSummary: { person_count: 1, persons: [] },
+              sharedStartSec: 0,
+              sharedEndSec: 5,
+              poseFrames: [
+                {
+                  keypoints: Array.from({ length: 17 }, (_, i) => ({
+                    name: `kp-${i}`,
+                    x: i,
+                    y: i + 1,
+                    score: 0.9,
+                  })),
+                  part_coverage: {
+                    head: 1,
+                    arms: 1,
+                    torso: 1,
+                    legs: 1,
+                    full_body: 1,
+                  },
+                },
+              ],
+            },
+          },
+        ],
+      };
+    }
+
+    if (key.startsWith("mock-key-yolo-pose-arms-") || key.startsWith("mock-key-yolo-pose-legs-")) {
+      return {
+        version: 1,
+        type: key.includes("pose-arms") ? "yolo-pose-arms" : "yolo-pose-legs",
+        side,
+        fps: 12,
+        width: 64,
+        height: 48,
+        frameCount: 1,
+        createdAt: "",
+        segments: [
+          {
+            ...baseSegment,
+            meta: {
+              poseSummary: { person_count: 1, persons: [] },
+            },
+          },
+        ],
+      };
+    }
+
     if (!key.startsWith("mock-key-bodypix-")) {
       return null;
     }
     return {
       version: 1,
       type: "bodypix",
-      side: key.endsWith("-practice") ? "practice" : "reference",
+      side,
       fps: 12,
       width: 64,
       height: 48,
@@ -103,8 +180,11 @@ vi.mock("../../lib/ensureBrowserYoloOverlays", () => ({
   BROWSER_YOLO_VARIANT: "yolo26n-python-hybrid-v6",
 }));
 
-vi.mock("../../lib/bodyPix", () => ({
-  compareWithBodyPix: compareWithBodyPixMock,
+vi.mock("../../lib/yoloFeedback", () => ({
+  buildVisualFeedbackFromYoloArtifacts: buildVisualFeedbackFromYoloArtifactsMock,
+  overlayArtifactHasYoloPoseFrames: vi.fn((artifact: { segments?: Array<{ meta?: { poseFrames?: unknown[] } }> } | null) =>
+    Boolean(artifact?.segments?.some((segment) => Array.isArray(segment.meta?.poseFrames))),
+  ),
 }));
 
 vi.mock("../../lib/visualFeedbackStorage", () => ({
@@ -167,7 +247,7 @@ describe("FeedbackViewer", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.clear();
-    compareWithBodyPixMock.mockResolvedValue({
+    buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
       feedback: [
         {
           timestamp: 2.5,
@@ -454,6 +534,7 @@ describe("FeedbackViewer", () => {
   });
 
   it("does not abort the in-flight YOLO pipeline when segment artifacts update", async () => {
+    vi.mocked(getSessionOverlay as any).mockResolvedValue(null);
     const inFlight = new Promise<void>(() => {});
     let seenSignal: AbortSignal | undefined;
     const segmentedArtifact = {

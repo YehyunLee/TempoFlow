@@ -1,6 +1,6 @@
 import type { BodyPixComparisonResult } from "./bodyPix";
 
-export const VISUAL_FEEDBACK_CACHE_VERSION = "1";
+export const VISUAL_FEEDBACK_CACHE_VERSION = "2";
 
 const DB_NAME = "TempoFlowVisualFeedback";
 const STORE_NAME = "runs";

@@ -21,6 +21,34 @@ POSE_JOBS: dict[str, dict[str, Any]] = {}
 HYBRID_JOBS: dict[str, dict[str, Any]] = {}
 BODYPX_JOBS: dict[str, dict[str, Any]] = {}
 
+POSE_KEYPOINT_NAMES = [
+    "nose",
+    "leftEye",
+    "rightEye",
+    "leftEar",
+    "rightEar",
+    "leftShoulder",
+    "rightShoulder",
+    "leftElbow",
+    "rightElbow",
+    "leftWrist",
+    "rightWrist",
+    "leftHip",
+    "rightHip",
+    "leftKnee",
+    "rightKnee",
+    "leftAnkle",
+    "rightAnkle",
+]
+
+POSE_COVERAGE_GROUPS: dict[str, tuple[int, ...]] = {
+    "head": (0, 1, 2, 3, 4),
+    "arms": (5, 6, 7, 8, 9, 10),
+    "torso": (5, 6, 11, 12),
+    "legs": (11, 12, 13, 14, 15, 16),
+    "full_body": tuple(range(len(POSE_KEYPOINT_NAMES))),
+}
+
 
 def _job_cancel_requested(job_store: dict[str, dict[str, Any]], job_id: str) -> bool:
     job = job_store.get(job_id)
@@ -224,6 +252,112 @@ def _aggregate_pose_summaries(summary_frames: list[list[dict[str, float]]]) -> d
     return {
         "person_count": len(people),
         "persons": people,
+    }
+
+
+def _pose_visible_points(xy: Any, conf: Any, threshold: float = 0.25) -> list[tuple[float, float]]:
+    visible_points: list[tuple[float, float]] = []
+    try:
+        count = len(xy)
+    except Exception:
+        return visible_points
+
+    for idx in range(count):
+        try:
+            score = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+            if score < threshold:
+                continue
+            point = xy[idx]
+            visible_points.append((float(point[0]), float(point[1])))
+        except Exception:
+            continue
+    return visible_points
+
+
+def _pose_instance_area(xy: Any, conf: Any) -> float:
+    visible_points = _pose_visible_points(xy, conf)
+    if not visible_points:
+        return 0.0
+    min_x = min(point[0] for point in visible_points)
+    max_x = max(point[0] for point in visible_points)
+    min_y = min(point[1] for point in visible_points)
+    max_y = max(point[1] for point in visible_points)
+    return max(1.0, max_x - min_x) * max(1.0, max_y - min_y)
+
+
+def _pose_instance_anchor_y(xy: Any, conf: Any) -> float:
+    ankle_points = [
+        _visible_pose_point(xy, conf, 15),
+        _visible_pose_point(xy, conf, 16),
+    ]
+    visible_ankles = [point for point in ankle_points if point is not None]
+    if visible_ankles:
+        return sum(float(point[1]) for point in visible_ankles) / len(visible_ankles)
+
+    visible_points = _pose_visible_points(xy, conf)
+    if not visible_points:
+        return 0.0
+    return max(point[1] for point in visible_points)
+
+
+def _select_primary_pose_instance(instances: list[tuple[Any, Any | None]]) -> tuple[Any, Any | None] | None:
+    if not instances:
+        return None
+    return max(
+        instances,
+        key=lambda instance: (
+            _pose_instance_area(instance[0], instance[1]),
+            _pose_instance_anchor_y(instance[0], instance[1]),
+        ),
+    )
+
+
+def _serialize_pose_keypoints(xy: Any, conf: Any) -> list[dict[str, Any]]:
+    keypoints: list[dict[str, Any]] = []
+    for idx, name in enumerate(POSE_KEYPOINT_NAMES):
+        try:
+            point = xy[idx]
+            x = float(point[0])
+            y = float(point[1])
+            score = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+        except Exception:
+            x = 0.0
+            y = 0.0
+            score = 0.0
+        keypoints.append(
+            {
+                "name": name,
+                "x": x,
+                "y": y,
+                "score": max(0.0, min(1.0, score)),
+            }
+        )
+    return keypoints
+
+
+def _compute_pose_part_coverage(conf: Any, threshold: float = 0.25) -> dict[str, float]:
+    coverage: dict[str, float] = {}
+    for name, indices in POSE_COVERAGE_GROUPS.items():
+        visible = 0
+        for idx in indices:
+            try:
+                score = float(conf[idx]) if conf is not None and idx < len(conf) else 1.0
+            except Exception:
+                score = 0.0
+            if score >= threshold:
+                visible += 1
+        coverage[name] = visible / float(len(indices)) if indices else 0.0
+    return coverage
+
+
+def _serialize_primary_pose_frame(instances: list[tuple[Any, Any | None]]) -> dict[str, Any] | None:
+    primary = _select_primary_pose_instance(instances)
+    if primary is None:
+        return None
+    xy, conf = primary
+    return {
+        "keypoints": _serialize_pose_keypoints(xy, conf),
+        "part_coverage": _compute_pose_part_coverage(conf),
     }
 
 
@@ -1000,6 +1134,8 @@ def _run_hybrid_overlay_job(
     last_legs = np.zeros((h, w, 3), dtype=np.uint8)
     overlay_summary_frames: list[list[dict[str, float]]] = []
     pose_summary_frames: list[list[dict[str, float]]] = []
+    pose_frames: list[dict[str, Any] | None] = []
+    last_pose_frame: dict[str, Any] | None = None
 
     while written < expected:
         if _job_cancel_requested(HYBRID_JOBS, job_id):
@@ -1031,6 +1167,7 @@ def _run_hybrid_overlay_job(
             kp = pose_result[0].keypoints
             instances = _iter_pose_instances(kp)
             pose_summary_frames.append(_summarize_pose_instances(instances, w, h))
+            pose_frame = _serialize_primary_pose_frame(instances)
             for xy, conf in instances:
                 pose_arms_overlay, pose_legs_overlay = _render_pose_layers(xy, conf, w, h, arms_color, legs_color)
                 arms_overlay = np.maximum(arms_overlay, pose_arms_overlay)
@@ -1039,13 +1176,16 @@ def _run_hybrid_overlay_job(
             legs_overlay = _clip_overlay_to_mask(legs_overlay, alpha_u8)
         else:
             pose_summary_frames.append([])
+            pose_frame = None
 
         last_seg = seg_overlay
         last_arms = arms_overlay
         last_legs = legs_overlay
+        last_pose_frame = pose_frame
         seg_writer.write(seg_overlay)
         arms_writer.write(arms_overlay)
         legs_writer.write(legs_overlay)
+        pose_frames.append(pose_frame)
         written += 1
         next_out_time += out_dt
         HYBRID_JOBS[job_id]["frames_written"] = written
@@ -1062,6 +1202,7 @@ def _run_hybrid_overlay_job(
         seg_writer.write(last_seg)
         arms_writer.write(last_arms)
         legs_writer.write(last_legs)
+        pose_frames.append(last_pose_frame)
         written += 1
         HYBRID_JOBS[job_id]["frames_written"] = written
         HYBRID_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
@@ -1075,6 +1216,7 @@ def _run_hybrid_overlay_job(
         return
     HYBRID_JOBS[job_id]["overlay_summary"] = _aggregate_mask_instance_summaries(overlay_summary_frames)
     HYBRID_JOBS[job_id]["pose_summary"] = _aggregate_pose_summaries(pose_summary_frames)
+    HYBRID_JOBS[job_id]["pose_frames"] = pose_frames
     HYBRID_JOBS[job_id]["status"] = "done"
 
 
@@ -1438,6 +1580,21 @@ async def overlay_yolo_hybrid_status(job_id: str):
 @router.post("/api/overlay/yolo-hybrid/cancel")
 async def overlay_yolo_hybrid_cancel(job_id: str = Form(...)):
     return _request_job_cancel(HYBRID_JOBS, job_id)
+
+
+@router.get("/api/overlay/yolo-hybrid/pose-data")
+async def overlay_yolo_hybrid_pose_data(job_id: str):
+    job = HYBRID_JOBS.get(job_id)
+    if not job:
+        return JSONResponse({"error": "Unknown job_id"}, status_code=404)
+    if job.get("status") != "done":
+        return JSONResponse({"error": "Job not ready"}, status_code=409)
+    return JSONResponse(
+        {
+            "frames": job.get("pose_frames") or [],
+        },
+        status_code=200,
+    )
 
 
 @router.get("/api/overlay/yolo-hybrid/result")

@@ -66,6 +66,17 @@ type PoseResult = {
   arms: VideoResult;
   legs: VideoResult;
   summary: PoseSummary | null;
+  poseFrames?: Array<HybridPoseFrame | null>;
+};
+
+type HybridPoseFrame = {
+  keypoints: Array<{
+    name?: string;
+    x: number;
+    y: number;
+    score: number;
+  }>;
+  part_coverage?: Record<string, number> | null;
 };
 
 type HybridResult = {
@@ -74,6 +85,7 @@ type HybridResult = {
   legs: VideoResult;
   segSummary: OverlaySummary | null;
   poseSummary: PoseSummary | null;
+  poseFrames: Array<HybridPoseFrame | null>;
 };
 
 type SegmentedYoloArtifacts = {
@@ -598,6 +610,17 @@ async function waitForPythonYoloHybridJob(
     reportProgress(typeof st.progress === "number" ? st.progress : 0);
 
     if (st.status === "done") {
+      const poseDataRes = await fetch(
+        `${getOverlayBaseUrl()}/api/overlay/yolo-hybrid/pose-data?job_id=${encodeURIComponent(jobId)}`,
+        { signal },
+      );
+      if (!poseDataRes.ok) {
+        const txt = await poseDataRes.text().catch(() => "");
+        throw new Error(`YOLO hybrid pose-data error (${poseDataRes.status}): ${txt || poseDataRes.statusText}`);
+      }
+      const poseData = (await poseDataRes.json()) as {
+        frames?: Array<HybridPoseFrame | null>;
+      };
       const loadLayer = async (layer: "seg" | PoseLayer) => {
         const outRes = await fetch(
           `${getOverlayBaseUrl()}/api/overlay/yolo-hybrid/result?job_id=${encodeURIComponent(jobId)}&layer=${layer}`,
@@ -622,6 +645,7 @@ async function waitForPythonYoloHybridJob(
         legs: { blob: legs.blob, mime: legs.mime },
         segSummary: seg.segSummary ?? null,
         poseSummary: arms.poseSummary ?? legs.poseSummary ?? seg.poseSummary ?? null,
+        poseFrames: Array.isArray(poseData.frames) ? poseData.frames : [],
       } satisfies HybridResult;
     }
 
@@ -966,6 +990,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
               arms: hybridResult.arms,
               legs: hybridResult.legs,
               summary: hybridResult.poseSummary,
+              poseFrames: hybridResult.poseFrames,
             } satisfies PoseResult,
           };
         }
@@ -1054,6 +1079,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
                 normalization: normalizationMeta,
                 segSummary: referenceResult.segResult.summary ?? null,
                 poseSummary: referenceResult.poseResult?.summary ?? null,
+                poseFrames: referenceResult.poseResult?.poseFrames ?? [],
               },
             }),
           ),
@@ -1115,6 +1141,7 @@ async function runSegmentedBrowserYoloPipeline(params: {
                 layer: "seg",
                 segSummary: practiceResult.segResult.summary ?? null,
                 poseSummary: practiceResult.poseResult?.summary ?? null,
+                poseFrames: practiceResult.poseResult?.poseFrames ?? [],
               },
             }),
           ),

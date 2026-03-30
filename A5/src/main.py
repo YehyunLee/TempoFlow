@@ -19,8 +19,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from src.alignment_and_segmentation.router import router as alignment_router
 from src.ebs_web_adapter import process_videos_from_paths, save_upload, save_upload_async
+from src.gemini_move_feedback import run_move_feedback_pipeline
 from src.overlay_api import router as overlay_router
-from src.eval.runner import run_move_feedback_pipeline
 from src.eval import router as eval_router
 
 app = FastAPI(title="Audio Alignment API")

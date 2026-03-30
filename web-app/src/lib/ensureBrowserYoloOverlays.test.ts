@@ -72,6 +72,27 @@ describe("ensureBrowserYoloOverlays", () => {
         if (url.includes("/api/overlay/yolo-hybrid/status")) {
           return jsonResponse({ status: "done", progress: 1 });
         }
+        if (url.includes("/api/overlay/yolo-hybrid/pose-data")) {
+          return jsonResponse({
+            frames: [
+              {
+                keypoints: Array.from({ length: 17 }, (_, index) => ({
+                  name: `kp-${index}`,
+                  x: index,
+                  y: index + 1,
+                  score: 0.9,
+                })),
+                part_coverage: {
+                  head: 1,
+                  arms: 1,
+                  torso: 1,
+                  legs: 1,
+                  full_body: 1,
+                },
+              },
+            ],
+          });
+        }
         if (url.includes("/api/overlay/yolo-hybrid/result")) {
           return videoResponse();
         }

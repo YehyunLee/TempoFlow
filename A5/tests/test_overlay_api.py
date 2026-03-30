@@ -208,6 +208,28 @@ def test_overlay_hybrid_cancel_marks_job_cancelled(overlay_client):
         oa.HYBRID_JOBS.pop(jid, None)
 
 
+def test_overlay_hybrid_pose_data_returns_frames_without_consuming_job(overlay_client):
+    jid = "hybrid-pose-data"
+    oa.HYBRID_JOBS[jid] = {
+        "status": "done",
+        "pose_frames": [
+            {
+                "keypoints": [{"name": "nose", "x": 10.0, "y": 12.0, "score": 0.9}],
+                "part_coverage": {"head": 1.0, "full_body": 0.5},
+            }
+        ],
+        "served_layers": set(),
+    }
+    try:
+        r = overlay_client.get(f"/api/overlay/yolo-hybrid/pose-data?job_id={jid}")
+        assert r.status_code == 200
+        assert r.json()["frames"][0]["keypoints"][0]["name"] == "nose"
+        assert jid in oa.HYBRID_JOBS
+        assert oa.HYBRID_JOBS[jid]["served_layers"] == set()
+    finally:
+        oa.HYBRID_JOBS.pop(jid, None)
+
+
 def test_overlay_pose_result_invalid_layer(overlay_client):
     jid = "pj"
     oa.POSE_JOBS[jid] = {

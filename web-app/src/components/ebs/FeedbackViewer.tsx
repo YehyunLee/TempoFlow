@@ -40,8 +40,12 @@ import {
   getFeedbackSegment,
   hashEbsData,
 } from "../../lib/feedbackStorage";
-import { compareWithBodyPix, type DanceFeedback, type SampledPoseFrame } from "../../lib/bodyPix";
+import type { DanceFeedback, SampledPoseFrame } from "../../lib/bodyPix";
 import { buildVisualFeedbackKey, getVisualFeedbackRun, storeVisualFeedbackRun } from "../../lib/visualFeedbackStorage";
+import {
+  buildVisualFeedbackFromYoloArtifacts,
+  overlayArtifactHasYoloPoseFrames,
+} from "../../lib/yoloFeedback";
 import {
   FEEDBACK_DIFFICULTY_OPTIONS,
   isFeedbackDifficulty,
@@ -597,9 +601,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
     if (
       !sessionMode ||
       !viewerVisible ||
-      !activeReferenceVideoUrl ||
-      !activeUserVideoUrl ||
-      state.segments.length === 0
+      state.segments.length === 0 ||
+      !overlayArtifactHasYoloPoseFrames(refYoloArtifact) ||
+      !overlayArtifactHasYoloPoseFrames(userYoloArtifact)
     ) {
       return;
     }
@@ -626,11 +630,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
           return;
         }
 
-        const result = await compareWithBodyPix({
-          referenceVideoUrl: activeReferenceVideoUrl,
-          userVideoUrl: activeUserVideoUrl,
+        const result = buildVisualFeedbackFromYoloArtifacts({
+          referenceArtifact: refYoloArtifact,
+          userArtifact: userYoloArtifact,
           segments: state.segments,
-          poseFps: 4,
         });
         if (cancelled) return;
         setVisualFeedbackRows(result.feedback ?? []);
@@ -651,12 +654,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
       cancelled = true;
     };
   }, [
-    activeReferenceVideoUrl,
-    activeUserVideoUrl,
     ebsFingerprint,
+    refYoloArtifact,
     sessionId,
     sessionMode,
     state.segments,
+    userYoloArtifact,
     viewerVisible,
   ]);
 
