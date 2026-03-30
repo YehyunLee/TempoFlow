@@ -63,13 +63,6 @@ vi.mock('../../lib/sessionProcessing', () => ({
   resumeSessionProcessing: (sessionId: string) => resumeSessionProcessingMock(sessionId),
 }));
 
-vi.mock('../../lib/sessionPostProcessing', () => ({
-  isSessionPostProcessComplete: (session: MockSession) =>
-    session.ebsMeta?.postProcessStatus === 'ready' || session.ebsMeta?.finalScore != null,
-  shouldTreatSessionAsInProcess: (session: MockSession) =>
-    session.ebsStatus === 'processing' || session.status === 'analyzing',
-}));
-
 vi.mock('../../lib/videoStorage', () => ({
   deleteSessionVideos: (sessionId: string) => deleteSessionVideosMock(sessionId),
   getSessionVideo: (sessionId: string, role: string) => getSessionVideoMock(sessionId, role),
@@ -170,7 +163,7 @@ describe('Dashboard page', () => {
 
     expect(ensureSessionProcessingMock).toHaveBeenCalledWith('session-processing');
     expect(screen.getByText(/in process/i)).toBeInTheDocument();
-    fireEvent.click(screen.getAllByRole('button', { name: /pause processing/i })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /pause processing/i }));
     expect(pauseSessionProcessingMock).toHaveBeenCalledWith('session-processing');
 
     fireEvent.click(screen.getByRole('button', { name: /resume processing/i }));

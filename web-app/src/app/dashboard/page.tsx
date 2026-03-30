@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 
 import { AppHeader } from '../../components/AppHeader';
@@ -16,10 +16,6 @@ import {
   pauseSessionProcessing,
   resumeSessionProcessing,
 } from '../../lib/sessionProcessing';
-import {
-  isSessionPostProcessComplete,
-  shouldTreatSessionAsInProcess,
-} from '../../lib/sessionPostProcessing';
 import { deleteSessionVideos, getSessionVideo } from '../../lib/videoStorage';
 
 function formatUpdatedAt(value: string) {
@@ -36,7 +32,10 @@ function getSessionScore(session: TempoFlowSession) {
 }
 
 function isSessionInProcess(session: TempoFlowSession) {
-  return shouldTreatSessionAsInProcess(session);
+  return (
+    session.ebsStatus === 'processing' ||
+    (session.status === 'analyzing' && session.ebsStatus !== 'paused' && session.ebsStatus !== 'ready' && session.ebsStatus !== 'error')
+  );
 }
 
 function canResumeSession(session: TempoFlowSession) {
@@ -46,7 +45,7 @@ function canResumeSession(session: TempoFlowSession) {
 function SessionStatusChip({ session }: { session: TempoFlowSession }) {
   const score = getSessionScore(session);
 
-  if (isSessionPostProcessComplete(session) && score != null) {
+  if (session.ebsStatus === 'ready' && score != null) {
     return (
       <div className="rounded-full bg-emerald-50 px-4 py-2 text-sm font-semibold text-emerald-700">
         Score {score}/100
@@ -54,7 +53,7 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
     );
   }
 
-  if (isSessionPostProcessComplete(session)) {
+  if (session.ebsStatus === 'ready') {
     return (
       <div className="rounded-full bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700">
         Ready
@@ -95,10 +94,7 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
 
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<TempoFlowSession[]>(() => getSessions());
-  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
-  const queuedProcessingIdsRef = useRef<Set<string>>(new Set());
-  const loadingPreviewIdsRef = useRef<Set<string>>(new Set());
-  const previewUrlsRef = useRef<Record<string, string>>({});
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const refresh = () => setSessions(getSessions());
@@ -108,86 +104,54 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    previewUrlsRef.current = previewUrls;
-  }, [previewUrls]);
-
-  useEffect(() => {
-    const nextQueuedIds = new Set<string>();
-
     sessions.forEach((session) => {
-      if (!isSessionInProcess(session)) return;
-      nextQueuedIds.add(session.id);
-      if (queuedProcessingIdsRef.current.has(session.id)) return;
-      queuedProcessingIdsRef.current.add(session.id);
-      void ensureSessionProcessing(session.id);
-    });
-
-    queuedProcessingIdsRef.current.forEach((sessionId) => {
-      if (!nextQueuedIds.has(sessionId)) {
-        queuedProcessingIdsRef.current.delete(sessionId);
+      if (isSessionInProcess(session)) {
+        void ensureSessionProcessing(session.id);
       }
     });
   }, [sessions]);
 
   useEffect(() => {
-    let cancelled = false;
-    const sessionIds = new Set(sessions.map((session) => session.id));
+    let active = true;
+    const createdUrls: string[] = [];
 
-    setPreviewUrls((previous) => {
-      const next = { ...previous };
-      let changed = false;
-      Object.keys(next).forEach((sessionId) => {
-        if (sessionIds.has(sessionId)) return;
-        URL.revokeObjectURL(next[sessionId]!);
-        delete next[sessionId];
-        loadingPreviewIdsRef.current.delete(sessionId);
-        changed = true;
-      });
-      return changed ? next : previous;
-    });
-
-    sessions.forEach((session) => {
-      if (previewUrlsRef.current[session.id]) return;
-      if (loadingPreviewIdsRef.current.has(session.id)) return;
-      loadingPreviewIdsRef.current.add(session.id);
-
-      void (async () => {
-        try {
-          const file = await getSessionVideo(session.id, 'practice');
-          if (!file || cancelled) return;
-          const url = URL.createObjectURL(file);
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-            return;
+    const loadThumbnails = async () => {
+      const entries = await Promise.all(
+        sessions.map(async (session) => {
+          try {
+            const file = await getSessionVideo(session.id, 'practice');
+            if (!file) return null;
+            const url = URL.createObjectURL(file);
+            return { id: session.id, url };
+          } catch {
+            return null;
           }
-          setPreviewUrls((previous) => {
-            if (previous[session.id] === url) return previous;
-            const next = { ...previous, [session.id]: url };
-            const prior = previous[session.id];
-            if (prior && prior !== url) {
-              URL.revokeObjectURL(prior);
-            }
-            return next;
-          });
-        } catch {
-          // Keep the fallback placeholder when a preview cannot be generated.
-        } finally {
-          loadingPreviewIdsRef.current.delete(session.id);
-        }
-      })();
-    });
+        }),
+      );
+
+      if (!active) {
+        entries.forEach((entry) => {
+          if (entry) URL.revokeObjectURL(entry.url);
+        });
+        return;
+      }
+
+      const nextMap: Record<string, string> = {};
+      entries.forEach((entry) => {
+        if (!entry) return;
+        createdUrls.push(entry.url);
+        nextMap[entry.id] = entry.url;
+      });
+      setThumbnailUrls(nextMap);
+    };
+
+    void loadThumbnails();
 
     return () => {
-      cancelled = true;
+      active = false;
+      createdUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [sessions]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(previewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
-      previewUrlsRef.current = {};
-    };
-  }, []);
 
   const handleDelete = async (sessionId: string) => {
     await Promise.all([deleteSessionVideos(sessionId), deleteSessionEbs(sessionId)]);
@@ -224,14 +188,12 @@ export default function DashboardPage() {
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="relative aspect-video overflow-hidden rounded-2xl bg-slate-100 lg:w-52 lg:flex-none">
-                      {previewUrls[session.id] ? (
+                      {thumbnailUrls[session.id] ? (
                         <video
-                          src={previewUrls[session.id]}
+                          src={thumbnailUrls[session.id]}
                           className="h-full w-full object-cover"
                           muted
                           playsInline
-                          autoPlay
-                          loop
                           preload="metadata"
                         />
                       ) : (
