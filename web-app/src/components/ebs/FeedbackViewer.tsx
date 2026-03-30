@@ -48,6 +48,7 @@ import {
   type FeedbackDifficulty,
 } from "./feedbackDifficulty";
 import { buildOverlayVisualCue, pickActiveSegmentFeedback } from "./overlayFeedbackCue";
+import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
 
 type ManualViewerProps = {
   mode?: "manual";
@@ -633,8 +634,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   useEffect(() => {
     if (!viewerVisible) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.tagName === "INPUT") return;
+      if (shouldIgnoreViewerShortcutTarget(event.target)) return;
 
       if (event.code === "Space") {
         event.preventDefault();

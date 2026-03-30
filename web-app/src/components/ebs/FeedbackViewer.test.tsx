@@ -227,6 +227,14 @@ describe("FeedbackViewer", () => {
     expect(mockActions.togglePlay).toHaveBeenCalled();
   });
 
+  it("keeps space playback shortcuts active when the pause checkbox has focus", () => {
+    render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
+    const checkbox = screen.getByLabelText(/Pause at section end/i);
+    checkbox.focus();
+    fireEvent.keyDown(checkbox, { code: "Space" });
+    expect(mockActions.togglePlay).toHaveBeenCalled();
+  });
+
   it("keeps Space mapped to play and pause during practice mode", () => {
     (useEbsViewer as any).mockReturnValue({
       state: {

@@ -8,6 +8,7 @@ import PoseOverlay from "../PoseOverlay";
 import SegmentOverlay from "../SegmentOverlay";
 import { BodyPixOverlay } from "../BodyPixOverlay";
 import { ProgressiveOverlay } from "../ProgressiveOverlay";
+import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
 import { generateMoveNetOverlayFrames } from "../../lib/movenetOverlayGenerator";
 import { generateYoloOverlayFrames, type YoloExecutionProvider } from "../../lib/yoloOverlayGenerator";
 import { generateFastSamOverlayFrames } from "../../lib/fastSamOverlayGenerator";
@@ -1443,8 +1444,7 @@ export function EbsViewer(props: EbsViewerProps) {
   useEffect(() => {
     if (!viewerVisible) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.tagName === "INPUT") return;
+      if (shouldIgnoreViewerShortcutTarget(event.target)) return;
 
       if (event.code === "Space") {
         event.preventDefault();
