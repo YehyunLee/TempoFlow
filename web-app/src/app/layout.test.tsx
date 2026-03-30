@@ -3,6 +3,10 @@ import { describe, it, expect, vi } from "vitest";
 import RootLayout, { metadata } from "./layout";
 import React from "react";
 
+vi.mock("../components/Providers", () => ({
+  Providers: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 describe("RootLayout", () => {
   it("renders children correctly within the body", () => {
     const { getByText } = render(
