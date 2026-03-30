@@ -2139,7 +2139,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
           <div className="final-score-pop-card">
             <div className="final-score-pop-label">Final Score</div>
             <div className="final-score-pop-value">{averageFinalAngleScore}</div>
-            <div className="final-score-pop-note">All segments processed</div>
           </div>
         </div>
       ) : null}
