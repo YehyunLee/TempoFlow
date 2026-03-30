@@ -1,4 +1,5 @@
-import type { DanceFeedback, FeedbackFeatureFamily, FeedbackSeverity } from "../../lib/bodyPix";
+import type { DanceFeedback, FeedbackFeatureFamily, FeedbackSeverity, SampledPoseFrame } from "../../lib/bodyPix";
+import { normalizeKeypoints } from "../../lib/bodyPix/geometry";
 import type { OverlayArtifact, OverlaySegmentArtifact } from "../../lib/overlayStorage";
 import { getOverlaySegmentByIndex } from "../../lib/overlaySegments";
 import { passesVisualFeedbackDifficulty, type FeedbackDifficulty } from "./feedbackDifficulty";
@@ -15,6 +16,16 @@ type OverlayPersonSummary = {
   max_x: number;
   min_y: number;
   max_y: number;
+};
+
+type Point2d = {
+  x: number;
+  y: number;
+};
+
+type SideKeypointSet = {
+  left: number[];
+  right: number[];
 };
 
 export type OverlayVisualCue = {
@@ -62,6 +73,21 @@ const SEVERITY_COLORS: Record<FeedbackSeverity, string> = {
   minor: "#f59e0b",
   moderate: "#fb923c",
   major: "#ef4444",
+};
+
+const ARM_KEYPOINTS: SideKeypointSet = {
+  left: [5, 7, 9],
+  right: [6, 8, 10],
+};
+
+const LEG_KEYPOINTS: SideKeypointSet = {
+  left: [11, 13, 15],
+  right: [12, 14, 16],
+};
+
+const TORSO_KEYPOINTS: SideKeypointSet = {
+  left: [5, 11],
+  right: [6, 12],
 };
 
 function clamp(value: number, min: number, max: number) {
@@ -170,6 +196,121 @@ function getCueAnchor(
   }
 }
 
+function averagePoint(points: Point2d[]) {
+  if (!points.length) return null;
+  return {
+    x: points.reduce((sum, point) => sum + point.x, 0) / points.length,
+    y: points.reduce((sum, point) => sum + point.y, 0) / points.length,
+  };
+}
+
+function getNormalizedScreenAnchor(sample: SampledPoseFrame, keypointIndices: number[]) {
+  const points = keypointIndices
+    .map((index) => sample.keypoints[index])
+    .filter((point) => point && point.score > 0.25)
+    .map((point) => ({
+      x: point.x / Math.max(1, sample.frameWidth),
+      y: point.y / Math.max(1, sample.frameHeight),
+    }));
+  return averagePoint(points);
+}
+
+function scoreNormalizedSideDelta(
+  referencePoints: ReturnType<typeof normalizeKeypoints>,
+  practicePoints: ReturnType<typeof normalizeKeypoints>,
+  practiceIndices: number[],
+  referenceIndices: number[],
+) {
+  const deltas: number[] = [];
+  for (let index = 0; index < Math.min(practiceIndices.length, referenceIndices.length); index += 1) {
+    const practicePoint = practicePoints[practiceIndices[index]];
+    const referencePoint = referencePoints[referenceIndices[index]];
+    if (!practicePoint || !referencePoint) continue;
+    if (practicePoint.score <= 0.25 || referencePoint.score <= 0.25) continue;
+    deltas.push(Math.hypot(practicePoint.x - referencePoint.x, practicePoint.y - referencePoint.y));
+  }
+  return deltas.length
+    ? deltas.reduce((sum, value) => sum + value, 0) / deltas.length
+    : Number.NEGATIVE_INFINITY;
+}
+
+function chooseMirroredSideAnchor(
+  practiceSample: SampledPoseFrame,
+  referenceSample: SampledPoseFrame,
+  keypoints: SideKeypointSet,
+) {
+  const normalizedPractice = normalizeKeypoints(practiceSample.keypoints);
+  const normalizedReference = normalizeKeypoints(referenceSample.keypoints);
+
+  const directLeft = scoreNormalizedSideDelta(
+    normalizedReference,
+    normalizedPractice,
+    keypoints.left,
+    keypoints.left,
+  );
+  const directRight = scoreNormalizedSideDelta(
+    normalizedReference,
+    normalizedPractice,
+    keypoints.right,
+    keypoints.right,
+  );
+  const mirroredLeft = scoreNormalizedSideDelta(
+    normalizedReference,
+    normalizedPractice,
+    keypoints.left,
+    keypoints.right,
+  );
+  const mirroredRight = scoreNormalizedSideDelta(
+    normalizedReference,
+    normalizedPractice,
+    keypoints.right,
+    keypoints.left,
+  );
+
+  const directTotal = Math.max(0, directLeft) + Math.max(0, directRight);
+  const mirroredTotal = Math.max(0, mirroredLeft) + Math.max(0, mirroredRight);
+  const useMirrored = mirroredTotal < directTotal;
+  const leftScore = useMirrored ? mirroredLeft : directLeft;
+  const rightScore = useMirrored ? mirroredRight : directRight;
+  const preferLeft = leftScore >= rightScore;
+  const anchor = getNormalizedScreenAnchor(
+    practiceSample,
+    preferLeft ? keypoints.left : keypoints.right,
+  );
+
+  return anchor;
+}
+
+function getSampleCueAnchor(
+  feedback: DanceFeedback,
+  practiceSample: SampledPoseFrame | null,
+  referenceSample: SampledPoseFrame | null,
+) {
+  if (!practiceSample) return null;
+  if (!referenceSample) {
+    if (feedback.bodyRegion === "arms") return getNormalizedScreenAnchor(practiceSample, ARM_KEYPOINTS.right);
+    if (feedback.bodyRegion === "legs") return getNormalizedScreenAnchor(practiceSample, LEG_KEYPOINTS.right);
+    return null;
+  }
+
+  switch (feedback.bodyRegion) {
+    case "arms":
+      return chooseMirroredSideAnchor(practiceSample, referenceSample, ARM_KEYPOINTS);
+    case "legs":
+      return chooseMirroredSideAnchor(practiceSample, referenceSample, LEG_KEYPOINTS);
+    case "torso":
+      return chooseMirroredSideAnchor(practiceSample, referenceSample, TORSO_KEYPOINTS);
+    case "head":
+      return getNormalizedScreenAnchor(practiceSample, [0, 1, 2]);
+    case "full_body":
+    default:
+      return (
+        chooseMirroredSideAnchor(practiceSample, referenceSample, ARM_KEYPOINTS) ??
+        chooseMirroredSideAnchor(practiceSample, referenceSample, LEG_KEYPOINTS)
+      );
+  }
+}
+
 function getCueSize(
   bodyRegion: DanceFeedback["bodyRegion"],
   bounds: OverlayPersonSummary,
@@ -253,14 +394,23 @@ export function buildOverlayVisualCue(params: {
   feedback: DanceFeedback | null;
   practiceArtifact: OverlayArtifact | null;
   referenceArtifact?: OverlayArtifact | null;
+  practiceSample?: SampledPoseFrame | null;
+  referenceSample?: SampledPoseFrame | null;
 }) {
-  const { feedback, practiceArtifact, referenceArtifact = null } = params;
+  const {
+    feedback,
+    practiceArtifact,
+    referenceArtifact = null,
+    practiceSample = null,
+    referenceSample = null,
+  } = params;
   if (!feedback) return null;
 
   const practiceSegment = getOverlaySegmentByIndex(practiceArtifact, feedback.segmentIndex);
   const referenceSegment = getOverlaySegmentByIndex(referenceArtifact, feedback.segmentIndex);
   const bounds = getSegmentBounds(practiceSegment) ?? getSegmentBounds(referenceSegment) ?? DEFAULT_BOUNDS;
-  const anchor = getCueAnchor(feedback.bodyRegion, bounds);
+  const sampleAnchor = getSampleCueAnchor(feedback, practiceSample, referenceSample);
+  const anchor = sampleAnchor ?? getCueAnchor(feedback.bodyRegion, bounds);
 
   return {
     id: `${feedback.segmentIndex}:${feedback.featureFamily ?? "generic"}:${feedback.timestamp.toFixed(3)}`,

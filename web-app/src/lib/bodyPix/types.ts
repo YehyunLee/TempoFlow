@@ -53,6 +53,8 @@ export type PoseKeypoint = { x: number; y: number; score: number; name?: string 
 export type SampledPoseFrame = {
   timestamp: number;
   segmentIndex: number;
+  frameWidth: number;
+  frameHeight: number;
   keypoints: PoseKeypoint[];
   partCoverage: Record<BodyRegion, number>;
 };

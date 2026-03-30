@@ -41,7 +41,7 @@ import {
   getFeedbackSegment,
   hashEbsData,
 } from "../../lib/feedbackStorage";
-import { compareWithBodyPix, type DanceFeedback } from "../../lib/bodyPix";
+import { compareWithBodyPix, type DanceFeedback, type SampledPoseFrame } from "../../lib/bodyPix";
 import {
   FEEDBACK_DIFFICULTY_OPTIONS,
   isFeedbackDifficulty,
@@ -163,6 +163,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayStatus, setOverlayStatus] = useState<string | null>(null);
   const [visualFeedbackRows, setVisualFeedbackRows] = useState<DanceFeedback[]>([]);
+  const [visualReferenceSamples, setVisualReferenceSamples] = useState<SampledPoseFrame[]>([]);
+  const [visualUserSamples, setVisualUserSamples] = useState<SampledPoseFrame[]>([]);
   const [bodyPixSegmentProgress, setBodyPixSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [yoloSegmentProgress, setYoloSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [overlayCacheReady, setOverlayCacheReady] = useState(false);
@@ -546,6 +548,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
   useEffect(() => {
     visualFeedbackStartedRef.current = false;
     setVisualFeedbackRows([]);
+    setVisualReferenceSamples([]);
+    setVisualUserSamples([]);
   }, [sessionId, activeReferenceVideoUrl, activeUserVideoUrl]);
 
   useEffect(() => {
@@ -572,10 +576,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
       .then((result) => {
         if (cancelled) return;
         setVisualFeedbackRows(result.feedback ?? []);
+        setVisualReferenceSamples(result.refSamples ?? []);
+        setVisualUserSamples(result.userSamples ?? []);
       })
       .catch(() => {
         if (cancelled) return;
         setVisualFeedbackRows([]);
+        setVisualReferenceSamples([]);
+        setVisualUserSamples([]);
       });
 
     return () => {
@@ -1220,13 +1228,25 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [activeVideoSegmentIndex, feedbackDifficulty, state.segments, state.sharedTime, visualFeedbackRows]);
 
   const overlayVisualCue = useMemo(
-    () =>
-      buildOverlayVisualCue({
+    () => {
+      const sampleIndex = activeVisualFeedback?.frameIndex;
+      return buildOverlayVisualCue({
         feedback: activeVisualFeedback,
         practiceArtifact: overlayCuePracticeArtifact,
         referenceArtifact: overlayCueReferenceArtifact,
-      }),
-    [activeVisualFeedback, overlayCuePracticeArtifact, overlayCueReferenceArtifact],
+        practiceSample:
+          typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualUserSamples[sampleIndex] ?? null) : null,
+        referenceSample:
+          typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualReferenceSamples[sampleIndex] ?? null) : null,
+      });
+    },
+    [
+      activeVisualFeedback,
+      overlayCuePracticeArtifact,
+      overlayCueReferenceArtifact,
+      visualReferenceSamples,
+      visualUserSamples,
+    ],
   );
 
   return (
@@ -1366,6 +1386,13 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       <BodyPixOverlay videoRef={userVideo} opacity={0.68} color={{ r: 255, g: 100, b: 50 }} />
                     )
                   ) : null}
+                  {sessionMode && showFeedback && overlayVisualCue ? (
+                    <OverlayVisualFeedback
+                      key={`side-${overlayVisualCue.id}`}
+                      cue={overlayVisualCue}
+                      mediaRef={userVideo}
+                    />
+                  ) : null}
                 </div>
                 <div className={`beat-flash${state.beatFlashOn ? " on" : ""}`} />
                 <div className={`seg-pause-overlay${state.pauseOverlay.visible ? " visible" : ""}`}>
@@ -1383,7 +1410,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
             <div className="videos single-view">
               <div className="video-panel" style={{ maxWidth: "100%", width: "100%" }}>
                 <div className="video-label">
-                  <span>Overlay ({sessionPracticeName || "Practice"})</span>
+                  <span>User ({sessionPracticeName || "Practice"})</span>
                   <span className="time-display">{fmtTimeFull(state.userTime)}</span>
                 </div>
                 <div className="relative" style={{ aspectRatio: "16/9", background: "#000" }}>
@@ -1438,7 +1465,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     </>
                   )}
                   {sessionMode && showFeedback && overlayVisualCue ? (
-                    <OverlayVisualFeedback key={overlayVisualCue.id} cue={overlayVisualCue} />
+                    <OverlayVisualFeedback cue={overlayVisualCue} mediaRef={overlayVideoRef} />
                   ) : null}
                 </div>
               </div>

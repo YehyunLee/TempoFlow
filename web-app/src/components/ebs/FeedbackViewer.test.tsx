@@ -304,6 +304,21 @@ describe("FeedbackViewer", () => {
     expect(await screen.findByText(/Upper-body shape differs from the guide phrase/i)).toBeInTheDocument();
   });
 
+  it("shows local visual feedback on the user clip in split view", async () => {
+    render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 5 }], alignment: {} } as any}
+      />,
+    );
+
+    expect(await screen.findByText("Position diff")).toBeInTheDocument();
+    expect(await screen.findByText(/Upper-body shape differs from the guide phrase/i)).toBeInTheDocument();
+  });
+
   it("filters lighter Gemini timing notes when difficulty is set to Beginner", async () => {
     render(
       <FeedbackViewer

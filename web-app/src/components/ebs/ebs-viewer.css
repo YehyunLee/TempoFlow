@@ -583,44 +583,27 @@
   height: 14px;
   background: rgba(15, 23, 42, 0.9);
   transform: rotate(45deg);
+  left: calc(var(--overlay-feedback-caret-left, 50%) - 7px);
 }
 
 .overlay-feedback-card-above::after {
-  left: calc(50% - 7px);
   bottom: -7px;
   border-right: 1px solid rgba(191, 219, 254, 0.2);
   border-bottom: 1px solid rgba(191, 219, 254, 0.2);
 }
 
 .overlay-feedback-card-below::after {
-  left: calc(50% - 7px);
   top: -7px;
   border-left: 1px solid rgba(191, 219, 254, 0.2);
   border-top: 1px solid rgba(191, 219, 254, 0.2);
 }
 
-.overlay-feedback-card-above.overlay-feedback-card-center {
-  transform: translate(-50%, calc(-100% - 28px));
+.overlay-feedback-card-above {
+  transform: translateY(calc(-100% - 28px));
 }
 
-.overlay-feedback-card-above.overlay-feedback-card-left {
-  transform: translate(20px, calc(-100% - 28px));
-}
-
-.overlay-feedback-card-above.overlay-feedback-card-right {
-  transform: translate(calc(-100% - 20px), calc(-100% - 28px));
-}
-
-.overlay-feedback-card-below.overlay-feedback-card-center {
-  transform: translate(-50%, 28px);
-}
-
-.overlay-feedback-card-below.overlay-feedback-card-left {
-  transform: translate(20px, 28px);
-}
-
-.overlay-feedback-card-below.overlay-feedback-card-right {
-  transform: translate(calc(-100% - 20px), 28px);
+.overlay-feedback-card-below {
+  transform: translateY(28px);
 }
 
 .overlay-feedback-card-row {

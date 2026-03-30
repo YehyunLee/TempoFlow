@@ -92,5 +92,12 @@ export async function sampleFrame(
   const totalPixels = seg.width * seg.height;
   const partCoverage = computePartCoverage(seg.data, totalPixels);
 
-  return { timestamp, segmentIndex, keypoints, partCoverage };
+  return {
+    timestamp,
+    segmentIndex,
+    frameWidth: seg.width,
+    frameHeight: seg.height,
+    keypoints,
+    partCoverage,
+  };
 }

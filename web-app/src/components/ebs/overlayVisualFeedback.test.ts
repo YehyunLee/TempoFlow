@@ -1,118 +1,56 @@
 import { describe, expect, it } from "vitest";
 
-import { buildOverlayVisualCue, pickActiveSegmentFeedback } from "./overlayFeedbackCue";
+import { computeDisplayedMediaBox, computeOverlayCardPlacement } from "./OverlayVisualFeedback";
 
-describe("overlayVisualFeedback", () => {
-  it("prefers position-diff feedback in the middle of a section", () => {
-    const feedback = [
-      {
-        timestamp: 2.5,
-        segmentIndex: 0,
-        bodyRegion: "torso" as const,
-        severity: "minor" as const,
-        message: "Timing differs from the guide phrase.",
-        deviation: 0.18,
-        featureFamily: "micro_timing" as const,
-      },
-      {
-        timestamp: 2.5,
-        segmentIndex: 0,
-        bodyRegion: "arms" as const,
-        severity: "moderate" as const,
-        message: "Upper-body shape differs from the guide phrase.",
-        deviation: 0.31,
-        featureFamily: "upper_body" as const,
-      },
-    ];
-
-    const active = pickActiveSegmentFeedback({
-      feedback,
-      segment: { shared_start_sec: 0, shared_end_sec: 5 },
-      segmentIndex: 0,
-      sharedTime: 2.7,
+describe("OverlayVisualFeedback", () => {
+  it("returns the full media box when there is no contain letterboxing", () => {
+    expect(
+      computeDisplayedMediaBox({
+        stageWidth: 640,
+        stageHeight: 360,
+        mediaLeft: 0,
+        mediaTop: 0,
+        mediaWidth: 640,
+        mediaHeight: 360,
+        intrinsicWidth: 640,
+        intrinsicHeight: 360,
+        objectFit: "fill",
+      }),
+    ).toEqual({
+      left: 0,
+      top: 0,
+      width: 1,
+      height: 1,
     });
-
-    expect(active?.featureFamily).toBe("upper_body");
   });
 
-  it("anchors a cue using normalized practice segmentation bounds", () => {
-    const cue = buildOverlayVisualCue({
-      feedback: {
-        timestamp: 2.5,
-        segmentIndex: 0,
-        bodyRegion: "arms",
-        severity: "moderate",
-        message: "Upper-body shape differs from the reference phrase.",
-        deviation: 0.31,
-        featureFamily: "upper_body",
-      },
-      practiceArtifact: {
-        version: 1,
-        type: "yolo",
-        side: "practice",
-        fps: 12,
-        width: 1280,
-        height: 720,
-        frameCount: 1,
-        createdAt: "",
-        segments: [
-          {
-            index: 0,
-            startSec: 0,
-            endSec: 5,
-            fps: 12,
-            width: 1280,
-            height: 720,
-            frameCount: 1,
-            createdAt: "",
-            meta: {
-              segSummary: {
-                persons: [
-                  {
-                    anchor_x: 0.62,
-                    anchor_y: 0.88,
-                    center_x: 0.62,
-                    center_y: 0.48,
-                    width: 0.22,
-                    height: 0.76,
-                    min_x: 0.51,
-                    max_x: 0.73,
-                    min_y: 0.1,
-                    max_y: 0.86,
-                  },
-                ],
-              },
-            },
-          },
-        ],
-      },
+  it("shrinks to the displayed content box for object-contain video", () => {
+    const result = computeDisplayedMediaBox({
+      stageWidth: 1000,
+      stageHeight: 1000,
+      mediaLeft: 0,
+      mediaTop: 0,
+      mediaWidth: 1000,
+      mediaHeight: 1000,
+      intrinsicWidth: 720,
+      intrinsicHeight: 1280,
+      objectFit: "contain",
     });
 
-    expect(cue).not.toBeNull();
-    expect(cue?.xPct).toBeCloseTo(0.62, 3);
-    expect(cue?.yPct).toBeCloseTo(0.3584, 3);
-    expect(cue?.title).toBe("Position diff");
+    expect(result.left).toBeCloseTo(0.21875, 5);
+    expect(result.top).toBe(0);
+    expect(result.width).toBeCloseTo(0.5625, 5);
+    expect(result.height).toBe(1);
   });
 
-  it("suppresses smaller visual cues on beginner difficulty", () => {
-    const active = pickActiveSegmentFeedback({
-      feedback: [
-        {
-          timestamp: 2.5,
-          segmentIndex: 0,
-          bodyRegion: "torso" as const,
-          severity: "minor" as const,
-          message: "Timing differs from the guide phrase.",
-          deviation: 0.19,
-          featureFamily: "micro_timing" as const,
-        },
-      ],
-      segment: { shared_start_sec: 0, shared_end_sec: 5 },
-      segmentIndex: 0,
-      sharedTime: 0.8,
-      difficulty: "beginner",
+  it("keeps the card on-screen while leaving the pointer near the true anchor", () => {
+    const result = computeOverlayCardPlacement({
+      stageWidth: 600,
+      anchorXPx: 140,
+      cardWidth: 280,
     });
 
-    expect(active).toBeNull();
+    expect(result.cardLeftPx).toBe(16);
+    expect(result.caretLeftPx).toBe(124);
   });
 });
