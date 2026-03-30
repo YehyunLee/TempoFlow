@@ -510,8 +510,8 @@ describe("FeedbackViewer", () => {
       expect(container.querySelector(".timeline-score-chip")).not.toBeNull();
     });
 
-    expect(container.querySelector(".timeline-score-number.lower")).not.toBeNull();
-    expect(container.querySelector(".timeline-score-max.higher")).not.toBeNull();
+    expect(container.querySelector(".timeline-score-number.high, .timeline-score-number.medium, .timeline-score-number.low")).not.toBeNull();
+    expect(container.querySelector(".timeline-score-max.high, .timeline-score-max.medium, .timeline-score-max.low")).toBeNull();
   });
 
   it("seeks when a timeline feedback marker is clicked", async () => {

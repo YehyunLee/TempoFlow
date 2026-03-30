@@ -1065,19 +1065,16 @@
   opacity: 0.68;
 }
 
-.timeline-score-number.higher,
-.timeline-score-max.higher {
+.timeline-score-number.high {
   color: #15803d;
 }
 
-.timeline-score-number.lower,
-.timeline-score-max.lower {
-  color: #dc2626;
+.timeline-score-number.medium {
+  color: #ea580c;
 }
 
-.timeline-score-number.equal,
-.timeline-score-max.equal {
-  color: #0f172a;
+.timeline-score-number.low {
+  color: #dc2626;
 }
 
 .timeline-joint-diff-grid {

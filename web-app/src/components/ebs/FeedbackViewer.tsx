@@ -1741,22 +1741,14 @@ export function FeedbackViewer(props: EbsViewerProps) {
     visualUserSamples,
   ]);
   const overlayDifferenceMax = 100;
-  const overlayDifferenceValueTone =
+  const overlayDifferenceTone =
     overlayDifferenceScore == null
       ? null
-      : overlayDifferenceScore === overlayDifferenceMax
-        ? "equal"
-        : overlayDifferenceScore > overlayDifferenceMax
-          ? "higher"
-          : "lower";
-  const overlayDifferenceMaxTone =
-    overlayDifferenceScore == null
-      ? null
-      : overlayDifferenceScore === overlayDifferenceMax
-        ? "equal"
-        : overlayDifferenceScore < overlayDifferenceMax
-          ? "higher"
-          : "lower";
+      : overlayDifferenceScore >= 80
+        ? "high"
+        : overlayDifferenceScore >= 70
+          ? "medium"
+          : "low";
   const jointAngleDiffBars = useMemo(() => {
     if (!sessionMode || overlayDetector !== "yolo" || activeVideoSegmentIndex < 0) return [];
     const referenceSample = getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
@@ -2169,10 +2161,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       <div className="timeline-score-chip" aria-live="polite">
                         <span className="timeline-score-label">Overlay diff</span>
                         <span className="timeline-score-value">
-                          <span className={`timeline-score-number ${overlayDifferenceValueTone ?? ""}`}>
+                          <span className={`timeline-score-number ${overlayDifferenceTone ?? ""}`}>
                             {overlayDifferenceScore}
                           </span>
-                          <span className={`timeline-score-max ${overlayDifferenceMaxTone ?? ""}`}>
+                          <span className="timeline-score-max">
                             /{overlayDifferenceMax}
                           </span>
                         </span>
