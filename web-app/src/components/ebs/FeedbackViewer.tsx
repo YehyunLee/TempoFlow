@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, ReactNode, RefObject } from "react";
+import type { CSSProperties, RefObject } from "react";
 import { useEbsViewer } from "./useEbsViewer";
 import type { EbsData } from "./types";
 import { buildMovesForSegment } from "./ebsViewerLogic";
@@ -68,6 +68,7 @@ import {
   pickActiveSegmentFeedback,
 } from "./overlayFeedbackCue";
 import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
+import { getSession, updateSession } from "../../lib/sessionStorage";
 
 type ManualViewerProps = {
   mode?: "manual";
@@ -83,7 +84,6 @@ type SessionViewerProps = {
   referenceName?: string;
   practiceName?: string;
   title?: string;
-  footerSlot?: ReactNode;
 };
 
 type EbsViewerProps = ManualViewerProps | SessionViewerProps;
@@ -610,7 +610,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const sessionEbsData = sessionProps?.ebsData ?? null;
   const sessionReferenceName = sessionProps?.referenceName ?? null;
   const sessionPracticeName = sessionProps?.practiceName ?? null;
-  const sessionFooterSlot = sessionProps?.footerSlot ?? null;
   const sessionId = sessionProps?.sessionId ?? null;
   /** Fixed defaults: precomputed BodyPix in browser (see ensureBrowserBodyPixOverlays). */
   const overlayMode: "precomputed" | "live" = "precomputed";
@@ -1916,6 +1915,16 @@ export function FeedbackViewer(props: EbsViewerProps) {
     });
   }, [activeVideoSegmentIndex, feedbackDifficulty, showAngleFeedback, state.segments, state.sharedTime, visualFeedbackRows]);
 
+  const currentVisualPracticeSample = useMemo(() => {
+    if (activeVideoSegmentIndex < 0) return null;
+    return getNearestSegmentSample(visualUserSamples, activeVideoSegmentIndex, state.sharedTime);
+  }, [activeVideoSegmentIndex, state.sharedTime, visualUserSamples]);
+
+  const currentVisualReferenceSample = useMemo(() => {
+    if (activeVideoSegmentIndex < 0) return null;
+    return getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
+  }, [activeVideoSegmentIndex, state.sharedTime, visualReferenceSamples]);
+
   const overlayVisualCue = useMemo(
     () => {
       const buildCueForRow = (row: DanceFeedback | null) => {
@@ -1925,9 +1934,11 @@ export function FeedbackViewer(props: EbsViewerProps) {
           practiceArtifact: overlayCuePracticeArtifact,
           referenceArtifact: overlayCueReferenceArtifact,
           practiceSample:
-            typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualUserSamples[sampleIndex] ?? null) : null,
+            currentVisualPracticeSample ??
+            (typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualUserSamples[sampleIndex] ?? null) : null),
           referenceSample:
-            typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualReferenceSamples[sampleIndex] ?? null) : null,
+            currentVisualReferenceSample ??
+            (typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualReferenceSamples[sampleIndex] ?? null) : null),
         });
       };
 
@@ -1956,6 +1967,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
     [
       activeVisualFeedback,
       activeVisualFeedbackRows,
+      currentVisualPracticeSample,
+      currentVisualReferenceSample,
       overlayCuePracticeArtifact,
       overlayCueReferenceArtifact,
       visualReferenceSamples,
@@ -2064,6 +2077,64 @@ export function FeedbackViewer(props: EbsViewerProps) {
     }, 4200);
     return () => window.clearTimeout(timeout);
   }, [averageFinalAngleScore, sessionId, state.segments.length, visualFeedbackReadySegments]);
+
+  useEffect(() => {
+    if (!sessionId || averageFinalAngleScore == null || visualFeedbackReadySegments < state.segments.length) {
+      return;
+    }
+
+    const currentSession = getSession(sessionId);
+    if (!currentSession) return;
+    if (currentSession.ebsMeta?.finalScore === averageFinalAngleScore) return;
+
+    updateSession(sessionId, {
+      ebsMeta: {
+        ...(currentSession.ebsMeta ?? {
+          segmentCount: state.segments.length,
+          sharedDurationSec: 0,
+          generatedAt: new Date().toISOString(),
+        }),
+        finalScore: averageFinalAngleScore,
+      },
+    });
+  }, [averageFinalAngleScore, sessionId, state.segments.length, visualFeedbackReadySegments]);
+
+  const renderFeedbackTypeToggleGroup = (extraClassName?: string) => (
+    <div
+      className={["mode-group mode-group-compact feedback-type-group", extraClassName].filter(Boolean).join(" ")}
+      role="group"
+      aria-label="Feedback type filters"
+    >
+      <div className="mode-switch mode-switch-soft">
+        <button
+          type="button"
+          onClick={() => setShowMicroTimingFeedback((current) => !current)}
+          className={[
+            "mode-pill mode-pill-soft mode-pill-compact",
+            showMicroTimingFeedback ? "active soft" : "",
+          ].join(" ")}
+          aria-pressed={showMicroTimingFeedback}
+          aria-label="Toggle Micro Timing feedback"
+          title="Toggle Micro Timing feedback"
+        >
+          Micro Timing
+        </button>
+        <button
+          type="button"
+          onClick={() => setShowAngleFeedback((current) => !current)}
+          className={[
+            "mode-pill mode-pill-soft mode-pill-compact",
+            showAngleFeedback ? "active soft" : "",
+          ].join(" ")}
+          aria-pressed={showAngleFeedback}
+          aria-label="Toggle Angle feedback"
+          title="Toggle Angle feedback"
+        >
+          Angle
+        </button>
+      </div>
+    </div>
+  );
 
   const activeGeminiMove = useMemo(() => {
     if (!showMicroTimingFeedback) return null;
@@ -2206,36 +2277,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 ) : null}
                 {showFeedback ? (
                   <div className="viewer-controls-right">
-                    <div className="mode-group mode-group-compact feedback-type-group" role="group" aria-label="Feedback type filters">
-                      <div className="mode-switch mode-switch-soft">
-                        <button
-                          type="button"
-                          onClick={() => setShowMicroTimingFeedback((current) => !current)}
-                          className={[
-                            "mode-pill mode-pill-soft mode-pill-compact",
-                            showMicroTimingFeedback ? "active soft" : "",
-                          ].join(" ")}
-                          aria-pressed={showMicroTimingFeedback}
-                          aria-label="Toggle Micro Timing feedback"
-                          title="Toggle Micro Timing feedback"
-                        >
-                          Micro Timing
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setShowAngleFeedback((current) => !current)}
-                          className={[
-                            "mode-pill mode-pill-soft mode-pill-compact",
-                            showAngleFeedback ? "active soft" : "",
-                          ].join(" ")}
-                          aria-pressed={showAngleFeedback}
-                          aria-label="Toggle Angle feedback"
-                          title="Toggle Angle feedback"
-                        >
-                          Angle
-                        </button>
-                      </div>
-                    </div>
                     <div className="mode-group mode-group-compact feedback-difficulty-group">
                       <div className="mode-switch mode-switch-soft">
                         {FEEDBACK_DIFFICULTY_OPTIONS.map((option) => (
@@ -2255,6 +2296,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         ))}
                       </div>
                     </div>
+                    {state.practice.enabled ? renderFeedbackTypeToggleGroup("viewer-feedback-type-group") : null}
                   </div>
                 ) : null}
               </div>
@@ -2496,46 +2538,44 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
               <div className="timeline" style={{ position: "relative", zIndex: 10 }}>
                 <div className="timeline-header">
-                  <div className="timeline-header-main">
-                    <div className="move-tl-label">Section Timeline</div>
+                  <div className="timeline-header-main timeline-header-main-compact">
                     {liveAngleScore != null ? (
-                      <div className="timeline-score-wrap" aria-live="polite">
+                      <div className="timeline-score-panel" aria-live="polite">
                         {jointAngleDiffBars.length > 0 ? <AngleDiffSkeleton joints={jointAngleDiffBars} /> : null}
-                        <div className="timeline-score-chip">
+                        <div className="timeline-score-copy">
                           <span className="timeline-score-label">Score</span>
-                          <span className="timeline-score-value">
-                            <span className={`timeline-score-number ${liveAngleScoreTone ?? ""}`}>
-                              {liveAngleScore}
-                            </span>
-                            <span className="timeline-score-max">
-                              /100
-                            </span>
-                          </span>
+                          <div className="timeline-score-value">
+                            <span className={`timeline-score-number ${liveAngleScoreTone ?? ""}`}>{liveAngleScore}</span>
+                            <span className="timeline-score-max">/100</span>
+                          </div>
                         </div>
                       </div>
                     ) : null}
                   </div>
-                  <div className="timeline-inline-toggle-group">
-                    <label className="timeline-inline-toggle" htmlFor="chk-pause-feedback">
-                      <span>Pause at feedback</span>
-                      <input
-                        id="chk-pause-feedback"
-                        type="checkbox"
-                        className="ebs-toggle-switch"
-                        checked={pauseAtFeedback}
-                        onChange={(e) => setPauseAtFeedback(e.target.checked)}
-                      />
-                    </label>
-                    <label className="timeline-inline-toggle" htmlFor="chk-pause">
-                      <span>Pause at section end</span>
-                      <input
-                        id="chk-pause"
-                        type="checkbox"
-                        className="ebs-toggle-switch"
-                        checked={state.pauseAtSegmentEnd}
-                        onChange={(e) => setPauseAtSegmentEnd(e.target.checked)}
-                      />
-                    </label>
+                  <div className="timeline-header-controls">
+                    {showFeedback ? renderFeedbackTypeToggleGroup("timeline-feedback-type-group") : null}
+                    <div className="timeline-inline-toggle-group">
+                      <label className="timeline-inline-toggle" htmlFor="chk-pause-feedback">
+                        <span>Pause at feedback</span>
+                        <input
+                          id="chk-pause-feedback"
+                          type="checkbox"
+                          className="ebs-toggle-switch"
+                          checked={pauseAtFeedback}
+                          onChange={(e) => setPauseAtFeedback(e.target.checked)}
+                        />
+                      </label>
+                      <label className="timeline-inline-toggle" htmlFor="chk-pause">
+                        <span>Pause at section end</span>
+                        <input
+                          id="chk-pause"
+                          type="checkbox"
+                          className="ebs-toggle-switch"
+                          checked={state.pauseAtSegmentEnd}
+                          onChange={(e) => setPauseAtSegmentEnd(e.target.checked)}
+                        />
+                      </label>
+                    </div>
                   </div>
                 </div>
                 <div className="relative">
@@ -2664,22 +2704,23 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 ))}
               </div>
 
-              <div className="download-row">
-                <button className="dl-btn" onClick={downloadJson}>
-                  Download EBS JSON
-                </button>
-                <button
-                  className="dl-btn"
-                  onClick={() => {
-                    if (state.currentSegmentIndex >= 0) {
-                      openPracticeMode(state.currentSegmentIndex);
-                    }
-                  }}
-                >
-                  Practice Current Section
-                </button>
-                {sessionMode ? sessionFooterSlot : null}
-              </div>
+              {!sessionMode ? (
+                <div className="download-row">
+                  <button className="dl-btn" onClick={downloadJson}>
+                    Download EBS JSON
+                  </button>
+                  <button
+                    className="dl-btn"
+                    onClick={() => {
+                      if (state.currentSegmentIndex >= 0) {
+                        openPracticeMode(state.currentSegmentIndex);
+                      }
+                    }}
+                  >
+                    Practice Current Section
+                  </button>
+                </div>
+              ) : null}
             </>
           )}
 
@@ -2699,12 +2740,13 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 </div>
               </div>
 
-              <div className="download-row">
-                <button className="dl-btn" onClick={downloadJson}>
-                  Download EBS JSON
-                </button>
-                {sessionMode ? sessionFooterSlot : null}
-              </div>
+              {!sessionMode ? (
+                <div className="download-row">
+                  <button className="dl-btn" onClick={downloadJson}>
+                    Download EBS JSON
+                  </button>
+                </div>
+              ) : null}
             </>
           )}
 

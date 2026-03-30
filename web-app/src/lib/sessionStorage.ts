@@ -3,7 +3,7 @@
 export type SessionStatus = 'uploaded' | 'analyzing' | 'analyzed' | 'error';
 export type StorageMode = 'local' | 'api' | 'aws';
 export type AnalysisMode = 'local' | 'api';
-export type EbsStatus = 'idle' | 'processing' | 'ready' | 'error';
+export type EbsStatus = 'idle' | 'processing' | 'paused' | 'ready' | 'error';
 
 export interface AnalysisScores {
   overall: number;
@@ -53,6 +53,8 @@ export interface EbsSessionMeta {
   segmentationMode?: string;
   sharedDurationSec: number;
   generatedAt: string;
+  processingStartedAt?: string;
+  finalScore?: number;
 }
 
 export interface TempoFlowSession {
@@ -76,6 +78,7 @@ export interface TempoFlowSession {
 
 const SESSIONS_KEY = 'tempoflow.sessions';
 const CURRENT_SESSION_KEY = 'tempoflow.currentSessionId';
+const SESSIONS_CHANGED_EVENT = 'tempoflow:sessions-changed';
 
 function canUseStorage() {
   return typeof window !== 'undefined';
@@ -98,6 +101,7 @@ function readSessions(): TempoFlowSession[] {
 function writeSessions(sessions: TempoFlowSession[]) {
   if (!canUseStorage()) return;
   window.localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions));
+  window.dispatchEvent(new CustomEvent(SESSIONS_CHANGED_EVENT));
 }
 
 function makeId() {
@@ -191,4 +195,15 @@ export function setCurrentSessionId(sessionId: string) {
 export function getCurrentSessionId(): string | null {
   if (!canUseStorage()) return null;
   return window.localStorage.getItem(CURRENT_SESSION_KEY);
+}
+
+export function subscribeSessions(listener: () => void): () => void {
+  if (!canUseStorage()) return () => {};
+
+  window.addEventListener(SESSIONS_CHANGED_EVENT, listener);
+  window.addEventListener('storage', listener);
+  return () => {
+    window.removeEventListener(SESSIONS_CHANGED_EVENT, listener);
+    window.removeEventListener('storage', listener);
+  };
 }

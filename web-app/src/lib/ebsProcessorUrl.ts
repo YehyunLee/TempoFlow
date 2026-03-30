@@ -14,3 +14,11 @@ export function getPublicEbsProcessorUrl(): string {
   }
   return 'http://127.0.0.1:8787/api/process';
 }
+
+export function getProcessorBaseUrl(processorUrl = getPublicEbsProcessorUrl()): string {
+  return processorUrl.replace(/\/api\/process\/?$/, '');
+}
+
+export function isLocalDevProcessorUrl(url = getPublicEbsProcessorUrl()): boolean {
+  return url.includes('127.0.0.1') || url.includes('localhost:');
+}

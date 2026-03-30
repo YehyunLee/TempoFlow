@@ -254,6 +254,10 @@
   align-items: center;
 }
 
+.viewer-feedback-type-group {
+  justify-content: flex-end;
+}
+
 .viewer-controls-right .mode-group-label {
   width: 100%;
   text-align: left;
@@ -969,8 +973,8 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  height: 42px;
-  padding: 0 12px;
+  min-height: 42px;
+  padding: 0 14px;
   border-radius: 999px;
   background: linear-gradient(180deg, #f8fdff 0%, #edf7ff 100%);
   border: 1px solid var(--border);
@@ -1019,38 +1023,48 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 10px;
+  gap: 14px;
+  margin-bottom: 14px;
 }
 
 .timeline-header-main {
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
+  align-items: center;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
-.timeline-header .move-tl-label {
-  margin-bottom: 0;
+.timeline-header-main-compact {
+  gap: 0;
 }
 
-.timeline-score-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 10px;
-  border-radius: 999px;
-  border: 1px solid #cbd5e1;
-  background: #eff6ff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+.timeline-header-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  flex: 1 1 auto;
 }
 
-.timeline-score-wrap {
+.timeline-score-panel {
   display: inline-flex;
   align-items: center;
   gap: 12px;
-  flex-wrap: nowrap;
+  min-height: 78px;
+  padding: 8px 16px 8px 8px;
+  border-radius: 26px;
+  border: 1px solid rgba(191, 219, 254, 0.95);
+  background:
+    radial-gradient(circle at top left, rgba(255, 255, 255, 0.98), rgba(239, 246, 255, 0.96) 72%),
+    linear-gradient(180deg, #f8fdff 0%, #edf7ff 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.88), 0 10px 28px rgba(148, 163, 184, 0.12);
+}
+
+.timeline-score-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .timeline-score-label {
@@ -1062,6 +1076,9 @@
 }
 
 .timeline-score-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
   font-size: 14px;
   font-weight: 800;
   letter-spacing: 0.01em;
@@ -1071,11 +1088,16 @@
 
 .timeline-score-number,
 .timeline-score-max {
-  margin-left: 2px;
+  margin-left: 0;
+}
+
+.timeline-score-number {
+  font-size: 30px;
+  line-height: 0.95;
 }
 
 .timeline-score-max {
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 700;
   opacity: 0.68;
 }
@@ -1093,14 +1115,14 @@
 }
 
 .timeline-angle-skeleton {
-  width: 54px;
-  min-width: 54px;
-  height: 66px;
+  width: 62px;
+  min-width: 62px;
+  height: 74px;
   padding: 5px;
-  border-radius: 18px;
-  background: radial-gradient(circle at top, rgba(255, 255, 255, 0.99), rgba(241, 245, 249, 0.96) 74%);
+  border-radius: 20px;
+  background: radial-gradient(circle at top, rgba(255, 255, 255, 0.99), rgba(241, 245, 249, 0.98) 74%);
   border: 1px solid rgba(191, 219, 254, 0.95);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 6px 18px rgba(148, 163, 184, 0.14);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 8px 22px rgba(148, 163, 184, 0.16);
 }
 
 .timeline-angle-skeleton svg {
@@ -1421,7 +1443,7 @@
 }
 
 .segment-list {
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
 }
 
 .move-list {
@@ -1441,6 +1463,12 @@
 
 .seg-chip {
   position: relative;
+  min-height: 136px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 6px;
+  padding: 14px 16px;
 }
 
 .seg-num,
@@ -1470,16 +1498,20 @@
 }
 
 .seg-practice-btn {
-  display: block;
-  margin: 6px auto 0;
-  font-size: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 8px auto 0;
+  min-height: 32px;
+  font-size: 11px;
+  font-weight: 700;
   color: var(--accent2);
   opacity: 1;
   transition: opacity 0.15s;
   cursor: pointer;
   background: none;
   border: none;
-  padding: 3px 10px;
+  padding: 0 14px;
   border-radius: 999px;
 }
 
@@ -1662,6 +1694,15 @@
   .timeline-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .timeline-header-controls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .timeline-score-panel {
+    width: 100%;
   }
 
   .time-code {

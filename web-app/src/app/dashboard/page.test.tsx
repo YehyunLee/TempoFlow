@@ -10,7 +10,7 @@ type MockSession = {
   storageMode: 'local' | 'api' | 'aws';
   analysisMode: 'local' | 'api';
   status: 'uploaded' | 'analyzing' | 'analyzed' | 'error';
-  ebsStatus: 'idle' | 'processing' | 'ready' | 'error';
+  ebsStatus: 'idle' | 'processing' | 'paused' | 'ready' | 'error';
   referenceName: string;
   practiceName: string;
   referenceSize: number;
@@ -20,18 +20,23 @@ type MockSession = {
     estimatedBpm?: number;
     sharedDurationSec: number;
     generatedAt: string;
+    finalScore?: number;
   };
 };
 
 let mockSessions: MockSession[] = [];
 
 const getSessionsMock = vi.fn(() => mockSessions);
+const subscribeSessionsMock = vi.fn(() => () => undefined);
 const deleteSessionMetadataMock = vi.fn((sessionId: string) => {
   mockSessions = mockSessions.filter((session) => session.id !== sessionId);
 });
 const deleteSessionEbsMock = vi.fn(async () => undefined);
 const deleteSessionVideosMock = vi.fn(async () => undefined);
 const getSessionVideoMock = vi.fn(async () => null);
+const ensureSessionProcessingMock = vi.fn(async () => undefined);
+const pauseSessionProcessingMock = vi.fn(() => undefined);
+const resumeSessionProcessingMock = vi.fn(async () => undefined);
 
 vi.mock('next/link', () => ({
   default: ({
@@ -44,11 +49,18 @@ vi.mock('next/link', () => ({
 
 vi.mock('../../lib/sessionStorage', () => ({
   getSessions: () => getSessionsMock(),
+  subscribeSessions: () => subscribeSessionsMock(),
   deleteSessionMetadata: (sessionId: string) => deleteSessionMetadataMock(sessionId),
 }));
 
 vi.mock('../../lib/ebsStorage', () => ({
   deleteSessionEbs: (sessionId: string) => deleteSessionEbsMock(sessionId),
+}));
+
+vi.mock('../../lib/sessionProcessing', () => ({
+  ensureSessionProcessing: (sessionId: string) => ensureSessionProcessingMock(sessionId),
+  pauseSessionProcessing: (sessionId: string) => pauseSessionProcessingMock(sessionId),
+  resumeSessionProcessing: (sessionId: string) => resumeSessionProcessingMock(sessionId),
 }));
 
 vi.mock('../../lib/videoStorage', () => ({
@@ -64,6 +76,10 @@ describe('Dashboard page', () => {
     deleteSessionEbsMock.mockClear();
     deleteSessionVideosMock.mockClear();
     getSessionVideoMock.mockClear();
+    subscribeSessionsMock.mockClear();
+    ensureSessionProcessingMock.mockClear();
+    pauseSessionProcessingMock.mockClear();
+    resumeSessionProcessingMock.mockClear();
   });
 
   it('renders the empty state when there are no saved sessions', () => {
@@ -76,7 +92,7 @@ describe('Dashboard page', () => {
     );
   });
 
-  it('renders existing sessions with ready-state details', () => {
+  it('renders processed sessions with score details', () => {
     mockSessions = [
       {
         id: 'session-1',
@@ -95,6 +111,7 @@ describe('Dashboard page', () => {
           estimatedBpm: 128,
           sharedDurationSec: 14,
           generatedAt: '2026-03-25T12:00:00.000Z',
+          finalScore: 87,
         },
       },
     ];
@@ -104,12 +121,55 @@ describe('Dashboard page', () => {
     expect(screen.getByRole('heading', { name: /sessions/i })).toBeInTheDocument();
     expect(screen.getByText('practice.mp4')).toBeInTheDocument();
     expect(screen.getByText(/ref: reference\.mp4/i)).toBeInTheDocument();
-    expect(screen.getByText('6 segments')).toBeInTheDocument();
-    expect(screen.getByText('128 BPM')).toBeInTheDocument();
+    expect(screen.getByText(/score 87\/100/i)).toBeInTheDocument();
+    expect(screen.getByText(/latest processed score:/i)).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /^open$/i })).toHaveAttribute(
       'href',
       '/analysis?session=session-1',
     );
+  });
+
+  it('shows pause and resume controls for background processing states', async () => {
+    mockSessions = [
+      {
+        id: 'session-processing',
+        createdAt: '2026-03-25T11:00:00.000Z',
+        updatedAt: '2026-03-25T12:00:00.000Z',
+        storageMode: 'local',
+        analysisMode: 'local',
+        status: 'analyzing',
+        ebsStatus: 'processing',
+        referenceName: 'reference.mp4',
+        practiceName: 'practice.mp4',
+        referenceSize: 100,
+        practiceSize: 200,
+      },
+      {
+        id: 'session-paused',
+        createdAt: '2026-03-25T11:00:00.000Z',
+        updatedAt: '2026-03-25T12:00:00.000Z',
+        storageMode: 'local',
+        analysisMode: 'local',
+        status: 'analyzing',
+        ebsStatus: 'paused',
+        referenceName: 'reference-2.mp4',
+        practiceName: 'practice-2.mp4',
+        referenceSize: 100,
+        practiceSize: 200,
+      },
+    ];
+
+    render(React.createElement(DashboardPage));
+
+    expect(ensureSessionProcessingMock).toHaveBeenCalledWith('session-processing');
+    expect(screen.getByText(/in process/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /pause processing/i }));
+    expect(pauseSessionProcessingMock).toHaveBeenCalledWith('session-processing');
+
+    fireEvent.click(screen.getByRole('button', { name: /resume processing/i }));
+    await waitFor(() => {
+      expect(resumeSessionProcessingMock).toHaveBeenCalledWith('session-paused');
+    });
   });
 
   it('deletes a session and refreshes the list', async () => {

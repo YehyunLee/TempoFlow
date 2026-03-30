@@ -615,11 +615,28 @@ describe("FeedbackViewer", () => {
     await waitFor(() => {
       expect(screen.getAllByText("Score").length).toBeGreaterThan(0);
       expect(screen.getByLabelText("Angle score skeleton")).toBeInTheDocument();
-      expect(container.querySelector(".timeline-score-chip")).not.toBeNull();
+      expect(container.querySelector(".timeline-score-panel")).not.toBeNull();
     });
 
     expect(container.querySelector(".timeline-score-number.high, .timeline-score-number.medium, .timeline-score-number.low")).not.toBeNull();
     expect(container.querySelector(".timeline-angle-skeleton")).not.toBeNull();
+    expect(screen.queryByText("Section Timeline")).not.toBeInTheDocument();
+    expect(container.querySelector(".timeline-header .feedback-type-group")).not.toBeNull();
+  });
+
+  it("removes the bottom action row in session mode", () => {
+    render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 10 }], alignment: {} } as any}
+      />,
+    );
+
+    expect(screen.queryByText("Download EBS JSON")).not.toBeInTheDocument();
+    expect(screen.queryByText("Practice Current Section")).not.toBeInTheDocument();
   });
 
   it("seeks when a timeline feedback marker is clicked", async () => {
