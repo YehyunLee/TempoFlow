@@ -46,11 +46,32 @@ describe("OverlayVisualFeedback", () => {
   it("keeps the card on-screen while leaving the pointer near the true anchor", () => {
     const result = computeOverlayCardPlacement({
       stageWidth: 600,
+      stageHeight: 400,
       anchorXPx: 140,
+      anchorYPx: 180,
       cardWidth: 280,
+      cardHeight: 140,
     });
 
     expect(result.cardLeftPx).toBe(16);
     expect(result.caretLeftPx).toBe(124);
+  });
+
+  it("clamps a below-aligned card inside the displayed media box", () => {
+    const result = computeOverlayCardPlacement({
+      stageWidth: 700,
+      stageHeight: 900,
+      anchorXPx: 350,
+      anchorYPx: 760,
+      cardWidth: 312,
+      cardHeight: 220,
+      mediaTopPx: 0,
+      mediaHeightPx: 820,
+      verticalAlign: "below",
+      cardGapPx: 14,
+    });
+
+    expect(result.cardTopPx).toBeLessThanOrEqual(584);
+    expect(result.cardTopPx).toBeGreaterThanOrEqual(16);
   });
 });

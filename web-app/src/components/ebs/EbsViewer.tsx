@@ -1742,7 +1742,7 @@ export function EbsViewer(props: EbsViewerProps) {
                 <div className="seg-pause-card">
                   <div className="seg-done-num">{state.pauseOverlay.label}</div>
                   <div className="seg-done-label">{state.pauseOverlay.completionLabel}</div>
-                  <div className="seg-done-hint">Space to continue · → next section</div>
+                  <div className="seg-done-hint">Space to continue → next section</div>
                 </div>
               </div>
             </div>
@@ -1793,7 +1793,7 @@ export function EbsViewer(props: EbsViewerProps) {
                 <div className="seg-pause-card">
                   <div className="seg-done-num">{state.pauseOverlay.label}</div>
                   <div className="seg-done-label">{state.pauseOverlay.completionLabel}</div>
-                  <div className="seg-done-hint">Space to continue · → next section</div>
+                  <div className="seg-done-hint">Space to continue → next section</div>
                 </div>
               </div>
             </div>

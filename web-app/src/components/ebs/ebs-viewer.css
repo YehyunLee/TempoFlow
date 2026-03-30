@@ -1050,12 +1050,16 @@
   transform: translate(-50%, calc(-100% - 2px));
 }
 
-.timeline-feedback-marker.visual {
-  color: #0ea5e9;
+.timeline-feedback-marker.minor {
+  color: #eab308;
 }
 
-.timeline-feedback-marker.gemini {
-  color: #f59e0b;
+.timeline-feedback-marker.moderate {
+  color: #f97316;
+}
+
+.timeline-feedback-marker.major {
+  color: #ef4444;
 }
 
 .timeline-feedback-marker:focus-visible {

@@ -327,7 +327,7 @@ describe("FeedbackViewer", () => {
   });
 
   it("shows clickable visual and Gemini markers on the section timeline", async () => {
-    render(
+    const { container } = render(
       <FeedbackViewer
         mode="session"
         sessionId="test-session"
@@ -339,6 +339,8 @@ describe("FeedbackViewer", () => {
 
     expect(await screen.findByLabelText(/Visual cue at/i)).toBeInTheDocument();
     expect(await screen.findByLabelText(/Gemini cue at/i)).toBeInTheDocument();
+    expect(container.querySelector(".timeline-feedback-marker.visual.moderate")).not.toBeNull();
+    expect(container.querySelector(".timeline-feedback-marker.gemini.minor")).not.toBeNull();
   });
 
   it("seeks when a timeline feedback marker is clicked", async () => {

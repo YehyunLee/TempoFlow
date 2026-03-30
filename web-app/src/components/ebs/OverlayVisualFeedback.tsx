@@ -14,6 +14,7 @@ type RelativeBox = {
 type CardPlacement = {
   cardLeftPx: number;
   caretLeftPx: number;
+  cardTopPx: number;
 };
 
 export function computeDisplayedMediaBox(params: {
@@ -87,23 +88,38 @@ export function computeDisplayedMediaBox(params: {
 
 export function computeOverlayCardPlacement(params: {
   stageWidth: number;
+  stageHeight: number;
   anchorXPx: number;
+  anchorYPx: number;
   cardWidth: number;
+  cardHeight: number;
+  mediaTopPx?: number;
+  mediaHeightPx?: number;
+  verticalAlign?: "above" | "below";
+  cardGapPx?: number;
   edgePadding?: number;
   caretPadding?: number;
 }): CardPlacement {
   const {
     stageWidth,
+    stageHeight,
     anchorXPx,
+    anchorYPx,
     cardWidth,
+    cardHeight,
+    mediaTopPx = 0,
+    mediaHeightPx = stageHeight,
+    verticalAlign = "above",
+    cardGapPx = 28,
     edgePadding = 16,
     caretPadding = 24,
   } = params;
 
-  if (stageWidth <= 0 || cardWidth <= 0) {
+  if (stageWidth <= 0 || stageHeight <= 0 || cardWidth <= 0 || cardHeight <= 0) {
     return {
       cardLeftPx: 0,
       caretLeftPx: 0,
+      cardTopPx: 0,
     };
   }
 
@@ -115,10 +131,18 @@ export function computeOverlayCardPlacement(params: {
     cardWidth - caretPadding,
     Math.max(caretPadding, anchorXPx - cardLeftPx),
   );
+  const minTop = mediaTopPx + edgePadding;
+  const maxTop = Math.max(minTop, mediaTopPx + mediaHeightPx - edgePadding - cardHeight);
+  const idealTopPx =
+    verticalAlign === "above"
+      ? anchorYPx - cardHeight - cardGapPx
+      : anchorYPx + cardGapPx;
+  const cardTopPx = Math.min(maxTop, Math.max(minTop, idealTopPx));
 
   return {
     cardLeftPx,
     caretLeftPx,
+    cardTopPx,
   };
 }
 
@@ -140,6 +164,7 @@ export function OverlayVisualFeedback(props: {
   const [cardPlacement, setCardPlacement] = useState<CardPlacement>({
     cardLeftPx: 0,
     caretLeftPx: 0,
+    cardTopPx: 0,
   });
 
   useEffect(() => {
@@ -191,11 +216,6 @@ export function OverlayVisualFeedback(props: {
   const focusTop = mediaBox.top + cue.yPct * mediaBox.height;
   const focusWidth = cue.focusSizePct * mediaBox.width;
   const focusRadius = focusWidth / 2;
-  const cardTop =
-    cue.verticalAlign === "above"
-      ? focusTop - focusRadius
-      : focusTop + focusRadius;
-
   const focusStyle = {
     left: `${(focusLeft * 100).toFixed(2)}%`,
     top: `${(focusTop * 100).toFixed(2)}%`,
@@ -205,7 +225,8 @@ export function OverlayVisualFeedback(props: {
 
   const cardStyle = {
     left: `${cardPlacement.cardLeftPx.toFixed(2)}px`,
-    top: `${(cardTop * 100).toFixed(2)}%`,
+    top: `${cardPlacement.cardTopPx.toFixed(2)}px`,
+    transform: "translateY(0)",
     ["--overlay-feedback-caret-left" as string]: `${cardPlacement.caretLeftPx.toFixed(2)}px`,
     ...styleVars,
   } as CSSProperties;
@@ -221,14 +242,25 @@ export function OverlayVisualFeedback(props: {
       const stageRect = stage.getBoundingClientRect();
       const cardRect = card.getBoundingClientRect();
       const anchorX = focusLeft * stageRect.width;
+      const anchorY =
+        (cue.verticalAlign === "above" ? focusTop - focusRadius : focusTop + focusRadius) *
+        stageRect.height;
       const nextPlacement = computeOverlayCardPlacement({
         stageWidth: stageRect.width,
+        stageHeight: stageRect.height,
         anchorXPx: anchorX,
+        anchorYPx: anchorY,
         cardWidth: cardRect.width,
+        cardHeight: cardRect.height,
+        mediaTopPx: mediaBox.top * stageRect.height,
+        mediaHeightPx: mediaBox.height * stageRect.height,
+        verticalAlign: cue.verticalAlign,
+        cardGapPx: variant === "gemini" ? 14 : 28,
       });
       setCardPlacement((current) =>
         current.cardLeftPx === nextPlacement.cardLeftPx &&
-        current.caretLeftPx === nextPlacement.caretLeftPx
+        current.caretLeftPx === nextPlacement.caretLeftPx &&
+        current.cardTopPx === nextPlacement.cardTopPx
           ? current
           : nextPlacement,
       );
@@ -244,7 +276,7 @@ export function OverlayVisualFeedback(props: {
       resizeObserver?.disconnect();
       window.removeEventListener("resize", update);
     };
-  }, [cue.horizontalAlign, cue.id, focusLeft]);
+  }, [cue.horizontalAlign, cue.id, cue.verticalAlign, focusLeft, focusRadius, focusTop, mediaBox.height, mediaBox.top, variant]);
 
   return (
     <div

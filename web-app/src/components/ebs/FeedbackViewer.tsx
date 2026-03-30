@@ -45,6 +45,7 @@ import { buildVisualFeedbackKey, getVisualFeedbackRun, storeVisualFeedbackRun } 
 import {
   FEEDBACK_DIFFICULTY_OPTIONS,
   isFeedbackDifficulty,
+  passesGeminiFeedbackDifficulty,
   passesVisualFeedbackDifficulty,
   type FeedbackDifficulty,
 } from "./feedbackDifficulty";
@@ -74,9 +75,32 @@ type TimelineFeedbackMarker = {
   id: string;
   time: number;
   kind: "visual" | "gemini";
+  seriousness: "minor" | "moderate" | "major";
   label: string;
   title: string;
 };
+
+function getVisualMarkerSeriousness(severity: DanceFeedback["severity"]): TimelineFeedbackMarker["seriousness"] {
+  if (severity === "major") return "major";
+  if (severity === "moderate") return "moderate";
+  return "minor";
+}
+
+function getGeminiMarkerSeriousness(label: string | null | undefined): TimelineFeedbackMarker["seriousness"] {
+  switch (label) {
+    case "mixed":
+      return "major";
+    case "rushed":
+    case "dragged":
+      return "moderate";
+    case "early":
+    case "late":
+    case "uncertain":
+    case "on-time":
+    default:
+      return "minor";
+  }
+}
 
 const FEEDBACK_DIFFICULTY_STORAGE_KEY = "tempoflow-feedback-difficulty";
 
@@ -139,7 +163,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     loadFromJson,
     resetViewer,
     hidePauseOverlay,
-    showPauseOverlay,
     seekToShared,
     seekToSegment,
     seekToPrevSegment,
@@ -1024,43 +1047,40 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [feedbackBySegment, state.segments]);
 
   const timelineFeedbackMarkers = useMemo<TimelineFeedbackMarker[]>(() => {
-    const visualBySegment = new Map<number, DanceFeedback>();
+    const visualMarkers = visualFeedbackRows
+      .filter((row) => (row.severity ?? "good") !== "good")
+      .filter((row) => passesVisualFeedbackDifficulty(row, feedbackDifficulty))
+      .map<TimelineFeedbackMarker>((row) => ({
+        id: `visual:${row.segmentIndex}:${row.featureFamily ?? "generic"}:${row.timestamp.toFixed(3)}`,
+        time: row.timestamp,
+        kind: "visual",
+        seriousness: getVisualMarkerSeriousness(row.severity),
+        label: "Visual cue",
+        title: row.message,
+      }));
 
-    visualFeedbackRows.forEach((row) => {
-      if ((row.severity ?? "good") === "good") return;
-      if (!passesVisualFeedbackDifficulty(row, feedbackDifficulty)) return;
-      const existing = visualBySegment.get(row.segmentIndex);
-      if (
-        !existing ||
-        row.deviation > existing.deviation ||
-        (row.deviation === existing.deviation && row.timestamp < existing.timestamp)
-      ) {
-        visualBySegment.set(row.segmentIndex, row);
-      }
-    });
+    const geminiMarkers = geminiFeedback
+      .filter((move) => passesGeminiFeedbackDifficulty(move, feedbackDifficulty))
+      .map<TimelineFeedbackMarker>((move) => {
+        const start = move.shared_start_sec ?? 0;
+        const end = move.shared_end_sec ?? start;
+        const mid = start + Math.max(0, end - start) / 2;
+        return {
+          id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label ?? "cue"}`,
+          time: mid,
+          kind: "gemini",
+          seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
+          label: "Gemini cue",
+          title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
+        };
+      });
 
-    const visualMarkers = [...visualBySegment.values()].map<TimelineFeedbackMarker>((row) => ({
-      id: `visual:${row.segmentIndex}:${row.featureFamily ?? "generic"}:${row.timestamp.toFixed(3)}`,
-      time: row.timestamp,
-      kind: "visual",
-      label: "Visual cue",
-      title: row.message,
-    }));
-
-    const geminiMarkers = geminiFeedback.map<TimelineFeedbackMarker>((move) => {
-      const start = move.shared_start_sec ?? 0;
-      const end = move.shared_end_sec ?? start;
-      const mid = start + Math.max(0, end - start) / 2;
-      return {
-        id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label ?? "cue"}`,
-        time: mid,
-        kind: "gemini",
-        label: "Gemini cue",
-        title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
-      };
-    });
-
-    return [...visualMarkers, ...geminiMarkers].sort((a, b) => a.time - b.time);
+    return [...visualMarkers, ...geminiMarkers]
+      .sort((a, b) => a.time - b.time)
+      .filter((marker, index, markers) => {
+        const previous = markers[index - 1];
+        return !previous || previous.id !== marker.id;
+      });
   }, [feedbackDifficulty, geminiFeedback, visualFeedbackRows]);
 
   const mapArtifactToOverlayTimeline = useCallback(
@@ -1355,21 +1375,25 @@ export function FeedbackViewer(props: EbsViewerProps) {
     if (!overlayVisualCue) return overlayGeminiCue;
 
     const isCrowded =
-      Math.abs(overlayGeminiCue.xPct - overlayVisualCue.xPct) < 0.38 &&
-      Math.abs(overlayGeminiCue.yPct - overlayVisualCue.yPct) < 0.26;
+      Math.abs(overlayGeminiCue.xPct - overlayVisualCue.xPct) < 0.52 &&
+      Math.abs(overlayGeminiCue.yPct - overlayVisualCue.yPct) < 0.34;
 
     if (!isCrowded) {
       return overlayGeminiCue;
     }
 
     const nextVerticalAlign = overlayVisualCue.verticalAlign === "above" ? "below" : "above";
-    const yDelta = nextVerticalAlign === "below" ? 0.2 : -0.2;
+    const yDelta = nextVerticalAlign === "below" ? 0.34 : -0.34;
+    const shiftedY =
+      nextVerticalAlign === "below"
+        ? Math.max(overlayGeminiCue.yPct + 0.18, overlayVisualCue.yPct + yDelta)
+        : Math.min(overlayGeminiCue.yPct - 0.18, overlayVisualCue.yPct + yDelta);
 
     return {
       ...overlayGeminiCue,
       id: `${overlayGeminiCue.id}:stacked`,
       verticalAlign: nextVerticalAlign,
-      yPct: Math.max(0.16, Math.min(0.84, overlayVisualCue.yPct + yDelta)),
+      yPct: Math.max(0.14, Math.min(0.86, shiftedY)),
     };
   }, [overlayGeminiCue, overlayVisualCue]);
 
@@ -1386,11 +1410,11 @@ export function FeedbackViewer(props: EbsViewerProps) {
       activeFeedbackCueKey !== previousCueKey
     ) {
       pausePlayback();
-      showPauseOverlay("Feedback", "Feedback cue");
+      hidePauseOverlay();
     }
 
     previousFeedbackCueKeyRef.current = activeFeedbackCueKey;
-  }, [positionedOverlayGeminiCue?.id, overlayVisualCue?.id, pauseAtFeedback, pausePlayback, showPauseOverlay, state.isPlaying]);
+  }, [hidePauseOverlay, positionedOverlayGeminiCue?.id, overlayVisualCue?.id, pauseAtFeedback, pausePlayback, state.isPlaying]);
 
   return (
     <div className="ebs-viewer-root">
@@ -1443,9 +1467,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       </button>
                     </div>
                   </div>
-                ) : (
-                  <div className="ebs-inline-note">Overlay lines both dancers up on one video.</div>
-                )}
+                ) : null}
                 {showFeedback ? (
                   <div className="mode-group mode-group-compact">
                     <div className="mode-group-label">Difficulty</div>
@@ -1507,7 +1529,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   <div className="seg-pause-card">
                     <div className="seg-done-num">{state.pauseOverlay.label}</div>
                     <div className="seg-done-label">{state.pauseOverlay.completionLabel}</div>
-                    <div className="seg-done-hint">Space to continue · → next section</div>
+                    <div className="seg-done-hint">Space to continue → next section</div>
                   </div>
                 </div>
               </div>
@@ -1551,7 +1573,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   <div className="seg-pause-card">
                     <div className="seg-done-num">{state.pauseOverlay.label}</div>
                     <div className="seg-done-label">{state.pauseOverlay.completionLabel}</div>
-                    <div className="seg-done-hint">Space to continue · → next section</div>
+                    <div className="seg-done-hint">Space to continue → next section</div>
                   </div>
                 </div>
               </div>
@@ -1759,7 +1781,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         <button
                           key={marker.id}
                           type="button"
-                          className={`timeline-feedback-marker ${marker.kind}`}
+                          className={`timeline-feedback-marker ${marker.kind} ${marker.seriousness}`}
                           style={{ left: `${sharedLen > 0 ? (marker.time / sharedLen) * 100 : 0}%` }}
                           onClick={(event) => {
                             event.stopPropagation();
