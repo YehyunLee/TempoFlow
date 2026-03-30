@@ -24,6 +24,7 @@ import {
   pauseSessionProcessing,
   resumeSessionProcessing,
 } from "../../lib/sessionProcessing";
+import { isSessionPostProcessComplete } from "../../lib/sessionPostProcessing";
 
 const LOADING_STEPS = [
   {
@@ -109,19 +110,24 @@ function AnalysisPageContent() {
           setEbsData(cachedEbs);
           setPageError(null);
           setElapsedSeconds(0);
+          const shouldMarkReady = isSessionPostProcessComplete(nextSession);
           const updatedSession =
             updateSession(sessionId, {
               status: "analyzed",
-              ebsStatus: "ready",
+              ebsStatus: shouldMarkReady ? "ready" : nextSession.ebsStatus === "paused" ? "paused" : "processing",
               ebsErrorMessage: undefined,
               errorMessage: undefined,
-              ebsMeta: buildEbsMeta(cachedEbs),
+              ebsMeta: buildEbsMeta(cachedEbs, nextSession.ebsMeta),
             }) ?? nextSession;
           setSession(updatedSession);
           setStatusMessage(
-            cachedEbs.segments.length
-              ? "Cached EBS session ready."
-              : "Cached EBS result loaded. This clip aligned successfully but did not produce any playable segments.",
+            shouldMarkReady
+              ? (
+                  cachedEbs.segments.length
+                    ? "Cached EBS session ready."
+                    : "Cached EBS result loaded. This clip aligned successfully but did not produce any playable segments."
+                )
+              : "Cached EBS loaded. Continuing segmentation and feedback processing in the background.",
           );
         } else {
           setStatusMessage(

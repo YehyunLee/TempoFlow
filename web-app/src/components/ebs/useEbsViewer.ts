@@ -387,11 +387,13 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
       });
       const refElement = refVideo.current;
       const userElement = userVideo.current;
+      const overlayElement = overlayVideo?.current;
       if (refElement) refElement.playbackRate = 0.5;
       if (userElement) userElement.playbackRate = 0.5;
+      if (overlayElement) overlayElement.playbackRate = 0.5;
       seekToShared(moves[0].startSec);
     },
-    [buildMoves, hidePauseOverlay, pausePlayback, refVideo, seekToShared, segments.length, userVideo],
+    [buildMoves, hidePauseOverlay, overlayVideo, pausePlayback, refVideo, seekToShared, segments.length, userVideo],
   );
 
   const closePracticeMode = useCallback(() => {
@@ -408,9 +410,11 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
     }));
     const refElement = refVideo.current;
     const userElement = userVideo.current;
+    const overlayElement = overlayVideo?.current;
     if (refElement) refElement.playbackRate = mainPlaybackRate;
     if (userElement) userElement.playbackRate = mainPlaybackRate;
-  }, [hidePauseOverlay, mainPlaybackRate, pausePlayback, refVideo, userVideo]);
+    if (overlayElement) overlayElement.playbackRate = mainPlaybackRate;
+  }, [hidePauseOverlay, mainPlaybackRate, overlayVideo, pausePlayback, refVideo, userVideo]);
 
   const seekToMove = useCallback(
     (idx: number) => {
@@ -469,9 +473,10 @@ export function useEbsViewer({ refVideo, userVideo, overlayVideo }: EbsViewerRef
       const nextRate = prev.playbackRate === 0.5 ? 0.25 : 0.5;
       if (refVideo.current) refVideo.current.playbackRate = nextRate;
       if (userVideo.current) userVideo.current.playbackRate = nextRate;
+      if (overlayVideo?.current) overlayVideo.current.playbackRate = nextRate;
       return { ...prev, playbackRate: nextRate };
     });
-  }, [refVideo, userVideo]);
+  }, [overlayVideo, refVideo, userVideo]);
 
   useEffect(() => {
     if (beatFlashTimeoutRef.current != null) {

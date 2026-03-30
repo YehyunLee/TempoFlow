@@ -24,6 +24,22 @@ const { buildVisualFeedbackFromYoloArtifactsMock } = vi.hoisted(() => ({
     userSamples: [],
   }),
 }));
+const { geminiFeedbackMovesMock } = vi.hoisted(() => ({
+  geminiFeedbackMovesMock: vi.fn().mockReturnValue([
+    {
+      segmentIndex: 0,
+      move_index: 2,
+      shared_start_sec: 4,
+      shared_end_sec: 6,
+      micro_timing_label: "early",
+      confidence: "high",
+      user_relative_to_reference: "behind",
+      coaching_note: "Delay the right step slightly to match the guide.",
+      micro_timing_evidence: "The step starts a touch ahead of the reference.",
+      body_parts_involved: ["right leg", "torso"],
+    },
+  ]),
+}));
 
 // 1. Mock the custom hook
 vi.mock("./useEbsViewer", () => ({
@@ -50,20 +66,7 @@ vi.mock("./GeminiFeedbackPanel", () => {
         enqueueSegmentForFeedback: vi.fn(),
       }));
       React.useEffect(() => {
-        const moves = [
-          {
-            segmentIndex: 0,
-            move_index: 2,
-            shared_start_sec: 4,
-            shared_end_sec: 6,
-            micro_timing_label: "early",
-            confidence: "high",
-            user_relative_to_reference: "behind",
-            coaching_note: "Delay the right step slightly to match the guide.",
-            micro_timing_evidence: "The step starts a touch ahead of the reference.",
-            body_parts_involved: ["right leg", "torso"],
-          },
-        ];
+        const moves = geminiFeedbackMovesMock();
         props.onFeedbackReady?.(props.feedbackDifficulty === "beginner" ? [] : moves);
       }, [props.feedbackDifficulty, props.onFeedbackReady]);
       return props.renderUi === false ? null : <div data-testid="gemini-panel" />;
@@ -263,6 +266,20 @@ describe("FeedbackViewer", () => {
       refSamples: [],
       userSamples: [],
     });
+    geminiFeedbackMovesMock.mockReturnValue([
+      {
+        segmentIndex: 0,
+        move_index: 2,
+        shared_start_sec: 4,
+        shared_end_sec: 6,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Delay the right step slightly to match the guide.",
+        micro_timing_evidence: "The step starts a touch ahead of the reference.",
+        body_parts_involved: ["right leg", "torso"],
+      },
+    ]);
     (useEbsViewer as any).mockReturnValue({
       state: mockState,
       ...mockActions,
@@ -637,6 +654,256 @@ describe("FeedbackViewer", () => {
 
     expect(screen.queryByText("Download EBS JSON")).not.toBeInTheDocument();
     expect(screen.queryByText("Practice Current Section")).not.toBeInTheDocument();
+  });
+
+  it("colors segments by relative feedback-marker density", async () => {
+    buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
+      feedback: [],
+      refSamples: [],
+      userSamples: [],
+    });
+    geminiFeedbackMovesMock.mockReturnValue([
+      {
+        segmentIndex: 0,
+        move_index: 0,
+        shared_start_sec: 0.4,
+        shared_end_sec: 0.8,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "First cue",
+        micro_timing_evidence: "First cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 0,
+        move_index: 1,
+        shared_start_sec: 1.4,
+        shared_end_sec: 1.8,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Second cue",
+        micro_timing_evidence: "Second cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 0,
+        move_index: 2,
+        shared_start_sec: 2.4,
+        shared_end_sec: 2.8,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Third cue",
+        micro_timing_evidence: "Third cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 1,
+        move_index: 0,
+        shared_start_sec: 4.4,
+        shared_end_sec: 4.8,
+        micro_timing_label: "late",
+        confidence: "high",
+        user_relative_to_reference: "ahead",
+        coaching_note: "Fourth cue",
+        micro_timing_evidence: "Fourth cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+    ]);
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        segments: [
+          { shared_start_sec: 0, shared_end_sec: 4 },
+          { shared_start_sec: 4, shared_end_sec: 8 },
+          { shared_start_sec: 8, shared_end_sec: 12 },
+        ],
+        sharedLen: 12,
+      },
+      ...mockActions,
+    });
+
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{
+          segments: [
+            { shared_start_sec: 0, shared_end_sec: 4 },
+            { shared_start_sec: 4, shared_end_sec: 8 },
+            { shared_start_sec: 8, shared_end_sec: 12 },
+          ],
+          alignment: {},
+        } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelectorAll(".timeline-feedback-marker.gemini")).toHaveLength(4);
+    });
+
+    const segments = Array.from(container.querySelectorAll(".timeline-segment")) as HTMLDivElement[];
+    expect(segments).toHaveLength(3);
+    expect(segments[0]?.style.borderColor).toBe("rgba(248, 113, 113, 0.98)");
+    expect(segments[1]?.style.borderColor).toBe("rgba(234, 179, 8, 0.95)");
+    expect(segments[2]?.style.borderColor).toBe("rgba(74, 222, 128, 0.95)");
+  });
+
+  it("colors move timeline blocks by relative feedback-marker density", async () => {
+    buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
+      feedback: [],
+      refSamples: [],
+      userSamples: [],
+    });
+    geminiFeedbackMovesMock.mockReturnValue([
+      {
+        segmentIndex: 0,
+        move_index: 0,
+        shared_start_sec: 0.05,
+        shared_end_sec: 0.1,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Move one cue A",
+        micro_timing_evidence: "Move one cue A",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 0,
+        move_index: 1,
+        shared_start_sec: 0.12,
+        shared_end_sec: 0.16,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Move one cue B",
+        micro_timing_evidence: "Move one cue B",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 0,
+        move_index: 2,
+        shared_start_sec: 0.18,
+        shared_end_sec: 0.22,
+        micro_timing_label: "early",
+        confidence: "high",
+        user_relative_to_reference: "behind",
+        coaching_note: "Move one cue C",
+        micro_timing_evidence: "Move one cue C",
+        body_parts_involved: ["torso", "right leg"],
+      },
+      {
+        segmentIndex: 0,
+        move_index: 3,
+        shared_start_sec: 0.45,
+        shared_end_sec: 0.5,
+        micro_timing_label: "late",
+        confidence: "high",
+        user_relative_to_reference: "ahead",
+        coaching_note: "Move two cue",
+        micro_timing_evidence: "Move two cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+    ]);
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        practice: {
+          ...mockState.practice,
+          enabled: true,
+          segmentIndex: 0,
+          currentMoveIndex: 0,
+          moves: [
+            { idx: 0, num: 1, startSec: 0, endSec: 0.3, isTransition: false },
+            { idx: 1, num: 2, startSec: 0.3, endSec: 0.6, isTransition: false },
+            { idx: 2, num: 3, startSec: 0.6, endSec: 0.9, isTransition: false },
+          ],
+        },
+        segments: [{ shared_start_sec: 0, shared_end_sec: 0.9 }],
+        sharedLen: 0.9,
+      },
+      ...mockActions,
+    });
+
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 0.9 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      const moveBlocks = container.querySelectorAll(".move-block");
+      expect(moveBlocks).toHaveLength(3);
+      expect((moveBlocks[0] as HTMLDivElement).style.borderColor).toBe("rgba(248, 113, 113, 0.98)");
+      expect((moveBlocks[1] as HTMLDivElement).style.borderColor).toBe("rgba(234, 179, 8, 0.95)");
+      expect((moveBlocks[2] as HTMLDivElement).style.borderColor).toBe("rgba(74, 222, 128, 0.95)");
+    });
+  });
+
+  it("renders clickable feedback markers on the move timeline in practice mode", async () => {
+    buildVisualFeedbackFromYoloArtifactsMock.mockReturnValue({
+      feedback: [],
+      refSamples: [],
+      userSamples: [],
+    });
+    geminiFeedbackMovesMock.mockReturnValue([
+      {
+        segmentIndex: 0,
+        move_index: 0,
+        shared_start_sec: 0.45,
+        shared_end_sec: 0.5,
+        micro_timing_label: "late",
+        confidence: "high",
+        user_relative_to_reference: "ahead",
+        coaching_note: "Move cue",
+        micro_timing_evidence: "Move cue",
+        body_parts_involved: ["torso", "right leg"],
+      },
+    ]);
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        practice: {
+          ...mockState.practice,
+          enabled: true,
+          segmentIndex: 0,
+          currentMoveIndex: 0,
+          moves: [
+            { idx: 0, num: 1, startSec: 0, endSec: 0.3, isTransition: false },
+            { idx: 1, num: 2, startSec: 0.3, endSec: 0.6, isTransition: false },
+          ],
+        },
+        segments: [{ shared_start_sec: 0, shared_end_sec: 0.6 }],
+        sharedLen: 0.6,
+      },
+      ...mockActions,
+    });
+
+    const { container } = render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 0.6 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(container.querySelector(".move-tl-track .timeline-feedback-marker.gemini")).not.toBeNull();
+    });
+
+    const moveMarker = container.querySelector(".move-tl-track .timeline-feedback-marker.gemini") as HTMLButtonElement;
+    fireEvent.click(moveMarker);
+    expect(mockActions.seekToShared).toHaveBeenCalledWith(0.45);
   });
 
   it("seeks when a timeline feedback marker is clicked", async () => {

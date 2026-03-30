@@ -14,6 +14,7 @@ import {
   getPublicEbsProcessorUrl,
   isLocalDevProcessorUrl,
 } from "./ebsProcessorUrl";
+import { getGeminiProcessableSegmentCount, mergePostProcessMeta } from "./sessionPostProcessing";
 
 const MAX_EBS_PROCESSING_SECONDS = 5 * 60;
 const PROCESSING_POLL_MS = 1200;
@@ -36,6 +37,15 @@ type SessionProcessingRuntime = {
 };
 
 const runtimes = new Map<string, SessionProcessingRuntime>();
+const userPausedSessionIds = new Set<string>();
+
+function isProcessingBlocked(sessionId: string, respectPaused = true) {
+  const session = getSession(sessionId);
+  if (!session) return true;
+  if (session.ebsStatus === "ready") return true;
+  if (respectPaused && session.ebsStatus === "paused") return true;
+  return false;
+}
 
 function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === "AbortError";
@@ -62,21 +72,18 @@ function clearRuntime(runtime: SessionProcessingRuntime) {
 function markProcessing(sessionId: string, session?: TempoFlowSession | null) {
   const currentSession = session ?? getSession(sessionId);
   if (!currentSession) return null;
+  userPausedSessionIds.delete(sessionId);
 
   return updateSession(sessionId, {
     status: "analyzing",
     ebsStatus: "processing",
     ebsErrorMessage: undefined,
     errorMessage: undefined,
-    ebsMeta: {
-      ...(currentSession.ebsMeta ?? {
-        segmentCount: 0,
-        sharedDurationSec: 0,
-        generatedAt: new Date().toISOString(),
-      }),
+    ebsMeta: mergePostProcessMeta(currentSession.ebsMeta, {
       processingStartedAt: currentSession.ebsMeta?.processingStartedAt ?? new Date().toISOString(),
       finalScore: currentSession.ebsMeta?.finalScore,
-    },
+      postProcessStatus: currentSession.ebsMeta?.postProcessStatus ?? "processing",
+    }),
   });
 }
 
@@ -97,14 +104,24 @@ function getFriendlyProcessorError(message: string, processorUrl: string) {
 }
 
 async function adoptArtifact(sessionId: string, data: EbsData) {
+  userPausedSessionIds.delete(sessionId);
   const currentSession = getSession(sessionId);
+  const shouldRemainPaused = currentSession?.ebsStatus === "paused";
   await storeSessionEbs(sessionId, data);
+  const nextMeta = buildEbsMeta(data, currentSession?.ebsMeta);
   updateSession(sessionId, {
     status: "analyzed",
-    ebsStatus: "ready",
+    ebsStatus: shouldRemainPaused ? "paused" : "processing",
     ebsErrorMessage: undefined,
     errorMessage: undefined,
-    ebsMeta: buildEbsMeta(data, currentSession?.ebsMeta),
+    ebsMeta: {
+      ...nextMeta,
+      postProcessStatus: shouldRemainPaused ? "paused" : "processing",
+      yoloReadySegments: currentSession?.ebsMeta?.yoloReadySegments ?? 0,
+      visualReadySegments: currentSession?.ebsMeta?.visualReadySegments ?? 0,
+      geminiReadySegments: currentSession?.ebsMeta?.geminiReadySegments ?? 0,
+      geminiTotalSegments: getGeminiProcessableSegmentCount(data),
+    },
   });
 }
 
@@ -164,6 +181,9 @@ function createRuntime(sessionId: string, mode: RuntimeMode): SessionProcessingR
 }
 
 function startPolling(sessionId: string) {
+  if (isProcessingBlocked(sessionId)) {
+    return Promise.resolve();
+  }
   const existing = runtimes.get(sessionId);
   if (existing?.mode === "poll" && existing.promise) {
     return existing.promise;
@@ -221,6 +241,9 @@ function startPolling(sessionId: string) {
 }
 
 async function startUpload(sessionId: string, session: TempoFlowSession) {
+  if (isProcessingBlocked(sessionId)) {
+    return;
+  }
   const existing = runtimes.get(sessionId);
   if (existing?.mode === "upload" && existing.promise) {
     return existing.promise;
@@ -279,6 +302,10 @@ async function startUpload(sessionId: string, session: TempoFlowSession) {
       }
 
       if (isAbortError(error)) {
+        if (userPausedSessionIds.has(sessionId)) {
+          clearRuntime(runtime);
+          return;
+        }
         clearRuntime(runtime);
         void startPolling(sessionId);
         return;
@@ -306,8 +333,10 @@ export async function ensureSessionProcessing(sessionId: string, options?: { res
   if (session.ebsStatus === "paused" && options?.respectPaused !== false) return;
 
   if (await adoptExistingArtifact(sessionId)) return;
+  if (isProcessingBlocked(sessionId, options?.respectPaused !== false)) return;
 
   const remoteStatus = await fetchProcessorStatus(sessionId);
+  if (isProcessingBlocked(sessionId, options?.respectPaused !== false)) return;
   if (remoteStatus?.status === "processing") {
     await startPolling(sessionId);
     return;
@@ -317,6 +346,7 @@ export async function ensureSessionProcessing(sessionId: string, options?: { res
 }
 
 export function pauseSessionProcessing(sessionId: string) {
+  userPausedSessionIds.add(sessionId);
   const runtime = runtimes.get(sessionId);
   if (runtime) {
     runtime.stopped = true;
@@ -340,21 +370,18 @@ export function pauseSessionProcessing(sessionId: string) {
     ebsStatus: "paused",
     ebsErrorMessage: undefined,
     errorMessage: undefined,
-    ebsMeta: {
-      ...(session.ebsMeta ?? {
-        segmentCount: 0,
-        sharedDurationSec: 0,
-        generatedAt: new Date().toISOString(),
-      }),
+    ebsMeta: mergePostProcessMeta(session.ebsMeta, {
       processingStartedAt: session.ebsMeta?.processingStartedAt ?? new Date().toISOString(),
       finalScore: session.ebsMeta?.finalScore,
-    },
+      postProcessStatus: "paused",
+    }),
   });
 }
 
 export function resumeSessionProcessing(sessionId: string) {
   const session = getSession(sessionId);
   if (!session) return Promise.resolve();
+  userPausedSessionIds.delete(sessionId);
   markProcessing(sessionId, session);
   return ensureSessionProcessing(sessionId, { respectPaused: false });
 }

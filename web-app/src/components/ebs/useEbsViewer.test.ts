@@ -133,6 +133,41 @@ describe("useEbsViewer", () => {
     expect(result.current.state.mainPlaybackRate).toBe(0.25);
   });
 
+  it("updates overlay playback rate in practice mode", () => {
+    const overlayVideo = { ...mockVideoElement } as HTMLVideoElement;
+    const refsWithOverlay = {
+      ...mockRefs,
+      overlayVideo: { current: overlayVideo } as any,
+    };
+    const mockMoves = [{ idx: 0, num: 1, startSec: 0, endSec: 5, isTransition: false }];
+    (logic.buildMovesForSegment as any).mockReturnValue(mockMoves);
+
+    const { result } = renderHook(() => useEbsViewer(refsWithOverlay));
+
+    act(() => {
+      result.current.loadFromJson(mockEbsData as any);
+    });
+
+    act(() => {
+      result.current.openPracticeMode(0);
+    });
+
+    expect(overlayVideo.playbackRate).toBe(0.5);
+
+    act(() => {
+      result.current.togglePracticeSpeed();
+    });
+
+    expect(result.current.state.practice.playbackRate).toBe(0.25);
+    expect(overlayVideo.playbackRate).toBe(0.25);
+
+    act(() => {
+      result.current.closePracticeMode();
+    });
+
+    expect(overlayVideo.playbackRate).toBe(1);
+  });
+
   it("triggers pause overlay when a segment completes", () => {
     const { result } = renderHook(() => useEbsViewer(mockRefs));
 

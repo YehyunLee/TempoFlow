@@ -90,11 +90,19 @@ type EbsViewerProps = ManualViewerProps | SessionViewerProps;
 
 type TimelineFeedbackMarker = {
   id: string;
+  segmentIndex: number;
   time: number;
   kind: "visual" | "gemini";
   seriousness: "minor" | "moderate" | "major";
   label: string;
   title: string;
+};
+
+type RelativeFeedbackStyle = {
+  fill: string;
+  border: string;
+  glow: string;
+  accent: string;
 };
 
 function getVisualMarkerSeriousness(severity: DanceFeedback["severity"]): TimelineFeedbackMarker["seriousness"] {
@@ -117,6 +125,57 @@ function getGeminiMarkerSeriousness(label: string | null | undefined): TimelineF
     default:
       return "minor";
   }
+}
+
+function buildRelativeFeedbackStyles(entries: Array<{ markerCount: number; pressure: number }>): RelativeFeedbackStyle[] {
+  const greenStyle = {
+    fill: "linear-gradient(180deg, rgba(187, 247, 208, 0.94) 0%, rgba(134, 239, 172, 0.86) 100%)",
+    border: "rgba(74, 222, 128, 0.95)",
+    glow: "rgba(74, 222, 128, 0.18)",
+    accent: "#16a34a",
+  } satisfies RelativeFeedbackStyle;
+  const yellowStyle = {
+    fill: "linear-gradient(180deg, rgba(254, 240, 138, 0.92) 0%, rgba(253, 224, 71, 0.82) 100%)",
+    border: "rgba(234, 179, 8, 0.95)",
+    glow: "rgba(234, 179, 8, 0.16)",
+    accent: "#ca8a04",
+  } satisfies RelativeFeedbackStyle;
+  const redStyle = {
+    fill: "linear-gradient(180deg, rgba(254, 202, 202, 0.94) 0%, rgba(252, 165, 165, 0.84) 100%)",
+    border: "rgba(248, 113, 113, 0.98)",
+    glow: "rgba(239, 68, 68, 0.18)",
+    accent: "#dc2626",
+  } satisfies RelativeFeedbackStyle;
+
+  const positivePressures = entries
+    .filter((entry) => entry.markerCount > 0)
+    .map((entry) => entry.pressure);
+  const hasPerfectEntries = entries.some((entry) => entry.markerCount === 0);
+  const minPositivePressure = positivePressures.length ? Math.min(...positivePressures) : 0;
+  const maxPositivePressure = positivePressures.length ? Math.max(...positivePressures) : 0;
+
+  return entries.map((entry) => {
+    if (entry.markerCount === 0) {
+      return greenStyle;
+    }
+
+    let relativePressure = 0.5;
+    if (maxPositivePressure > minPositivePressure) {
+      relativePressure = (entry.pressure - minPositivePressure) / (maxPositivePressure - minPositivePressure);
+    } else if (hasPerfectEntries) {
+      relativePressure = 1;
+    }
+
+    if (relativePressure >= 0.66) {
+      return redStyle;
+    }
+
+    if (hasPerfectEntries || relativePressure >= 0.2) {
+      return yellowStyle;
+    }
+
+    return greenStyle;
+  });
 }
 
 const FEEDBACK_DIFFICULTY_STORAGE_KEY = "tempoflow-feedback-difficulty";
@@ -1110,6 +1169,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
   useEffect(() => {
     if (!viewerVisible) return;
+    const effectivePlaybackRate = state.practice.enabled ? state.practice.playbackRate : state.mainPlaybackRate;
     if (refVideo.current) {
       refVideo.current.muted = isMuted;
     }
@@ -1120,10 +1180,13 @@ export function FeedbackViewer(props: EbsViewerProps) {
       overlayVideoRef.current.muted = isMuted;
     }
     if (refVideo.current) {
-      refVideo.current.playbackRate = state.mainPlaybackRate;
+      refVideo.current.playbackRate = effectivePlaybackRate;
     }
     if (userVideo.current) {
-      userVideo.current.playbackRate = state.mainPlaybackRate;
+      userVideo.current.playbackRate = effectivePlaybackRate;
+    }
+    if (overlayVideoRef.current) {
+      overlayVideoRef.current.playbackRate = effectivePlaybackRate;
     }
     // Only seek to segment 0 on initial load if we haven't started yet
     if (state.sharedTime === 0 && state.segments.length) {
@@ -1132,7 +1195,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
       });
       return () => window.cancelAnimationFrame(id);
     }
-  }, [isMuted, seekToSegment, state.mainPlaybackRate, state.segments.length, state.sharedTime, viewerVisible]);
+  }, [isMuted, seekToSegment, state.mainPlaybackRate, state.practice.enabled, state.practice.playbackRate, state.segments.length, state.sharedTime, viewerVisible]);
 
   useEffect(() => {
     if (!viewerVisible) return;
@@ -1505,70 +1568,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     [activeMoveReadiness.readySegments, geminiPipelineProgress.done, geminiPipelineProgress.total, state.segments.length, visualFeedbackReadySegments],
   );
 
-  const feedbackBySegment = useMemo(() => {
-    const bySegment = new Map<number, GeminiFlatMove[]>();
-    filteredGeminiFeedback.forEach((move) => {
-      const segmentIndex = Number(move.segmentIndex);
-      if (!Number.isFinite(segmentIndex)) return;
-      const existing = bySegment.get(segmentIndex) ?? [];
-      existing.push(move);
-      bySegment.set(segmentIndex, existing);
-    });
-    return bySegment;
-  }, [filteredGeminiFeedback]);
-
-  const segmentFeedbackStyles = useMemo(() => {
-    const severityByLabel: Record<string, number> = {
-      "on-time": 0,
-      uncertain: 0.45,
-      early: 0.74,
-      late: 0.74,
-      rushed: 0.88,
-      dragged: 0.88,
-      mixed: 1,
-    };
-
-    return state.segments.map((_, index) => {
-      const moves = feedbackBySegment.get(index) ?? [];
-      if (!moves.length) {
-        return {
-          fill: "rgba(191, 219, 254, 0.72)",
-          border: "rgba(191, 219, 254, 0.95)",
-          glow: "rgba(148, 163, 184, 0.12)",
-          accent: "#94a3b8",
-        };
-      }
-
-      const severities = moves.map((move) => severityByLabel[move.micro_timing_label] ?? 0.55);
-      const avgSeverity = severities.reduce((sum, value) => sum + value, 0) / severities.length;
-
-      if (avgSeverity <= 0.18) {
-        return {
-          fill: "linear-gradient(180deg, rgba(187, 247, 208, 0.94) 0%, rgba(134, 239, 172, 0.86) 100%)",
-          border: "rgba(74, 222, 128, 0.95)",
-          glow: "rgba(74, 222, 128, 0.18)",
-          accent: "#16a34a",
-        };
-      }
-
-      if (avgSeverity <= 0.52) {
-        return {
-          fill: "linear-gradient(180deg, rgba(254, 240, 138, 0.92) 0%, rgba(253, 224, 71, 0.82) 100%)",
-          border: "rgba(234, 179, 8, 0.95)",
-          glow: "rgba(234, 179, 8, 0.16)",
-          accent: "#ca8a04",
-        };
-      }
-
-      return {
-        fill: "linear-gradient(180deg, rgba(254, 202, 202, 0.94) 0%, rgba(252, 165, 165, 0.84) 100%)",
-        border: "rgba(248, 113, 113, 0.98)",
-        glow: "rgba(239, 68, 68, 0.18)",
-        accent: "#dc2626",
-      };
-    });
-  }, [feedbackBySegment, state.segments]);
-
   const timelineFeedbackMarkers = useMemo<TimelineFeedbackMarker[]>(() => {
     const visualMarkers = !showAngleFeedback
       ? []
@@ -1584,6 +1583,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
           )
           .map((row) => ({
             id: `visual:${segmentIndex}:${row.featureFamily ?? "generic"}:${row.jointName ?? "generic"}:${row.timestamp.toFixed(3)}`,
+            segmentIndex,
             time: Math.max(segment.shared_start_sec, row.timestamp - halfWindowSec),
             kind: "visual" as const,
             seriousness: getVisualMarkerSeriousness(row.severity),
@@ -1616,6 +1616,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
           const cueWindow = getVisualCueTimingWindow(segment, row.featureFamily);
           return {
             id: `visual:${segmentIndex}:${phaseMoment.key}:${row.featureFamily ?? "generic"}:${row.jointName ?? "generic"}:${row.timestamp.toFixed(3)}`,
+            segmentIndex,
             time: cueWindow.startTime,
             kind: "visual" as const,
             seriousness: getVisualMarkerSeriousness(row.severity),
@@ -1638,6 +1639,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
             const start = move.shared_start_sec ?? 0;
             return {
               id: `gemini:${move.segmentIndex}:${move.move_index}:${move.micro_timing_label ?? "cue"}`,
+              segmentIndex: Number(move.segmentIndex),
               time: start,
               kind: "gemini",
               seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
@@ -1653,6 +1655,56 @@ export function FeedbackViewer(props: EbsViewerProps) {
         return !previous || previous.id !== marker.id;
       });
   }, [feedbackDifficulty, filteredGeminiFeedback, showAngleFeedback, showMicroTimingFeedback, state.segments, visualFeedbackRows]);
+
+  const segmentFeedbackStyles = useMemo(() => {
+    const markerStats = state.segments.map((segment, index) => {
+      const duration = Math.max(0.001, segment.shared_end_sec - segment.shared_start_sec);
+      const markerCount = timelineFeedbackMarkers.filter((marker) => marker.segmentIndex === index).length;
+      return {
+        markerCount,
+        pressure: markerCount / duration,
+      };
+    });
+
+    return buildRelativeFeedbackStyles(markerStats);
+  }, [state.segments, timelineFeedbackMarkers]);
+
+  const practiceMoveFeedbackStyles = useMemo(() => {
+    if (!currentPracticeSegment || state.practice.segmentIndex < 0 || state.practice.moves.length === 0) {
+      return [];
+    }
+
+    const moveStats = state.practice.moves.map((move) => {
+      const duration = Math.max(0.001, move.endSec - move.startSec);
+      const markerCount = timelineFeedbackMarkers.filter((marker) => {
+        if (marker.segmentIndex !== state.practice.segmentIndex) return false;
+        const isLastMove = move.idx === state.practice.moves.length - 1;
+        return isLastMove
+          ? marker.time >= move.startSec && marker.time <= move.endSec
+          : marker.time >= move.startSec && marker.time < move.endSec;
+      }).length;
+      return {
+        markerCount,
+        pressure: markerCount / duration,
+      };
+    });
+
+    return buildRelativeFeedbackStyles(moveStats);
+  }, [currentPracticeSegment, state.practice.moves, state.practice.segmentIndex, timelineFeedbackMarkers]);
+
+  const practiceTimelineFeedbackMarkers = useMemo(() => {
+    if (!currentPracticeSegment || state.practice.segmentIndex < 0) {
+      return [];
+    }
+
+    return timelineFeedbackMarkers.filter((marker) => {
+      if (marker.segmentIndex !== state.practice.segmentIndex) return false;
+      return (
+        marker.time >= currentPracticeSegment.shared_start_sec &&
+        marker.time <= currentPracticeSegment.shared_end_sec
+      );
+    });
+  }, [currentPracticeSegment, state.practice.segmentIndex, timelineFeedbackMarkers]);
 
   const mapArtifactToOverlayTimeline = useCallback(
     (
@@ -2496,7 +2548,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   <button className="transport-btn" onClick={seekToNextSegment} title="Next section">
                     ▶▶
                   </button>
-                  <button className="transport-btn" onClick={toggleMainSpeed} title="Toggle playback speed">
+                  <button className="transport-btn transport-btn-speed" onClick={toggleMainSpeed} title="Toggle playback speed">
                     {state.mainPlaybackRate === 1 ? "1x" : state.mainPlaybackRate === 0.5 ? "0.5x" : "0.25x"}
                   </button>
                   <button
@@ -2779,7 +2831,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   >
                     {isMuted ? "🔇" : "🔊"}
                   </button>
-                  <button className="transport-btn practice-active" onClick={togglePracticeSpeed}>
+                  <button className="transport-btn transport-btn-speed" onClick={togglePracticeSpeed}>
                     {practiceSpeedText}
                   </button>
                   <label className="timeline-inline-toggle" htmlFor="chk-pause-move">
@@ -2865,6 +2917,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec;
                       const moveReady =
                         activeMoveReadiness.moveReadyBySegment[state.practice.segmentIndex]?.[index] ?? false;
+                      const feedbackStyle = practiceMoveFeedbackStyles[index];
                       return (
                         <div
                           key={`move-track-${index}`}
@@ -2879,6 +2932,11 @@ export function FeedbackViewer(props: EbsViewerProps) {
                           style={{
                             left: `${((move.startSec - currentPracticeSegment.shared_start_sec) / segDuration) * 100}%`,
                             width: `${((move.endSec - move.startSec) / segDuration) * 100}%`,
+                            background: feedbackStyle?.fill,
+                            borderColor: feedbackStyle?.border,
+                            boxShadow: feedbackStyle
+                              ? `inset 0 0 0 1px ${feedbackStyle.border}, 0 8px 20px ${feedbackStyle.glow}`
+                              : undefined,
                             opacity: moveReady ? 1 : 0.45,
                           }}
                           onClick={(event) => {
@@ -2892,6 +2950,33 @@ export function FeedbackViewer(props: EbsViewerProps) {
                         </div>
                       );
                     })}
+                  {currentPracticeSegment
+                    ? practiceTimelineFeedbackMarkers.map((marker) => {
+                        const segmentDuration =
+                          currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec;
+                        const markerOffset =
+                          segmentDuration > 0
+                            ? ((marker.time - currentPracticeSegment.shared_start_sec) / segmentDuration) * 100
+                            : 0;
+                        return (
+                          <button
+                            key={`practice-${marker.id}`}
+                            type="button"
+                            className={`timeline-feedback-marker move-feedback-marker ${marker.kind} ${marker.seriousness}`}
+                            style={{ left: `${markerOffset}%` }}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              seekToShared(marker.time);
+                            }}
+                            title={marker.title}
+                            aria-label={`${marker.label} at ${fmtTime(marker.time)}`}
+                          >
+                            <span className="timeline-feedback-marker-line" />
+                            <span className="timeline-feedback-marker-pill">{marker.label}</span>
+                          </button>
+                        );
+                      })
+                    : null}
                   <div
                     className="move-playhead"
                     style={{
