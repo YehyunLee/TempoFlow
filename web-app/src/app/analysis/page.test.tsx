@@ -3,7 +3,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import AnalysisPage from "./page";
 import React from "react";
 
-// 1. Mock Next.js navigation
+const mockSubscribeSessions = vi.fn(() => vi.fn());
+
+// 1. Mock Next.js Navigation
 vi.mock("next/navigation", () => ({
   useSearchParams: () => ({
     get: vi.fn().mockReturnValue("test-session-id"),
@@ -15,8 +17,8 @@ vi.mock("../../lib/sessionStorage", () => ({
   getCurrentSessionId: vi.fn().mockReturnValue("test-session-id"),
   getSession: vi.fn(),
   setCurrentSessionId: vi.fn(),
-  subscribeSessions: vi.fn(() => vi.fn()), // Returns an unsubscribe function
-  updateSession: vi.fn(),
+  subscribeSessions: (...args: unknown[]) => mockSubscribeSessions(...args),
+  updateSession: vi.fn((id, data) => ({ id, ...data })),
 }));
 
 vi.mock("../../lib/videoStorage", () => ({
@@ -40,6 +42,12 @@ global.URL.revokeObjectURL = vi.fn();
 describe("AnalysisPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    global.URL.createObjectURL = vi.fn(() => "blob:mock-url");
+    global.URL.revokeObjectURL = vi.fn();
+    mockSubscribeSessions.mockReturnValue(vi.fn());
+    
+    vi.mocked(getSession).mockReturnValue(mockSession as ReturnType<typeof getSession>);
+    vi.mocked(getSessionVideo).mockResolvedValue(new File([], "test.mp4"));
   });
 
   it("shows an error state if the session is not found", async () => {
@@ -76,36 +84,4 @@ describe("AnalysisPage", () => {
       expect(screen.getByText(/Ref: Ref Dance/i)).toBeInTheDocument();
     });
   });
-
-//   it("transitions to the FeedbackViewer when ebsData is loaded", async () => {
-//     const { getSession } = await import("../../lib/sessionStorage");
-//     const { getSessionEbs } = await import("../../lib/ebsStorage");
-//     const { getSessionVideo } = await import("../../lib/videoStorage");
-
-//     const mockEbsData = { segments: [{ id: 1 }] };
-//     (getSession as any).mockReturnValue({ id: "id", ebsStatus: "ready" });
-//     (getSessionVideo as any).mockReturnValue(Promise.resolve(new File([], "v.mp4")));
-//     (getSessionEbs as any).mockReturnValue(Promise.resolve(mockEbsData));
-
-//     render(<AnalysisPage />);
-
-//     // FeedbackViewer has a title prop "TempoFlow EBS Session"
-//     await waitFor(() => {
-//       expect(screen.getByText("TempoFlow EBS Session")).toBeInTheDocument();
-//     });
-//   });
-
-//   it("handles pausing the session processing", async () => {
-//     const { getSession } = await import("../../lib/sessionStorage");
-//     const { pauseSessionProcessing } = await import("../../lib/sessionProcessing");
-
-//     (getSession as any).mockReturnValue({ id: "test-id", ebsStatus: "processing" });
-    
-//     render(<AnalysisPage />);
-
-//     const pauseButton = await screen.findByRole("button", { name: /pause processing/i });
-//     fireEvent.click(pauseButton);
-
-//     expect(pauseSessionProcessing).toHaveBeenCalledWith("test-id");
-//   });
 });

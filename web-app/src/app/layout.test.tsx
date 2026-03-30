@@ -12,6 +12,10 @@ vi.mock("../components/Providers", () => ({
 
 vi.mock("./globals.css", () => ({}));
 
+vi.mock("../components/Providers", () => ({
+  Providers: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 describe("RootLayout", () => {
   afterEach(() => {
     cleanup();
