@@ -885,7 +885,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     setVisualFeedbackRows([]);
     setVisualReferenceSamples([]);
     setVisualUserSamples([]);
-  }, [sessionId, activeReferenceVideoUrl, activeUserVideoUrl]);
+  }, [sessionId, activeReferenceVideoUrl, activeUserVideoUrl, feedbackDifficulty]);
 
   useEffect(() => {
     if (
@@ -898,6 +898,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
       return;
     }
     let cancelled = false;
+    setVisualFeedbackRows([]);
+    setVisualReferenceSamples([]);
+    setVisualUserSamples([]);
 
     void (async () => {
       try {
@@ -946,6 +949,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     };
   }, [
     ebsFingerprint,
+    feedbackDifficulty,
     refYoloArtifact,
     sessionId,
     sessionMode,

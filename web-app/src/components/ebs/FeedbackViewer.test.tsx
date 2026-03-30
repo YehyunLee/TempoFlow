@@ -707,6 +707,28 @@ describe("FeedbackViewer", () => {
     });
   });
 
+  it("re-initializes visual feedback when difficulty changes", async () => {
+    render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 10 }], alignment: {} } as any}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(buildVisualFeedbackFromYoloArtifactsMock).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.click(screen.getByLabelText("Difficulty: Beginner"));
+
+    await waitFor(() => {
+      expect(buildVisualFeedbackFromYoloArtifactsMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("revokes object URLs on unmount in manual mode", () => {
     const { unmount } = render(<FeedbackViewer mode="manual" />);
     unmount();
