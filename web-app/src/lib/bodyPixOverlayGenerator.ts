@@ -1,6 +1,6 @@
 "use client";
 
-import { BODYPIX_PART_COLORS } from "./bodyPix/palette";
+import { styleBodyPixMask } from "./bodyPix/overlayMaskStyling";
 
 type BodyPixModule = typeof import("@tensorflow-models/body-pix");
 type BodyPixNet = Awaited<ReturnType<BodyPixModule["load"]>>;
@@ -122,21 +122,18 @@ export async function generateBodyPixOverlayFrames(params: {
     const maskCtx = maskCanvas.getContext("2d");
     if (!maskCtx) throw new Error("Failed to create mask canvas.");
 
+    const styled = styleBodyPixMask(seg.data, seg.width, seg.height, {
+      color: { r: 56, g: 189, b: 248 },
+      fillOpacity: Math.max(0, Math.min(1, opacity * 0.24)),
+      contourOpacity: 0.96,
+      contourRadius: 3,
+      seamOpacity: 0.72,
+      seamRadius: 1,
+      glowOpacity: 0.18,
+      glowRadius: 4,
+    });
     const image = maskCtx.createImageData(seg.width, seg.height);
-    const data = image.data;
-    const parts = seg.data;
-
-    for (let p = 0; p < parts.length; p += 1) {
-      const part = parts[p];
-      if (part < 0) continue;
-      const px = p * 4;
-      const c = BODYPIX_PART_COLORS[part] ?? [56, 189, 248];
-      data[px] = c[0];
-      data[px + 1] = c[1];
-      data[px + 2] = c[2];
-      data[px + 3] = Math.round(255 * opacity);
-    }
-
+    image.data.set(styled.data);
     maskCtx.putImageData(image, 0, 0);
     outputCtx.clearRect(0, 0, width, height);
     outputCtx.imageSmoothingEnabled = true;

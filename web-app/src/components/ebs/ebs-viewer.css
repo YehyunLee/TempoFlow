@@ -518,6 +518,148 @@
   animation: video-processing-slide 1.15s ease-in-out infinite;
 }
 
+.overlay-feedback-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 44;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.overlay-feedback-focus {
+  position: absolute;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  border: 2px solid var(--overlay-feedback-tone);
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.22) 0%, rgba(255, 255, 255, 0.04) 48%, transparent 74%);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.26),
+    0 0 30px color-mix(in srgb, var(--overlay-feedback-tone) 42%, transparent);
+  animation: overlay-feedback-pulse 1.35s ease-in-out infinite;
+}
+
+.overlay-feedback-focus::after {
+  content: "";
+  position: absolute;
+  inset: 18%;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.9);
+  opacity: 0.72;
+}
+
+.overlay-feedback-focus-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: white;
+  box-shadow:
+    0 0 0 4px color-mix(in srgb, var(--overlay-feedback-tone) 78%, transparent),
+    0 0 18px color-mix(in srgb, var(--overlay-feedback-tone) 62%, transparent);
+}
+
+.overlay-feedback-card {
+  position: absolute;
+  width: min(280px, calc(100vw - 64px));
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(191, 219, 254, 0.35);
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.9) 0%, rgba(15, 23, 42, 0.84) 100%);
+  color: #f8fafc;
+  box-shadow:
+    0 20px 42px rgba(2, 6, 23, 0.34),
+    0 0 0 1px rgba(148, 163, 184, 0.08);
+  animation: overlay-feedback-enter 260ms ease-out;
+}
+
+.overlay-feedback-card::after {
+  content: "";
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  background: rgba(15, 23, 42, 0.9);
+  transform: rotate(45deg);
+}
+
+.overlay-feedback-card-above::after {
+  left: calc(50% - 7px);
+  bottom: -7px;
+  border-right: 1px solid rgba(191, 219, 254, 0.2);
+  border-bottom: 1px solid rgba(191, 219, 254, 0.2);
+}
+
+.overlay-feedback-card-below::after {
+  left: calc(50% - 7px);
+  top: -7px;
+  border-left: 1px solid rgba(191, 219, 254, 0.2);
+  border-top: 1px solid rgba(191, 219, 254, 0.2);
+}
+
+.overlay-feedback-card-above.overlay-feedback-card-center {
+  transform: translate(-50%, calc(-100% - 28px));
+}
+
+.overlay-feedback-card-above.overlay-feedback-card-left {
+  transform: translate(20px, calc(-100% - 28px));
+}
+
+.overlay-feedback-card-above.overlay-feedback-card-right {
+  transform: translate(calc(-100% - 20px), calc(-100% - 28px));
+}
+
+.overlay-feedback-card-below.overlay-feedback-card-center {
+  transform: translate(-50%, 28px);
+}
+
+.overlay-feedback-card-below.overlay-feedback-card-left {
+  transform: translate(20px, 28px);
+}
+
+.overlay-feedback-card-below.overlay-feedback-card-right {
+  transform: translate(calc(-100% - 20px), 28px);
+}
+
+.overlay-feedback-card-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.overlay-feedback-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--overlay-feedback-tone) 72%, white 10%);
+  background: color-mix(in srgb, var(--overlay-feedback-tone) 22%, rgba(255, 255, 255, 0.04));
+  color: white;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.overlay-feedback-severity {
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.overlay-feedback-copy {
+  font-size: 13px;
+  line-height: 1.45;
+  color: #e2e8f0;
+}
+
 @keyframes video-processing-slide {
   0% {
     transform: translateX(-100%);
@@ -525,6 +667,35 @@
 
   100% {
     transform: translateX(240%);
+  }
+}
+
+@keyframes overlay-feedback-pulse {
+  0% {
+    transform: translate(-50%, -50%) scale(0.92);
+    opacity: 0.86;
+  }
+
+  58% {
+    transform: translate(-50%, -50%) scale(1.04);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate(-50%, -50%) scale(0.94);
+    opacity: 0.9;
+  }
+}
+
+@keyframes overlay-feedback-enter {
+  0% {
+    opacity: 0;
+    filter: blur(6px);
+  }
+
+  100% {
+    opacity: 1;
+    filter: blur(0);
   }
 }
 

@@ -14,6 +14,7 @@ type ImageDataLike = {
 
 type OverlayMaskStyleOptions = {
   color: RgbColor;
+  borderColor?: RgbColor;
   fillOpacity?: number;
   contourOpacity?: number;
   contourRadius?: number;
@@ -98,6 +99,25 @@ function mapPixelsToPartIndices(source: ImageDataLike) {
   return partIndices;
 }
 
+function mapBodyPixPartsToPartIndices(
+  parts: ArrayLike<number>,
+  width: number,
+  height: number,
+) {
+  const totalPixels = width * height;
+  const partIndices = new Int16Array(totalPixels);
+  partIndices.fill(-1);
+
+  const limit = Math.min(totalPixels, parts.length);
+  for (let index = 0; index < limit; index += 1) {
+    const rawPart = Number(parts[index] ?? -1);
+    if (rawPart < 0) continue;
+    partIndices[index] = BODYPIX_SEMANTIC_PART_MAP[rawPart] ?? rawPart;
+  }
+
+  return partIndices;
+}
+
 function buildBoundarySeedMask(partIndices: Int16Array, width: number, height: number) {
   const contourSeedMask = new Uint8Array(partIndices.length);
   const seamSeedMask = new Uint8Array(partIndices.length);
@@ -169,31 +189,33 @@ function dilateMask(seedMask: Uint8Array, width: number, height: number, radius:
   return expanded;
 }
 
-export function styleOverlayMask(
-  source: ImageDataLike,
+function renderStyledMask(
+  partIndices: Int16Array,
+  width: number,
+  height: number,
   options: OverlayMaskStyleOptions,
 ) {
   const {
     color,
+    borderColor = { r: 10, g: 10, b: 10 },
     fillOpacity = 0.12,
     contourOpacity = 0.95,
-    contourRadius = 2,
+    contourRadius = 3,
     seamOpacity = 0.62,
     seamRadius = 1,
     glowOpacity = 0.22,
     glowRadius = 4,
   } = options;
 
-  const partIndices = mapPixelsToPartIndices(source);
   const { contourSeedMask, seamSeedMask } = buildBoundarySeedMask(
     partIndices,
-    source.width,
-    source.height,
+    width,
+    height,
   );
-  const contourMask = dilateMask(contourSeedMask, source.width, source.height, contourRadius);
-  const seamMask = dilateMask(seamSeedMask, source.width, source.height, seamRadius);
-  const glowMask = dilateMask(contourSeedMask, source.width, source.height, glowRadius);
-  const output = new Uint8ClampedArray(source.width * source.height * 4);
+  const contourMask = dilateMask(contourSeedMask, width, height, contourRadius);
+  const seamMask = dilateMask(seamSeedMask, width, height, seamRadius);
+  const glowMask = dilateMask(contourSeedMask, width, height, glowRadius);
+  const output = new Uint8ClampedArray(width * height * 4);
   const fillAlpha = Math.round(fillOpacity * 255);
   const contourAlpha = Math.round(contourOpacity * 255);
   const seamAlpha = Math.round(seamOpacity * 255);
@@ -201,30 +223,63 @@ export function styleOverlayMask(
 
   for (let index = 0; index < partIndices.length; index += 1) {
     const hasBody = partIndices[index] >= 0;
+    const hasContour = contourMask[index] === 1;
+    const hasSeam = seamMask[index] === 1;
     const hasGlow = glowMask[index] === 1;
-    if (!hasBody && !hasGlow) continue;
+    if (!hasBody && !hasContour && !hasGlow) continue;
 
     const px = index * 4;
-    output[px] = color.r;
-    output[px + 1] = color.g;
-    output[px + 2] = color.b;
 
     let alpha = 0;
-    if (hasBody) {
-      alpha = Math.max(alpha, fillAlpha);
-      if (seamMask[index]) alpha = Math.max(alpha, seamAlpha);
-      if (contourMask[index]) alpha = Math.max(alpha, contourAlpha);
+    let rgb = color;
+
+    if (hasGlow) alpha = Math.max(alpha, glowAlpha);
+    if (hasBody) alpha = Math.max(alpha, fillAlpha);
+    if (hasBody && hasSeam) {
+      alpha = Math.max(alpha, seamAlpha);
+      rgb = borderColor;
     }
-    if (hasGlow) {
-      alpha = Math.max(alpha, glowAlpha);
+    if (hasContour) {
+      alpha = Math.max(alpha, contourAlpha);
+      rgb = borderColor;
     }
+
+    output[px] = rgb.r;
+    output[px + 1] = rgb.g;
+    output[px + 2] = rgb.b;
 
     output[px + 3] = alpha;
   }
 
   return {
     data: output,
-    width: source.width,
-    height: source.height,
+    width,
+    height,
   };
+}
+
+export function styleOverlayMask(
+  source: ImageDataLike,
+  options: OverlayMaskStyleOptions,
+) {
+  return renderStyledMask(
+    mapPixelsToPartIndices(source),
+    source.width,
+    source.height,
+    options,
+  );
+}
+
+export function styleBodyPixMask(
+  parts: ArrayLike<number>,
+  width: number,
+  height: number,
+  options: OverlayMaskStyleOptions,
+) {
+  return renderStyledMask(
+    mapBodyPixPartsToPartIndices(parts, width, height),
+    width,
+    height,
+    options,
+  );
 }

@@ -6,6 +6,23 @@ import { useEbsViewer } from "./useEbsViewer";
 const { ensureBrowserYoloOverlaysMock } = vi.hoisted(() => ({
   ensureBrowserYoloOverlaysMock: vi.fn().mockResolvedValue(undefined),
 }));
+const { compareWithBodyPixMock } = vi.hoisted(() => ({
+  compareWithBodyPixMock: vi.fn().mockResolvedValue({
+    feedback: [
+      {
+        timestamp: 2.5,
+        segmentIndex: 0,
+        bodyRegion: "arms",
+        severity: "moderate",
+        message: "Upper-body shape differs from the reference phrase.",
+        deviation: 0.33,
+        featureFamily: "upper_body",
+      },
+    ],
+    refSamples: [],
+    userSamples: [],
+  }),
+}));
 
 // 1. Mock the custom hook
 vi.mock("./useEbsViewer", () => ({
@@ -23,7 +40,7 @@ vi.mock("./OverlayMaskLayer", () => ({
 vi.mock("./GeminiFeedbackPanel", () => {
   const React = require("react");
   return {
-    GeminiFeedbackPanel: React.forwardRef((props: { onFeedbackReady?: (moves: unknown[]) => void }, ref) => {
+    GeminiFeedbackPanel: React.forwardRef((props: { onFeedbackReady?: (moves: unknown[]) => void }, ref: unknown) => {
       React.useImperativeHandle(ref, () => ({
         enqueueSegmentForFeedback: vi.fn(),
       }));
@@ -77,6 +94,10 @@ vi.mock("../../lib/ensureBrowserYoloOverlays", () => ({
   BROWSER_YOLO_VARIANT: "yolo26n-python-hybrid-v6",
 }));
 
+vi.mock("../../lib/bodyPix", () => ({
+  compareWithBodyPix: compareWithBodyPixMock,
+}));
+
 describe("FeedbackViewer", () => {
   const mockState = {
     sharedTime: 10,
@@ -125,6 +146,21 @@ describe("FeedbackViewer", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    compareWithBodyPixMock.mockResolvedValue({
+      feedback: [
+        {
+          timestamp: 2.5,
+          segmentIndex: 0,
+          bodyRegion: "arms",
+          severity: "moderate",
+          message: "Upper-body shape differs from the reference phrase.",
+          deviation: 0.33,
+          featureFamily: "upper_body",
+        },
+      ],
+      refSamples: [],
+      userSamples: [],
+    });
     (useEbsViewer as any).mockReturnValue({
       state: mockState,
       ...mockActions,
@@ -243,6 +279,23 @@ describe("FeedbackViewer", () => {
     const practiceBtn = screen.getByTitle(/Practice current section/i);
     fireEvent.click(practiceBtn);
     expect(mockActions.openPracticeMode).toHaveBeenCalledWith(0);
+  });
+
+  it("shows local visual feedback on the overlay video", async () => {
+    render(
+      <FeedbackViewer
+        mode="session"
+        sessionId="test-session"
+        referenceVideoUrl="ref.mp4"
+        userVideoUrl="user.mp4"
+        ebsData={{ segments: [{ shared_start_sec: 0, shared_end_sec: 5 }], alignment: {} } as any}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle(/Overlay view/i));
+
+    expect(await screen.findByText("Position diff")).toBeInTheDocument();
+    expect(await screen.findByText(/Upper-body shape differs from the guide phrase/i)).toBeInTheDocument();
   });
 
   it("revokes object URLs on unmount in manual mode", () => {

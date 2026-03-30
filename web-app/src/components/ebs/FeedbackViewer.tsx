@@ -8,6 +8,7 @@ import { buildMovesForSegment } from "./ebsViewerLogic";
 import { BodyPixOverlay } from "../BodyPixOverlay";
 import { ProgressiveOverlay } from "../ProgressiveOverlay";
 import { OverlayMaskLayer } from "./OverlayMaskLayer";
+import { OverlayVisualFeedback } from "./OverlayVisualFeedback";
 import {
   BROWSER_BODYPIX_OVERLAY_FPS,
   BROWSER_BODYPIX_VARIANT,
@@ -40,6 +41,8 @@ import {
   getFeedbackSegment,
   hashEbsData,
 } from "../../lib/feedbackStorage";
+import { compareWithBodyPix, type DanceFeedback } from "../../lib/bodyPix";
+import { buildOverlayVisualCue, pickActiveSegmentFeedback } from "./overlayFeedbackCue";
 
 type ManualViewerProps = {
   mode?: "manual";
@@ -151,6 +154,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [geminiFeedback, setGeminiFeedback] = useState<GeminiFlatMove[]>([]);
   const [overlayBusy, setOverlayBusy] = useState(false);
   const [overlayStatus, setOverlayStatus] = useState<string | null>(null);
+  const [visualFeedbackRows, setVisualFeedbackRows] = useState<DanceFeedback[]>([]);
   const [bodyPixSegmentProgress, setBodyPixSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [yoloSegmentProgress, setYoloSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [overlayCacheReady, setOverlayCacheReady] = useState(false);
@@ -164,6 +168,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [userYoloPoseLegsArtifact, setUserYoloPoseLegsArtifact] = useState<OverlayArtifact | null>(null);
   const autoBodyPixStartedRef = useRef(false);
   const autoYoloStartedRef = useRef(false);
+  const visualFeedbackStartedRef = useRef(false);
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
   const ebsFingerprint = useMemo(() => (sessionEbsData ? hashEbsData(sessionEbsData) : ""), [sessionEbsData]);
@@ -516,6 +521,52 @@ export function FeedbackViewer(props: EbsViewerProps) {
       if (userVideoUrl) URL.revokeObjectURL(userVideoUrl);
     };
   }, [refVideoUrl, sessionMode, userVideoUrl]);
+
+  useEffect(() => {
+    visualFeedbackStartedRef.current = false;
+    setVisualFeedbackRows([]);
+  }, [sessionId, activeReferenceVideoUrl, activeUserVideoUrl]);
+
+  useEffect(() => {
+    if (
+      !sessionMode ||
+      !viewerVisible ||
+      !activeReferenceVideoUrl ||
+      !activeUserVideoUrl ||
+      state.segments.length === 0
+    ) {
+      return;
+    }
+    if (visualFeedbackStartedRef.current) return;
+
+    visualFeedbackStartedRef.current = true;
+    let cancelled = false;
+
+    void compareWithBodyPix({
+      referenceVideoUrl: activeReferenceVideoUrl,
+      userVideoUrl: activeUserVideoUrl,
+      segments: state.segments,
+      poseFps: 4,
+    })
+      .then((result) => {
+        if (cancelled) return;
+        setVisualFeedbackRows(result.feedback ?? []);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setVisualFeedbackRows([]);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeReferenceVideoUrl,
+    activeUserVideoUrl,
+    sessionMode,
+    state.segments,
+    viewerVisible,
+  ]);
 
   useEffect(() => {
     autoBodyPixStartedRef.current = false;
@@ -953,6 +1004,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
     () => mapArtifactToOverlayTimeline(activeReferenceArtifact, "reference"),
     [activeReferenceArtifact, mapArtifactToOverlayTimeline],
   );
+  const overlayCueReferenceArtifact = useMemo(
+    () => mapArtifactToOverlayTimeline(refYoloArtifact, "reference"),
+    [mapArtifactToOverlayTimeline, refYoloArtifact],
+  );
   const activeVideoProcessingState = useMemo(() => {
     if (!sessionMode || !showBodyPix || !overlayBusy || activeVideoSegmentIndex < 0) return null;
     if (activeMoveReadiness.segmentReadyByIndex[activeVideoSegmentIndex]) return null;
@@ -996,6 +1051,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const overlayUserArtifact = useMemo(
     () => mapArtifactToOverlayTimeline(activeUserArtifact, "practice"),
     [activeUserArtifact, mapArtifactToOverlayTimeline],
+  );
+  const overlayCuePracticeArtifact = useMemo(
+    () => mapArtifactToOverlayTimeline(userYoloArtifact, "practice"),
+    [mapArtifactToOverlayTimeline, userYoloArtifact],
   );
   const overlayReferenceYoloLayers = useMemo(
     () =>
@@ -1127,6 +1186,26 @@ export function FeedbackViewer(props: EbsViewerProps) {
       setOverlayCurrentTime(overlayTargetTime);
     }
   }, [state.ebs, state.sharedTime, viewMode]);
+
+  const activeVisualFeedback = useMemo(() => {
+    const segment = activeVideoSegmentIndex >= 0 ? state.segments[activeVideoSegmentIndex] ?? null : null;
+    return pickActiveSegmentFeedback({
+      feedback: visualFeedbackRows,
+      segment,
+      segmentIndex: activeVideoSegmentIndex,
+      sharedTime: state.sharedTime,
+    });
+  }, [activeVideoSegmentIndex, state.segments, state.sharedTime, visualFeedbackRows]);
+
+  const overlayVisualCue = useMemo(
+    () =>
+      buildOverlayVisualCue({
+        feedback: activeVisualFeedback,
+        practiceArtifact: overlayCuePracticeArtifact,
+        referenceArtifact: overlayCueReferenceArtifact,
+      }),
+    [activeVisualFeedback, overlayCuePracticeArtifact, overlayCueReferenceArtifact],
+  );
 
   return (
     <div className="ebs-viewer-root">
@@ -1314,6 +1393,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       )}
                     </>
                   )}
+                  {sessionMode && showFeedback && overlayVisualCue ? (
+                    <OverlayVisualFeedback key={overlayVisualCue.id} cue={overlayVisualCue} />
+                  ) : null}
                 </div>
               </div>
               {videoProcessingOverlay}
