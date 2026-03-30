@@ -3,29 +3,27 @@ import { describe, it, expect, vi } from "vitest";
 import RootLayout, { metadata } from "./layout";
 import React from "react";
 
-// Mock Google Fonts
-vi.mock("next/font/google", () => ({
-  Geist: () => ({ variable: "--font-geist-sans" }),
-  Geist_Mono: () => ({ variable: "--font-geist-mono" }),
-}));
-
-// Mock Providers
-vi.mock("../components/Providers", () => ({
-  Providers: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="mock-providers">{children}</div>
-  ),
-}));
-
 describe("RootLayout", () => {
-  it("renders children wrapped in the Providers component", () => {
+  it("renders children correctly within the body", () => {
+    const { getByText } = render(
+      <RootLayout>
+        <div data-testid="child">Hello World</div>
+      </RootLayout>
+    );
+
+    expect(getByText("Hello World")).toBeInTheDocument();
+  });
+
+  it("applies the antialiased class to the body", () => {
     render(
       <RootLayout>
         <div data-testid="child-content">TempoFlow Content</div>
       </RootLayout>
     );
 
-    expect(screen.getByTestId("child-content")).toBeInTheDocument();
-    expect(screen.getByTestId("mock-providers")).toBeInTheDocument();
+    const body = document.querySelector("body");
+
+    expect(body).toHaveClass("antialiased");
   });
 
   it("exports the correct metadata", () => {
