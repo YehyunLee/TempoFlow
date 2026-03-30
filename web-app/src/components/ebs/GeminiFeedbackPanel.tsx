@@ -81,6 +81,7 @@ type GeminiFeedbackPanelProps = {
   practiceYoloArtifact?: OverlayArtifact | null;
   referenceYoloPoseArtifact?: OverlayArtifact | null;
   practiceYoloPoseArtifact?: OverlayArtifact | null;
+  onPipelineProgress?: (progress: { done: number; total: number }) => void;
 };
 
 export type GeminiFeedbackPanelHandle = {
@@ -142,6 +143,7 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     practiceYoloArtifact,
     referenceYoloPoseArtifact,
     practiceYoloPoseArtifact,
+    onPipelineProgress,
   } = props;
 
   const [running, setRunning] = useState(false);
@@ -520,6 +522,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
 
   const progressPercent =
     segmentsTotal > 0 ? Math.round((segmentsDone / segmentsTotal) * 100) : 0;
+
+  useEffect(() => {
+    onPipelineProgress?.({ done: segmentsDone, total: segmentsTotal });
+  }, [onPipelineProgress, segmentsDone, segmentsTotal]);
 
   const labelCounts = useMemo(() => {
     const counts: Record<string, number> = {};

@@ -229,8 +229,64 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 18px;
+}
+
+.viewer-controls-left,
+.viewer-controls-right {
+  display: flex;
+  align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.viewer-controls-right {
+  margin-left: auto;
+}
+
+.viewer-controls-right .feedback-difficulty-group {
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.viewer-controls-right .mode-group-label {
+  width: 100%;
+  text-align: left;
+}
+
+.viewer-debug-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.viewer-debug-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(224, 242, 254, 0.72);
+  border: 1px solid rgba(191, 219, 254, 0.9);
+  white-space: nowrap;
+}
+
+.viewer-debug-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text2);
+}
+
+.viewer-debug-value {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text);
 }
 
 .mode-group {
@@ -247,6 +303,7 @@
 .feedback-difficulty-group {
   align-items: flex-start;
   gap: 6px;
+  min-width: fit-content;
 }
 
 .mode-group-label {
@@ -329,6 +386,28 @@
   background: linear-gradient(135deg, #38bdf8 0%, #2563eb 100%);
   color: white;
   box-shadow: 0 10px 20px rgba(37, 99, 235, 0.18);
+}
+
+@media (max-width: 1120px) {
+  .viewer-controls {
+    flex-wrap: wrap;
+  }
+
+  .viewer-controls-left,
+  .viewer-debug-status,
+  .viewer-controls-right {
+    width: 100%;
+  }
+
+  .viewer-debug-status {
+    justify-content: flex-start;
+    order: 3;
+    flex-wrap: wrap;
+  }
+
+  .viewer-controls-right {
+    justify-content: flex-end;
+  }
 }
 
 .ebs-back-btn {

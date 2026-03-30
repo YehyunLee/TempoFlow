@@ -209,6 +209,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [visualFeedbackRows, setVisualFeedbackRows] = useState<DanceFeedback[]>([]);
   const [visualReferenceSamples, setVisualReferenceSamples] = useState<SampledPoseFrame[]>([]);
   const [visualUserSamples, setVisualUserSamples] = useState<SampledPoseFrame[]>([]);
+  const [geminiPipelineProgress, setGeminiPipelineProgress] = useState({ done: 0, total: 0 });
   const [bodyPixSegmentProgress, setBodyPixSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [yoloSegmentProgress, setYoloSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [overlayCacheReady, setOverlayCacheReady] = useState(false);
@@ -222,7 +223,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [userYoloPoseLegsArtifact, setUserYoloPoseLegsArtifact] = useState<OverlayArtifact | null>(null);
   const autoBodyPixStartedRef = useRef(false);
   const autoYoloStartedRef = useRef(false);
-  const visualFeedbackStartedRef = useRef(false);
   const geminiFeedbackRef = useRef<GeminiFeedbackPanelHandle>(null);
   const autoGeminiQueuedRef = useRef<Set<number>>(new Set());
   const previousFeedbackCueKeyRef = useRef<string | null>(null);
@@ -591,7 +591,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   }, [refVideoUrl, sessionMode, userVideoUrl]);
 
   useEffect(() => {
-    visualFeedbackStartedRef.current = false;
     setVisualFeedbackRows([]);
     setVisualReferenceSamples([]);
     setVisualUserSamples([]);
@@ -607,9 +606,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     ) {
       return;
     }
-    if (visualFeedbackStartedRef.current) return;
-
-    visualFeedbackStartedRef.current = true;
     let cancelled = false;
 
     void (async () => {
@@ -622,7 +618,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
               })
             : null;
         const cached = cacheKey ? await getVisualFeedbackRun(cacheKey) : null;
-        if (cached) {
+        const cachedSegmentCount = cached
+          ? new Set(cached.refSamples.map((sample) => sample.segmentIndex)).size
+          : 0;
+        if (cached && cachedSegmentCount >= state.segments.length) {
           if (cancelled) return;
           setVisualFeedbackRows(cached.feedback ?? []);
           setVisualReferenceSamples(cached.refSamples ?? []);
@@ -639,7 +638,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
         setVisualFeedbackRows(result.feedback ?? []);
         setVisualReferenceSamples(result.refSamples ?? []);
         setVisualUserSamples(result.userSamples ?? []);
-        if (cacheKey) {
+        const resultSegmentCount = new Set(result.refSamples.map((sample) => sample.segmentIndex)).size;
+        if (cacheKey && resultSegmentCount >= state.segments.length) {
           await storeVisualFeedbackRun(cacheKey, result);
         }
       } catch {
@@ -669,6 +669,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
     setOverlayCacheReady(false);
     setBodyPixSegmentProgress(null);
     setYoloSegmentProgress(null);
+    setGeminiPipelineProgress({ done: 0, total: 0 });
   }, [sessionId]);
 
   useEffect(() => {
@@ -989,6 +990,33 @@ export function FeedbackViewer(props: EbsViewerProps) {
       : activeMoveReadiness.totalMoves > 0
         ? `${activeMoveReadiness.readyMoves}/${activeMoveReadiness.totalMoves} moves ready`
         : null;
+  const visualFeedbackReadySegments = useMemo(() => {
+    const refReady = new Set(visualReferenceSamples.map((sample) => sample.segmentIndex));
+    const userReady = new Set(visualUserSamples.map((sample) => sample.segmentIndex));
+    return state.segments.reduce((count, _segment, index) => {
+      return refReady.has(index) && userReady.has(index) ? count + 1 : count;
+    }, 0);
+  }, [state.segments, visualReferenceSamples, visualUserSamples]);
+  const centerDebugItems = useMemo(
+    () => [
+      {
+        key: "seg",
+        label: "Seg",
+        value: `${activeMoveReadiness.readySegments}/${state.segments.length}`,
+      },
+      {
+        key: "visual",
+        label: "Visual",
+        value: `${visualFeedbackReadySegments}/${state.segments.length}`,
+      },
+      {
+        key: "gemini",
+        label: "Gemini",
+        value: `${Math.min(geminiPipelineProgress.done, geminiPipelineProgress.total || state.segments.length)}/${geminiPipelineProgress.total || state.segments.length}`,
+      },
+    ],
+    [activeMoveReadiness.readySegments, geminiPipelineProgress.done, geminiPipelineProgress.total, state.segments.length, visualFeedbackReadySegments],
+  );
 
   const feedbackBySegment = useMemo(() => {
     const bySegment = new Map<number, GeminiFlatMove[]>();
@@ -1372,11 +1400,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     ],
   );
 
-  const currentFeedbackDifficultyOption = useMemo(
-    () => FEEDBACK_DIFFICULTY_OPTIONS.find((option) => option.value === feedbackDifficulty) ?? null,
-    [feedbackDifficulty],
-  );
-
   const activeGeminiMove = useMemo(() => {
     if (!geminiFeedback.length) return null;
 
@@ -1424,22 +1447,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     };
   }, [overlayGeminiCue, overlayVisualCue]);
 
-  const feedbackSupportText = useMemo(() => {
-    if (!showFeedback) return null;
-    if (!overlayVisualCue && !activeGeminiMove && activeVideoSegmentIndex >= 0) {
-      return {
-        text: "Matching closely right now.",
-        calm: true,
-      };
-    }
-    return currentFeedbackDifficultyOption
-      ? {
-          text: currentFeedbackDifficultyOption.hint,
-          calm: false,
-        }
-      : null;
-  }, [activeGeminiMove, activeVideoSegmentIndex, currentFeedbackDifficultyOption, overlayVisualCue, showFeedback]);
-
   useEffect(() => {
     const activeFeedbackCueKey = [overlayVisualCue?.id ?? "", positionedOverlayGeminiCue?.id ?? ""]
       .filter(Boolean)
@@ -1466,79 +1473,84 @@ export function FeedbackViewer(props: EbsViewerProps) {
           <div className="ebs-top-bar">
             {hasSegments ? (
               <div className="viewer-controls">
-                <div className="mode-group mode-group-compact">
-                  <div className="mode-switch">
-                    <button
-                      onClick={() => setViewMode("side")}
-                      className={`mode-pill ${viewMode === "side" ? "active side" : ""}`}
-                      title="Side-by-side view"
-                    >
-                      Split
-                    </button>
-                    <button
-                      onClick={() => setViewMode("overlay")}
-                      className={`mode-pill ${viewMode === "overlay" ? "active overlay" : ""}`}
-                      title="Overlay view"
-                    >
-                      Overlay
-                    </button>
-                  </div>
-                </div>
-                {viewMode === "overlay" ? (
+                <div className="viewer-controls-left">
                   <div className="mode-group mode-group-compact">
-                    <div className="mode-switch mode-switch-soft">
+                    <div className="mode-switch">
                       <button
-                        onClick={() => setOverlayViewSource("reference")}
-                        className={`mode-pill mode-pill-soft ${overlayViewSource === "reference" ? "active soft" : ""}`}
-                        title="Show reference overlay on practice video"
+                        onClick={() => setViewMode("side")}
+                        className={`mode-pill ${viewMode === "side" ? "active side" : ""}`}
+                        title="Side-by-side view"
                       >
-                        Ref
+                        Split
                       </button>
                       <button
-                        onClick={() => setOverlayViewSource("user")}
-                        className={`mode-pill mode-pill-soft ${overlayViewSource === "user" ? "active soft" : ""}`}
-                        title="Show practice overlay"
+                        onClick={() => setViewMode("overlay")}
+                        className={`mode-pill ${viewMode === "overlay" ? "active overlay" : ""}`}
+                        title="Overlay view"
                       >
-                        You
-                      </button>
-                      <button
-                        onClick={() => setOverlayViewSource("both")}
-                        className={`mode-pill mode-pill-soft ${overlayViewSource === "both" ? "active soft" : ""}`}
-                        title="Show both overlays"
-                      >
-                        Both
+                        Overlay
                       </button>
                     </div>
+                  </div>
+                  {viewMode === "overlay" ? (
+                    <div className="mode-group mode-group-compact">
+                      <div className="mode-switch mode-switch-soft">
+                        <button
+                          onClick={() => setOverlayViewSource("reference")}
+                          className={`mode-pill mode-pill-soft ${overlayViewSource === "reference" ? "active soft" : ""}`}
+                          title="Show reference overlay on practice video"
+                        >
+                          Ref
+                        </button>
+                        <button
+                          onClick={() => setOverlayViewSource("user")}
+                          className={`mode-pill mode-pill-soft ${overlayViewSource === "user" ? "active soft" : ""}`}
+                          title="Show practice overlay"
+                        >
+                          You
+                        </button>
+                        <button
+                          onClick={() => setOverlayViewSource("both")}
+                          className={`mode-pill mode-pill-soft ${overlayViewSource === "both" ? "active soft" : ""}`}
+                          title="Show both overlays"
+                        >
+                          Both
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                {sessionMode ? (
+                  <div className="viewer-debug-status" aria-live="polite">
+                    {centerDebugItems.map((item) => (
+                      <div key={item.key} className="viewer-debug-pill">
+                        <span className="viewer-debug-label">{item.label}</span>
+                        <span className="viewer-debug-value">{item.value}</span>
+                      </div>
+                    ))}
                   </div>
                 ) : null}
                 {showFeedback ? (
-                  <div className="mode-group mode-group-compact feedback-difficulty-group">
-                    <div className="mode-group-label">Difficulty</div>
-                    <div className="mode-switch mode-switch-soft">
-                      {FEEDBACK_DIFFICULTY_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setFeedbackDifficulty(option.value)}
-                          className={[
-                            "mode-pill mode-pill-soft mode-pill-compact",
-                            feedbackDifficulty === option.value ? "active soft" : "",
-                          ].join(" ")}
-                          title={option.hint}
-                          aria-label={`Difficulty: ${option.label}`}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                    {feedbackSupportText ? (
-                      <div
-                        className={`feedback-difficulty-hint${feedbackSupportText.calm ? " calm" : ""}`}
-                        aria-live="polite"
-                      >
-                        {feedbackSupportText.text}
+                  <div className="viewer-controls-right">
+                    <div className="mode-group mode-group-compact feedback-difficulty-group">
+                      <div className="mode-switch mode-switch-soft">
+                        {FEEDBACK_DIFFICULTY_OPTIONS.map((option) => (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setFeedbackDifficulty(option.value)}
+                            className={[
+                              "mode-pill mode-pill-soft mode-pill-compact",
+                              feedbackDifficulty === option.value ? "active soft" : "",
+                            ].join(" ")}
+                            title={option.hint}
+                            aria-label={`Difficulty: ${option.label}`}
+                          >
+                            {option.label}
+                          </button>
+                        ))}
                       </div>
-                    ) : null}
+                    </div>
                   </div>
                 ) : null}
               </div>
@@ -1722,6 +1734,7 @@ export function FeedbackViewer(props: EbsViewerProps) {
               practiceYoloArtifact={userYoloArtifact}
               referenceYoloPoseArtifact={refYoloPoseArmsArtifact}
               practiceYoloPoseArtifact={userYoloPoseArmsArtifact}
+              onPipelineProgress={setGeminiPipelineProgress}
             />
           )}
           {!state.practice.enabled && hasSegments && (
