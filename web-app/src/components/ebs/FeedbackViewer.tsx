@@ -704,6 +704,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [geminiPipelineProgress, setGeminiPipelineProgress] = useState({ done: 0, total: 0 });
   const [retryStatus, setRetryStatus] = useState<{ message: string; type: "error" | "success" } | null>(null);
   const [retryLaunching, setRetryLaunching] = useState(false);
+  const [retryPanelOpen, setRetryPanelOpen] = useState(false);
+  const [retryPanelScope, setRetryPanelScope] = useState<PracticeRetryScope>("segment");
   const retryFileInputRef = useRef<HTMLInputElement | null>(null);
   const pendingRetryUploadScopeRef = useRef<PracticeRetryScope | null>(null);
   const [guideRecorderOpen, setGuideRecorderOpen] = useState(false);
@@ -1503,6 +1505,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
     closeGuideRecorder();
   }, [closeGuideRecorder, guideRecorderOpen, state.practice.enabled]);
 
+  useEffect(() => {
+    if (guideRecorderOpen || retryLaunching || retryStatus) {
+      setRetryPanelOpen(true);
+    }
+  }, [guideRecorderOpen, retryLaunching, retryStatus]);
+
   const launchRetryAnalysis = useCallback(
     async (scope: PracticeRetryScope, practiceRetryFile: File) => {
       const windowInfo = getRetryScopeWindow(scope);
@@ -1573,6 +1581,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
   );
 
   const openRetryUpload = useCallback((scope: PracticeRetryScope) => {
+    setRetryPanelOpen(true);
+    setRetryPanelScope(scope);
     setRetryStatus(null);
     pendingRetryUploadScopeRef.current = scope;
     retryFileInputRef.current?.click();
@@ -1611,6 +1621,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
       }
 
       try {
+        setRetryPanelOpen(true);
+        setRetryPanelScope(scope);
         setGuideRecorderScope(scope);
         setGuideRecorderOpen(true);
         setGuideRecorderError(null);
@@ -3324,167 +3336,206 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 <div className="practice-shortcut-note">Space plays or pauses. Repeat controls stay active until you switch them off.</div>
               </div>
 
-              {sessionMode && currentPracticeSegment ? (
+              {sessionMode && currentPracticeSegment && retryPanelOpen ? (
                 <div className="practice-retry-panel">
-                  <div className="practice-retry-copy">
-                    <div className="practice-retry-label">Focused Retry</div>
-                    <h3>Re-analyze this drill with a fresh take</h3>
-                    <p>
-                      Upload or guide-record just this section or move. We&apos;ll create a new focused analysis session and rerun segmentation and processing on that part.
-                    </p>
+                  <div className="practice-retry-header">
+                    <div className="practice-retry-copy">
+                      <div className="practice-retry-label">Retry Tools</div>
+                      <h3>Swap in a cleaner take</h3>
+                      <p>Replace only this section or move inside the full practice video, then rerun the analysis.</p>
+                    </div>
+                    <button type="button" className="practice-retry-btn" onClick={() => setRetryPanelOpen(false)}>
+                      Hide
+                    </button>
                   </div>
-                  <div className="practice-retry-actions">
-                    <div className="practice-retry-card">
-                      <div className="practice-retry-card-head">
-                        <span className="practice-retry-badge">Section</span>
-                        <span className="practice-retry-range">
+                  <div className="practice-retry-summary-row">
+                    {retryPanelScope === "segment" ? (
+                      <div className="practice-retry-summary-pill">
+                        <span className="practice-retry-summary-label">Section</span>
+                        <strong>Section {state.practice.segmentIndex + 1}</strong>
+                        <span>
                           {fmtTime(currentPracticeSegment.shared_start_sec)} - {fmtTime(currentPracticeSegment.shared_end_sec)}
                         </span>
                       </div>
-                      <div className="practice-retry-title">Section {state.practice.segmentIndex + 1}</div>
-                      <div className="practice-retry-meta">Use the current section as the reference window for a new retry analysis.</div>
-                      <div className="practice-retry-button-row">
-                        <button
-                          type="button"
-                          className="practice-retry-btn primary"
-                          onClick={() => openRetryUpload("segment")}
-                          disabled={retryLaunching}
-                        >
-                          Upload Section Take
-                        </button>
-                        <button
-                          type="button"
-                          className="practice-retry-btn"
-                          onClick={() => void openGuideRecorder("segment")}
-                          disabled={retryLaunching}
-                        >
-                          Guide Record Section
-                        </button>
-                      </div>
-                    </div>
-
-                    {currentPracticeMove ? (
-                      <div className="practice-retry-card">
-                        <div className="practice-retry-card-head">
-                          <span className="practice-retry-badge">Move</span>
-                          <span className="practice-retry-range">
-                            {fmtTime(currentPracticeMove.startSec)} - {fmtTime(currentPracticeMove.endSec)}
-                          </span>
-                        </div>
-                        <div className="practice-retry-title">
+                    ) : null}
+                    {retryPanelScope === "move" && currentPracticeMove ? (
+                      <div className="practice-retry-summary-pill">
+                        <span className="practice-retry-summary-label">Move</span>
+                        <strong>
                           Move {currentPracticeMove.num}{currentPracticeMove.isTransition ? " (Transition)" : ""}
-                        </div>
-                        <div className="practice-retry-meta">Use only this move as the guide and rerun analysis on the tighter retry clip.</div>
-                        <div className="practice-retry-button-row">
-                          <button
-                            type="button"
-                            className="practice-retry-btn primary"
-                            onClick={() => openRetryUpload("move")}
-                            disabled={retryLaunching}
-                          >
-                            Upload Move Take
-                          </button>
-                          <button
-                            type="button"
-                            className="practice-retry-btn"
-                            onClick={() => void openGuideRecorder("move")}
-                            disabled={retryLaunching}
-                          >
-                            Guide Record Move
-                          </button>
-                        </div>
+                        </strong>
+                        <span>
+                          {fmtTime(currentPracticeMove.startSec)} - {fmtTime(currentPracticeMove.endSec)}
+                        </span>
                       </div>
                     ) : null}
                   </div>
-                  {retryStatus ? (
-                    <div className={`practice-retry-status ${retryStatus.type}`}>{retryStatus.message}</div>
-                  ) : null}
-                  {guideRecorderOpen && activeGuideWindow ? (
-                    <div className="practice-retry-preview">
-                      <div className="practice-retry-preview-head">
-                        <div>
-                          <div className="practice-retry-label">Guide Recorder</div>
-                          <div className="practice-retry-title">{activeGuideWindow.title}</div>
-                        </div>
-                        <div className="practice-retry-button-row">
-                          <button
-                            type="button"
-                            className={`practice-retry-btn ${guideReferenceAudioEnabled ? "primary" : ""}`}
-                            onClick={() => setGuideReferenceAudioEnabled((value) => !value)}
-                          >
-                            Audio {guideReferenceAudioEnabled ? "On" : "Off"}
-                          </button>
-                          <button type="button" className="practice-retry-btn" onClick={closeGuideRecorder}>
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                      <div className="practice-guide-grid">
-                        <div className="practice-guide-pane">
-                          <div className="practice-retry-label">Reference</div>
-                          <div className="practice-retry-meta">
-                            {fmtTime(activeGuideWindow.sharedStartSec)} - {fmtTime(activeGuideWindow.sharedEndSec)}
+                      <div className="practice-retry-actions">
+                        {retryPanelScope === "segment" ? (
+                          <div className="practice-retry-card">
+                            <div className="practice-retry-card-head">
+                              <span className="practice-retry-badge">Section</span>
+                              <span className="practice-retry-range">
+                                {fmtTime(currentPracticeSegment.shared_start_sec)} - {fmtTime(currentPracticeSegment.shared_end_sec)}
+                              </span>
+                            </div>
+                            <div className="practice-retry-title">Section {state.practice.segmentIndex + 1}</div>
+                            <div className="practice-retry-meta">Replace this full section inside your current practice take.</div>
+                            <div className="practice-retry-button-row">
+                              <button
+                                type="button"
+                                className="practice-retry-btn primary"
+                                onClick={() => openRetryUpload("segment")}
+                                disabled={retryLaunching}
+                              >
+                                Upload Section Take
+                              </button>
+                              <button
+                                type="button"
+                                className="practice-retry-btn"
+                                onClick={() => void openGuideRecorder("segment")}
+                                disabled={retryLaunching}
+                              >
+                                Guide Record Section
+                              </button>
+                            </div>
                           </div>
-                          <div className="practice-guide-video-shell">
-                            <video
-                              ref={guideReferenceVideoRef}
-                              src={activeReferenceVideoUrl ?? undefined}
-                              className="practice-retry-video"
-                              playsInline
-                              preload="auto"
-                              muted={!guideReferenceAudioEnabled}
-                              onLoadedMetadata={() => {
-                                if (guideReferenceVideoRef.current) {
-                                  guideReferenceVideoRef.current.currentTime = activeGuideWindow.referenceStartSec;
-                                }
-                              }}
-                            />
-                            {guideCountdownValue != null ? (
-                              <div className="practice-guide-countdown">{guideCountdownValue}</div>
+                        ) : null}
+
+                        {retryPanelScope === "move" && currentPracticeMove ? (
+                          <div className="practice-retry-card">
+                            <div className="practice-retry-card-head">
+                              <span className="practice-retry-badge">Move</span>
+                              <span className="practice-retry-range">
+                                {fmtTime(currentPracticeMove.startSec)} - {fmtTime(currentPracticeMove.endSec)}
+                              </span>
+                            </div>
+                            <div className="practice-retry-title">
+                              Move {currentPracticeMove.num}{currentPracticeMove.isTransition ? " (Transition)" : ""}
+                            </div>
+                            <div className="practice-retry-meta">Replace just this move while keeping the rest of the take untouched.</div>
+                            <div className="practice-retry-button-row">
+                              <button
+                                type="button"
+                                className="practice-retry-btn primary"
+                                onClick={() => openRetryUpload("move")}
+                                disabled={retryLaunching}
+                              >
+                                Upload Move Take
+                              </button>
+                              <button
+                                type="button"
+                                className="practice-retry-btn"
+                                onClick={() => void openGuideRecorder("move")}
+                                disabled={retryLaunching}
+                              >
+                                Guide Record Move
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+                      </div>
+                      {retryStatus ? (
+                        <div className={`practice-retry-status ${retryStatus.type}`}>{retryStatus.message}</div>
+                      ) : null}
+                      {guideRecorderOpen && activeGuideWindow ? (
+                        <div className="practice-retry-preview">
+                          <div className="practice-retry-preview-head">
+                            <div>
+                              <div className="practice-retry-label">Guide Recorder</div>
+                              <div className="practice-retry-title">{activeGuideWindow.title}</div>
+                            </div>
+                            <div className="practice-retry-button-row">
+                              <button
+                                type="button"
+                                className={`practice-retry-btn ${guideReferenceAudioEnabled ? "primary" : ""}`}
+                                onClick={() => setGuideReferenceAudioEnabled((value) => !value)}
+                              >
+                                Audio {guideReferenceAudioEnabled ? "On" : "Off"}
+                              </button>
+                              <button type="button" className="practice-retry-btn" onClick={closeGuideRecorder}>
+                                Close
+                              </button>
+                            </div>
+                          </div>
+                          <div className="practice-guide-grid">
+                            <div className="practice-guide-pane">
+                              <div className="practice-retry-label">Reference</div>
+                              <div className="practice-retry-meta">
+                                {fmtTime(activeGuideWindow.sharedStartSec)} - {fmtTime(activeGuideWindow.sharedEndSec)}
+                              </div>
+                              <div className="practice-guide-video-shell">
+                                <video
+                                  ref={guideReferenceVideoRef}
+                                  src={activeReferenceVideoUrl ?? undefined}
+                                  className="practice-retry-video"
+                                  playsInline
+                                  preload="auto"
+                                  muted={!guideReferenceAudioEnabled}
+                                  onLoadedMetadata={() => {
+                                    if (guideReferenceVideoRef.current) {
+                                      guideReferenceVideoRef.current.currentTime = activeGuideWindow.referenceStartSec;
+                                    }
+                                  }}
+                                />
+                                {guideCountdownValue != null ? (
+                                  <div className="practice-guide-countdown">{guideCountdownValue}</div>
+                                ) : null}
+                              </div>
+                            </div>
+                            <div className="practice-guide-pane">
+                              <div className="practice-retry-label">Camera</div>
+                              <div className="practice-retry-meta">
+                                {guideRecording ? `Recording... ${guideRecordingSeconds}s` : "Camera ready for guided retry capture"}
+                              </div>
+                              <div className="practice-guide-video-shell">
+                                {guideCameraReady ? (
+                                  <video
+                                    ref={guideLiveVideoRef}
+                                    className="practice-retry-video"
+                                    autoPlay
+                                    muted
+                                    playsInline
+                                  />
+                                ) : (
+                                  <div className="practice-guide-empty">
+                                    {guideRecorderError ?? "Requesting camera access..."}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="practice-retry-button-row">
+                            {!guideRecording ? (
+                              <button
+                                type="button"
+                                className="practice-retry-btn primary"
+                                onClick={startGuidedRetryRecording}
+                                disabled={!guideCameraReady || retryLaunching || guideCountdownValue != null}
+                              >
+                                {guideCountdownValue != null ? `Starting in ${guideCountdownValue}` : "Start 3, 2, 1 Recording"}
+                              </button>
                             ) : null}
                           </div>
                         </div>
-                        <div className="practice-guide-pane">
-                          <div className="practice-retry-label">Camera</div>
-                          <div className="practice-retry-meta">
-                            {guideRecording ? `Recording... ${guideRecordingSeconds}s` : "Camera ready for guided retry capture"}
-                          </div>
-                          <div className="practice-guide-video-shell">
-                            {guideCameraReady ? (
-                              <video
-                                ref={guideLiveVideoRef}
-                                className="practice-retry-video"
-                                autoPlay
-                                muted
-                                playsInline
-                              />
-                            ) : (
-                              <div className="practice-guide-empty">
-                                {guideRecorderError ?? "Requesting camera access..."}
-                              </div>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="practice-retry-button-row">
-                        {!guideRecording ? (
-                          <button
-                            type="button"
-                            className="practice-retry-btn primary"
-                            onClick={startGuidedRetryRecording}
-                            disabled={!guideCameraReady || retryLaunching || guideCountdownValue != null}
-                          >
-                            {guideCountdownValue != null ? `Starting in ${guideCountdownValue}` : "Start 3, 2, 1 Recording"}
-                          </button>
-                        ) : null}
-                      </div>
-                    </div>
-                  ) : null}
+                      ) : null}
                 </div>
               ) : null}
 
               <div className="move-timeline">
-                <div className="move-tl-label">Moves</div>
+                <div className="move-timeline-head">
+                  <div className="move-tl-label">Moves</div>
+                  <button
+                    type="button"
+                    className="practice-inline-retry-btn"
+                    onClick={() => {
+                      setRetryPanelScope("segment");
+                      setRetryPanelOpen(true);
+                    }}
+                  >
+                    Retry This Segment
+                  </button>
+                </div>
                 <div
                   className="move-tl-track"
                   ref={moveTimelineTrackRef}
@@ -3597,6 +3648,19 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       {moveReady ? "Ready" : "Processing"}
                     </div>
                     {move.isTransition && <div className="mv-cl">Transition</div>}
+                    {index === state.practice.currentMoveIndex ? (
+                      <button
+                        type="button"
+                        className="practice-inline-retry-btn practice-inline-retry-btn-move"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setRetryPanelScope("move");
+                          setRetryPanelOpen(true);
+                        }}
+                      >
+                        Retry This Move
+                      </button>
+                    ) : null}
                   </div>
                   );
                 })}

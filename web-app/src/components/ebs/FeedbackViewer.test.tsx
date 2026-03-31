@@ -432,7 +432,7 @@ describe("FeedbackViewer", () => {
     expect(screen.getByLabelText(/Pause at move end/i)).not.toBeChecked();
   });
 
-  it("shows focused retry controls for the current section and move in practice mode", async () => {
+  it("shows retry controls scoped to the selected segment or move in practice mode", async () => {
     (useEbsViewer as any).mockReturnValue({
       state: {
         ...mockState,
@@ -451,10 +451,18 @@ describe("FeedbackViewer", () => {
 
     render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
 
+    fireEvent.click(screen.getByRole("button", { name: /retry this segment/i }));
     expect(screen.getByRole("button", { name: /upload section take/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /guide record section/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /upload move take/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /guide record move/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /hide/i }));
+    fireEvent.click(screen.getByRole("button", { name: /retry this move/i }));
     expect(screen.getByRole("button", { name: /upload move take/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /guide record move/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /upload section take/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /guide record section/i })).not.toBeInTheDocument();
   });
 
   it("does not render the old Gemini panel UI in session mode", () => {

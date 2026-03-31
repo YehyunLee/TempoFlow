@@ -1745,6 +1745,15 @@
   letter-spacing: 0.05em;
 }
 
+.move-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+
 .move-block.transition-move,
 .move-chip.transition-move {
   border-top: 2px solid var(--orange);
@@ -1765,8 +1774,16 @@
   box-shadow: 0 18px 36px rgba(14, 165, 233, 0.08);
 }
 
+.practice-retry-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
 .practice-retry-copy {
-  margin-bottom: 14px;
+  max-width: 760px;
 }
 
 .practice-retry-label {
@@ -1792,6 +1809,115 @@
   font-size: 13px;
   line-height: 1.5;
   color: var(--text2);
+}
+
+.practice-retry-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 190px;
+  min-height: 46px;
+  padding: 0 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.92);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(224, 242, 254, 0.92));
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.practice-retry-toggle:hover {
+  transform: translateY(-1px);
+  border-color: #38bdf8;
+  box-shadow: 0 12px 24px rgba(14, 165, 233, 0.16);
+}
+
+.practice-retry-toggle.open {
+  border-color: transparent;
+  background: linear-gradient(135deg, #0ea5e9 0%, #2563eb 100%);
+  color: #eff6ff;
+  box-shadow: 0 16px 30px rgba(37, 99, 235, 0.2);
+}
+
+.practice-retry-toggle-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.practice-retry-summary-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  margin-bottom: 14px;
+}
+
+.practice-retry-summary-pill {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 172px;
+  padding: 12px 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(191, 219, 254, 0.92);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.65);
+}
+
+.practice-retry-summary-pill strong {
+  font-size: 15px;
+  font-weight: 800;
+  color: var(--text);
+}
+
+.practice-retry-summary-pill span:last-child {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+}
+
+.practice-retry-summary-label {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent2);
+}
+
+.practice-inline-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.9);
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--accent2);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.practice-inline-retry-btn:hover {
+  transform: translateY(-1px);
+  border-color: #38bdf8;
+  box-shadow: 0 10px 20px rgba(14, 165, 233, 0.12);
+}
+
+.practice-inline-retry-btn-move {
+  margin: 8px auto 0;
 }
 
 .practice-retry-actions {
@@ -1985,6 +2111,11 @@
 
   .practice-shortcut-note {
     text-align: left;
+  }
+
+  .practice-retry-header {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .practice-retry-card-head,
