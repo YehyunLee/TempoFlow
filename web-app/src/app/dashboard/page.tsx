@@ -21,6 +21,61 @@ import {
 } from '../../lib/sessionPostProcessing';
 import { deleteSessionVideos, getSessionVideo } from '../../lib/videoStorage';
 
+function waitForMediaEvent(target: EventTarget, eventName: string) {
+  return new Promise<void>((resolve, reject) => {
+    const handleResolve = () => {
+      cleanup();
+      resolve();
+    };
+    const handleReject = () => {
+      cleanup();
+      reject(new Error(`Failed while waiting for ${eventName}.`));
+    };
+    const cleanup = () => {
+      target.removeEventListener(eventName, handleResolve);
+      target.removeEventListener('error', handleReject);
+    };
+
+    target.addEventListener(eventName, handleResolve, { once: true });
+    target.addEventListener('error', handleReject, { once: true });
+  });
+}
+
+async function createVideoThumbnail(file: File) {
+  const objectUrl = URL.createObjectURL(file);
+  const video = document.createElement('video');
+  video.src = objectUrl;
+  video.preload = 'metadata';
+  video.muted = true;
+  video.playsInline = true;
+  video.crossOrigin = 'anonymous';
+
+  try {
+    await waitForMediaEvent(video, 'loadeddata');
+
+    if (Number.isFinite(video.duration) && video.duration > 0.1) {
+      video.currentTime = Math.min(0.1, Math.max(0, video.duration / 2));
+      await waitForMediaEvent(video, 'seeked').catch(() => undefined);
+    }
+
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 360;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Canvas rendering is unavailable.');
+    }
+
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL('image/jpeg', 0.82);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+    video.pause();
+    video.src = '';
+  }
+}
+
 function formatUpdatedAt(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -94,9 +149,9 @@ function SessionStatusChip({ session }: { session: TempoFlowSession }) {
 
 export default function DashboardPage() {
   const [sessions, setSessions] = useState<TempoFlowSession[]>(() => getSessions());
-  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
-  const loadingPreviewIdsRef = useRef<Set<string>>(new Set());
-  const previewUrlsRef = useRef<Record<string, string>>({});
+  const [thumbnailUrls, setThumbnailUrls] = useState<Record<string, string>>({});
+  const loadingThumbnailIdsRef = useRef<Set<string>>(new Set());
+  const thumbnailUrlsRef = useRef<Record<string, string>>({});
 
   useEffect(() => {
     const refresh = () => setSessions(getSessions());
@@ -106,53 +161,44 @@ export default function DashboardPage() {
   }, []);
 
   useEffect(() => {
-    previewUrlsRef.current = previewUrls;
-  }, [previewUrls]);
+    thumbnailUrlsRef.current = thumbnailUrls;
+  }, [thumbnailUrls]);
 
   useEffect(() => {
     let cancelled = false;
     const sessionIds = new Set(sessions.map((session) => session.id));
 
-    setPreviewUrls((previous) => {
+    setThumbnailUrls((previous) => {
       const next = { ...previous };
       let changed = false;
       Object.keys(next).forEach((sessionId) => {
         if (sessionIds.has(sessionId)) return;
-        URL.revokeObjectURL(next[sessionId]!);
         delete next[sessionId];
-        loadingPreviewIdsRef.current.delete(sessionId);
+        loadingThumbnailIdsRef.current.delete(sessionId);
         changed = true;
       });
       return changed ? next : previous;
     });
 
     sessions.forEach((session) => {
-      if (previewUrlsRef.current[session.id]) return;
-      if (loadingPreviewIdsRef.current.has(session.id)) return;
-      loadingPreviewIdsRef.current.add(session.id);
+      if (thumbnailUrlsRef.current[session.id]) return;
+      if (loadingThumbnailIdsRef.current.has(session.id)) return;
+      loadingThumbnailIdsRef.current.add(session.id);
 
       void (async () => {
         try {
           const file = await getSessionVideo(session.id, 'practice');
           if (!file || cancelled) return;
-          const url = URL.createObjectURL(file);
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          setPreviewUrls((previous) => {
-            if (previous[session.id] === url) return previous;
-            const next = { ...previous, [session.id]: url };
-            const prior = previous[session.id];
-            if (prior && prior !== url) {
-              URL.revokeObjectURL(prior);
-            }
-            return next;
+          const thumbnailUrl = await createVideoThumbnail(file);
+          if (cancelled) return;
+          setThumbnailUrls((previous) => {
+            if (previous[session.id] === thumbnailUrl) return previous;
+            return { ...previous, [session.id]: thumbnailUrl };
           });
         } catch {
-          // Keep the fallback placeholder when a preview cannot be generated.
+          // Keep the fallback placeholder when a thumbnail cannot be generated.
         } finally {
-          loadingPreviewIdsRef.current.delete(session.id);
+          loadingThumbnailIdsRef.current.delete(session.id);
         }
       })();
     });
@@ -161,13 +207,6 @@ export default function DashboardPage() {
       cancelled = true;
     };
   }, [sessions]);
-
-  useEffect(() => {
-    return () => {
-      Object.values(previewUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
-      previewUrlsRef.current = {};
-    };
-  }, []);
 
   const handleDelete = async (sessionId: string) => {
     await Promise.all([deleteSessionVideos(sessionId), deleteSessionEbs(sessionId)]);
@@ -204,13 +243,11 @@ export default function DashboardPage() {
                 >
                   <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
                     <div className="relative aspect-video overflow-hidden rounded-2xl bg-slate-100 lg:w-52 lg:flex-none">
-                      {previewUrls[session.id] ? (
-                        <video
-                          src={previewUrls[session.id]}
+                      {thumbnailUrls[session.id] ? (
+                        <img
+                          src={thumbnailUrls[session.id]}
+                          alt={`${session.practiceName} thumbnail`}
                           className="h-full w-full object-cover"
-                          muted
-                          playsInline
-                          preload="metadata"
                         />
                       ) : (
                         <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,#dbeafe_0%,#eff6ff_48%,#f8fafc_100%)]">

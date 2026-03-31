@@ -1,8 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
 import { FeedbackViewer } from "./FeedbackViewer";
 import { useEbsViewer } from "./useEbsViewer";
 import { getSessionOverlay } from "../../lib/overlayStorage";
+import { getSessionVideo, storeSessionVideo } from "../../lib/videoStorage";
+import { extractVideoSegment } from "../../lib/videoClip";
+
+const mockPush = vi.fn();
+
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ push: mockPush }),
+}));
 
 const { ensureBrowserYoloOverlaysMock } = vi.hoisted(() => ({
   ensureBrowserYoloOverlaysMock: vi.fn().mockResolvedValue(undefined),
@@ -197,6 +205,23 @@ vi.mock("../../lib/visualFeedbackStorage", () => ({
   storeVisualFeedbackRun: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("../../lib/videoStorage", () => ({
+  getSessionVideo: vi.fn().mockResolvedValue(new File(["ref"], "reference.mp4", { type: "video/mp4" })),
+  storeSessionVideo: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../lib/videoClip", () => ({
+  extractVideoSegment: vi.fn().mockResolvedValue(
+    new File(["clip"], "section-reference.webm", { type: "video/webm" }),
+  ),
+}));
+
+vi.mock("../../lib/videoReplace", () => ({
+  replaceVideoSegment: vi.fn().mockResolvedValue(
+    new File(["merged"], "rebuilt-practice.webm", { type: "video/webm" }),
+  ),
+}));
+
 describe("FeedbackViewer", () => {
   const mockState = {
     sharedTime: 4.5,
@@ -284,6 +309,12 @@ describe("FeedbackViewer", () => {
       state: mockState,
       ...mockActions,
     });
+    vi.mocked(getSessionVideo).mockResolvedValue(new File(["ref"], "reference.mp4", { type: "video/mp4" }));
+    vi.mocked(extractVideoSegment).mockResolvedValue(
+      new File(["clip"], "section-reference.webm", { type: "video/webm" }),
+    );
+    vi.mocked(storeSessionVideo).mockClear();
+    mockPush.mockReset();
     // Mock URL.createObjectURL for video source handling
     global.URL.createObjectURL = vi.fn(() => "blob:mock");
     global.URL.revokeObjectURL = vi.fn();
@@ -399,6 +430,31 @@ describe("FeedbackViewer", () => {
 
     render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
     expect(screen.getByLabelText(/Pause at move end/i)).not.toBeChecked();
+  });
+
+  it("shows focused retry controls for the current section and move in practice mode", async () => {
+    (useEbsViewer as any).mockReturnValue({
+      state: {
+        ...mockState,
+        practice: {
+          ...mockState.practice,
+          enabled: true,
+          segmentIndex: 0,
+          currentMoveIndex: 0,
+          moves: [
+            { idx: 0, num: 1, startSec: 0, endSec: 1, isTransition: false },
+          ],
+        },
+      },
+      ...mockActions,
+    });
+
+    render(<FeedbackViewer mode="session" sessionId="1" referenceVideoUrl="r" userVideoUrl="u" ebsData={{} as any} />);
+
+    expect(screen.getByRole("button", { name: /upload section take/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /guide record section/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /upload move take/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /guide record move/i })).toBeInTheDocument();
   });
 
   it("does not render the old Gemini panel UI in session mode", () => {

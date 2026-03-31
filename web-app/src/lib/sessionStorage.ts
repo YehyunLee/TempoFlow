@@ -62,6 +62,16 @@ export interface EbsSessionMeta {
   geminiTotalSegments?: number;
 }
 
+export type FocusedRetryScope = "segment" | "move";
+
+export interface FocusedRetryContext {
+  scope: FocusedRetryScope;
+  title: string;
+  sourceSessionId: string;
+  sharedStartSec: number;
+  sharedEndSec: number;
+}
+
 export interface TempoFlowSession {
   id: string;
   createdAt: string;
@@ -79,6 +89,7 @@ export interface TempoFlowSession {
   analysis?: AnalysisSummary;
   sam3Result?: Sam3Result;
   errorMessage?: string;
+  retryContext?: FocusedRetryContext;
 }
 
 const SESSIONS_KEY = 'tempoflow.sessions';
@@ -132,6 +143,7 @@ export function createSession(input: {
   practiceSize: number;
   storageMode?: StorageMode;
   analysisMode?: AnalysisMode;
+  retryContext?: FocusedRetryContext;
 }): TempoFlowSession {
   const timestamp = new Date().toISOString();
 
@@ -147,6 +159,7 @@ export function createSession(input: {
     practiceName: input.practiceName,
     referenceSize: input.referenceSize,
     practiceSize: input.practiceSize,
+    retryContext: input.retryContext,
   };
 
   const sessions = readSessions();

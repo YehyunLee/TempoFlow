@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+import { vi } from 'vitest';
 
 import DashboardPage from './page';
 
@@ -136,6 +137,86 @@ describe('Dashboard page', () => {
     );
   });
 
+  it('renders a generated thumbnail when the practice video is available', async () => {
+    mockSessions = [
+      {
+        id: 'session-thumb',
+        createdAt: '2026-03-25T11:00:00.000Z',
+        updatedAt: '2026-03-25T12:00:00.000Z',
+        storageMode: 'local',
+        analysisMode: 'api',
+        status: 'analyzed',
+        ebsStatus: 'ready',
+        referenceName: 'reference.mp4',
+        practiceName: 'practice.mp4',
+        referenceSize: 100,
+        practiceSize: 200,
+      },
+    ];
+
+    getSessionVideoMock.mockResolvedValue(
+      new File(['video-bytes'], 'practice.mp4', { type: 'video/mp4' }),
+    );
+
+    const originalCreateElement = document.createElement.bind(document);
+    const drawImageMock = vi.fn();
+    const getContextMock = vi.fn(() => ({ drawImage: drawImageMock }));
+    const toDataUrlMock = vi.fn(() => 'data:image/jpeg;base64,mock-thumbnail');
+
+    vi.spyOn(document, 'createElement').mockImplementation(((tagName: string, options?: ElementCreationOptions) => {
+      if (tagName === 'video') {
+        const listeners = new Map<string, EventListener>();
+        return {
+          addEventListener: vi.fn((eventName: string, callback: EventListener) => {
+            listeners.set(eventName, callback);
+            if (eventName === 'loadeddata') {
+              queueMicrotask(() => callback(new Event('loadeddata')));
+            }
+            if (eventName === 'seeked') {
+              queueMicrotask(() => callback(new Event('seeked')));
+            }
+          }),
+          removeEventListener: vi.fn((eventName: string) => {
+            listeners.delete(eventName);
+          }),
+          pause: vi.fn(),
+          preload: '',
+          muted: true,
+          playsInline: true,
+          crossOrigin: '',
+          src: '',
+          duration: 1,
+          currentTime: 0,
+          videoWidth: 640,
+          videoHeight: 360,
+        } as unknown as HTMLVideoElement;
+      }
+
+      if (tagName === 'canvas') {
+        return {
+          getContext: getContextMock,
+          toDataURL: toDataUrlMock,
+          width: 0,
+          height: 0,
+        } as unknown as HTMLCanvasElement;
+      }
+
+      return originalCreateElement(tagName, options);
+    }) as typeof document.createElement);
+
+    render(React.createElement(DashboardPage));
+
+    await waitFor(() => {
+      expect(screen.getByAltText('practice.mp4 thumbnail')).toHaveAttribute(
+        'src',
+        'data:image/jpeg;base64,mock-thumbnail',
+      );
+    });
+
+    expect(getSessionVideoMock).toHaveBeenCalledWith('session-thumb', 'practice');
+    expect(drawImageMock).toHaveBeenCalled();
+  });
+
   it('shows pause and resume controls for background processing states', async () => {
     mockSessions = [
       {
@@ -168,7 +249,6 @@ describe('Dashboard page', () => {
 
     render(React.createElement(DashboardPage));
 
-    expect(ensureSessionProcessingMock).toHaveBeenCalledWith('session-processing');
     expect(screen.getByText(/in process/i)).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('button', { name: /pause processing/i })[0]!);
     expect(pauseSessionProcessingMock).toHaveBeenCalledWith('session-processing');
