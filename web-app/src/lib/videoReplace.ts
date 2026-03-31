@@ -160,8 +160,10 @@ export async function replaceVideoSegment(params: {
           chunks.push(event.data);
         }
       };
-      recorder.onerror = () => {
-        reject(recorder.error ?? new Error("Failed while rebuilding the retry video."));
+      recorder.onerror = (event) => {
+        const recorderError =
+          "error" in event && event.error instanceof DOMException ? event.error : undefined;
+        reject(recorderError ?? new Error("Failed while rebuilding the retry video."));
       };
       recorder.onstop = () => {
         const blobType = recorder.mimeType || "video/webm";

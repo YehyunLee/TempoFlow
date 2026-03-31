@@ -76,8 +76,10 @@ export async function extractVideoSegment(params: {
           chunks.push(event.data);
         }
       };
-      recorder.onerror = () => {
-        reject(recorder.error ?? new Error("Failed while clipping the guide section."));
+      recorder.onerror = (event) => {
+        const recorderError =
+          "error" in event && event.error instanceof DOMException ? event.error : undefined;
+        reject(recorderError ?? new Error("Failed while clipping the guide section."));
       };
       recorder.onstop = () => {
         const blobType = recorder.mimeType || "video/webm";

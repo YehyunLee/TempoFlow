@@ -1,0 +1,49 @@
+CSC490 Final Project - 50% of Final Grade
+Due: Mar 30th, 6pm with a Github PR, Quercus Submission and in-class presentation
+It’s time to present your final project! Assume you’re presenting at an academic confererence, a
+startup competition or to an executive sponsor at a large company, how would you communicate your
+accomplishments? This project submission has three parts: an in-class presentation, a final report and
+a code review.
+1 Part One - In-class presentation (15 marks)
+On March 30th and April 1st, we’ll have each team present their projects. Each team will have 10
+minutes to present their project and 5 minutes of Q&A, including:
+• Overview of your problem space
+• Overview of your solution and technical innovation
+• A demo of your project
+• Future work and next steps
+You will be graded on clarity of presentation, technical depth and ability to answer questions. Slides and
+a pre-recorded demo are recommended. I will post a few sample questions to practice on piazza ahead
+of time.
+2 Part Two - Final Report (10 marks)
+Create a final report summarising your project. Include:
+• Abstract
+• Intro and Problem statement
+• Related work (Academic and Industry)
+• Technical approach, solution and designs
+• Experiments, key metrics and results
+• Future work and next steps
+• Team reflection on the project including connection to the course material (1 page)
+• References
+Your report should be less than 12 pages long including figures and appendixs, excluding citations.
+This report will be 70% similar to an academic paper with a briefer literature review, larger focus on
+infrastrcture and more industry examples.
+1
+3 Part Three - Code Review (15 marks)
+Your code will be graded based on what is on your main branch on Mar 30th at 6pm. You will be graded
+on:
+• Code clarity and organization
+• Documentation and README
+• Testing and code coverage
+• Infrastructure as Code and deployment scripts
+• Benchmarking code - Functionality and reproducability of the project
+Make sure to include instructions on how to run your code in your README.
+4 Suggestions
+• Make sure to review lecture slides to make sure you are applying best practices for each part of
+your presentation
+• Practice presenting as a team, think about it as a paper workshop session or startup pitch, a 10min
+presentation requires clarity to address the important points
+• Document your experiments and results clearly, including what worked and what didn’t work
+• Assume a highly technical audience for you presentation and report
+• Benchmark against a strong baseline and make sure to include ablations to understand the impact
+of different components of your system
+2

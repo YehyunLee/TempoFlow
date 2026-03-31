@@ -1,0 +1,473 @@
+CSC490A2- Group 8
+Isaac Abell - 1008831329, Thomas(Yehyun) Lee - 1008992217, 
+Zeling (Zoey) Zhang - 1007714779, Jessica Zhang- 1008494130
+Part One: Aspirational Datasets (And their purpose)
+
+Large dataset with dance videos and images and detailed comments on each of the dance moves.
+This would be very helpful for generating high quality feedback.
+Example schema:
+[
+	//for videos
+	{
+	"video_id": "vid_001_rock",
+"vid_path": "./data/vid_001_rock.mp4",
+“comment_id”: “001”,
+"comment_start_sec": 2.0, 
+"comment_end_sec": 12.0,
+“comment”: “this is a detailed comment on this clip”
+},
+…
+//for images
+{
+	"img_id": "img_001_rock",
+"img_path": "./data/img_001_rock.png",
+“comment_id”: “001”,
+“comment”: “this is a detailed comment on this img”
+},
+…
+]
+A set of videos of various styles and levels to evaluate the performance of our dataset.
+We wanted this dataset for better adaptivity to different levels and styles, we can use this dataset to finetune our model to generate feedback that is more suitable for that level or style. For instance, generating more fine grained feedback for advanced dancers and more general terms to help understanding for beginner dancers.
+Example schema:
+[
+	{
+	"video_id": "vid_001_rock",
+"vid_path": "./data/vid_001_rock.mp4",
+“level”: “advanced”,
+“style”: “rock”
+},
+…
+]
+
+Dataset of 2 users doing the same dance and timestamps for when in both videos the dances start (be more clear on this)
+This is for training a model to align the dataset and can also be used for tuning the scores if the execution of the two dances is the same level of quality.
+Example schema:
+[
+	{
+	"dance_id": "sourceDatasetName_001",
+	“dancer_id1”: “001”, 
+“dancer_id2”: “002”,
+"clip_1_path": "./data/dace_id/dancerid1_001.mp4", 
+"clip_2_path": "./data/dancerid2_001.mp4",
+"clip_start_sec": 2.0, // The timestamp where the dance BEGINS in clip
+"clip_end_sec": 5.0, // The timestamp where the dance ENDS in clip 
+},
+…
+]
+Datasets with style classification
+Similar to 2, We wanted this dataset for generating relevant feedback, using terms related to the style, and have the model be more sensitive to details that are important in the given style. For instance, ballet prioritizes smooth moves while breakdancing is more rigid.
+Example schema:
+[
+	{
+	"video_id": "vid_001_rock",
+"vid_path": "./data/vid_001_rock.mp4",
+“style”: “rock”
+},
+…
+]
+Datasets with technique classification: clips of the techniques
+We had the vision for adding a feature of identifying key moves and finding relevant tutorials to show the user, however after discussion, we realized this is out of scope for this course and decided not to move forward with this feature. 
+Example schema:
+[
+	{
+	"video_id": "lock_001",
+"vid_path": "./data/vid_uncle_sam.mp4",
+“technique”: “uncle sams points”
+},
+…
+]
+Part Two: Reality Check
+Relevant Item
+Description 
+Commentary(more specificity, + and -)
+Dance video related
+AIST++ Dataset
+10,108,015 frames of 3D keypoints with corresponding images; 1,408 human dance motion sequences on 10 dance genres with music; 9 views of camera intrinsic and extrinsic parameters.
+We plan to use this as one of the main datasets for its high quality and variety of angles. 
+AIST Database
+Parent dataset of AIST++
+We can use this as extra data if needed.
+ImperialDance-Dataset
+69,300 seconds of dance motions and music, 5 genres, 20 pieces of music and 20 choreographies with dancers of 3 different expertise levels
+We plan to use this as one of the main datasets for tuning the feedback with different expertise levels.
+FineDance
+14.6 hours of data across 22 fine-grained dance genres. Includes high-fidelity hand movements, which AIST++ lacks.
+We use this as a supplementary dataset to AIST/AIST++ for better hand movement tracking.
+Audio related
+GTZAN Dataset - Music Genre Classification
+The GTZAN dataset contains 1,000 30-second tracks evenly distributed across 10 genres like Rock, Jazz, and Classical. This Kaggle version provides both raw .wav audio and pre-extracted features.
+We utilize 30-second audio clips to validate the alignment algorithm because aligned full-length video datasets do not exist and are infeasible to label manually. Furthermore, success on 30-second clips should effectively prove the core feature-matching logic; applying this to longer durations simply increases the available signal overlap, making the alignment task strictly easier. The dataset's broad genre coverage should allow us to validate the generalizability of the algorithm. 
+DEMAND: a collection of multi-channel recordings of acoustic noise in diverse environments
+The DEMAND (Diverse Environments Multichannel Acoustic Noise Database) dataset provides diverse, high-fidelity environmental noise recordings, categorized into specific settings like "Street," "Nature," and "Public".
+We utilize these continuous recordings to degrade the GTZAN clips without the artificial periodicity of looping short samples. By overlaying "Cafe" (vocal babble) and "Street" (broadband rumble) noise, we introduce frequency-specific masking to rigorously stress-test the alignment algorithm's robustness against high-interference acoustic environments.
+Automatic Dance Video Segmentation for Understanding Choreography
+A dataset was constructed by manually annotating segmentation points for 1410 videos in the AIST Dance DB.
+The annotation data for basic videos are contained in basic_*.csv, and for advanced videos in advanced_*.csv. The file *_count.csv represents segmentation points in counts (= musical beats), and the file *_sec.csv in seconds. You can use either one.
+Note
+The count starts with 1. That is, the first beat in the video corresponds to count 1.
+For each file, the first row is the header, and each remaining row corresponds to each annotation data. For each row, the first column is the video URL, the second column is the annotator ID, and the remaining columns represent the annotated segmentation points.
+Scoping on segmentation of dancing.
+
+
+Part Three: Data-processing pipelines
+There are _ data processing pipelines:
+Training
+Video alignment
+Audio alignment
+EBS Segmentation
+Score validation
+User Input pipeline (after sandbox setup)
+Make sure user output aligns with our model
+
+For each of the training pipelines, we specified the following:
+*Code for an initial version of pipelines are in github repo
+Short description
+Data Processing Steps & Pipeline diagrams with the technologies you are using
+Data schemas 
+Storage Strategy
+Technologies Used
+When the pipelines will run and for which use cases 
+Decisions and Trade Offs
+Next steps for features you did not implement in the writeup
+
+Dancer alignment validation Data Generation Pipeline
+
+The Dancer alignment pipeline creates validation datasets by applying mathematical affine transformations (such as scaling, rotation, and aspect ratio changes) to reference dance videos. This ensures the algorithm evaluates the user's kinematic performance rather than their recording environment, guaranteeing that scores are unaffected by camera placement, distance from the lens, or video resolution differences.
+
+Data Processing Steps
+Step 1: Core Motion Selection Source:
+Source: A random 3–5 second clip (T) is sampled from a high-quality dance dataset ( AIST++).
+Constraint: The clip must contain high-variance motion (i.e., not standing still) to ensure the algorithm has active movement to score.
+Step 2: Parallel Transformation:
+The reference clip is duplicated to create a "Student" clip (Clip S), which is processed via 2D affine transformations to simulate specific recording variances:
+Spatial Simulation: We apply randomized matrix operations including Scaling (0.8x–1.2x to simulate distance), Translation (±10% to simulate off-center positioning), and Rotation (±15∘ to simulate crooked camera angles).
+Morphological Simulation: We alter the aspect ratio (width stretch 0.9x–1.1x) to act as a proxy for validating robustness against different body builds and camera driver distortions.
+Constraint: All transformations must ensure the dancer remains fully within the frame boundaries to prevent MediaPipe body detection failures.
+Step 3: Temporal & Distractor Injection:
+To validate temporal sensitivity and negative matching, we generate specific "failure" cases:
+Drift Injection: We trim the start of the Student clip by +0.1s to +0.5s. The algorithm must detect this offset and lower the score accordingly.
+Negative Sampling: A completely distinct clip is selected from the dataset (Clip D). The algorithm must score the pair (T vs. D) near 0%.
+Step 4: Ground Truth Export
+For every generated pair, a JSON artifact is created containing the S3 keys for the Reference and Student clips, the transformation type applied, and the expected score range.
+
+Pipeline Diagram
+
+
+
+Reference videos are assigned a sequential ID (R001, R002, …). Each transformed video's ID prepends its parent reference ID followed by a transform index (R001_T001, R001_T002, …) followed by its transformation type, making the relationship between videos and the transformation made immediately clear.
+
+Example
+File Path
+Reference # 1
+references/R001_dance_reference.mp4
+Reference #1 Scale 0.8×
+transformed_videos/R001_T001_dance_spatial_scale_0.8.mp4
+Reference #1 Rotation 10°
+
+
+transformed_videos/R001_T002_dance_spatial_rotation_10.mp4
+
+
+
+Data Schemas
+[
+  {
+    "test_id": "scale_test",
+    "ref_s3_key": "references/reference.mp4",
+    "student_s3_key": "students/student_scale_0.8.mp4",
+    "transformation_type": "spatial_scale",
+    "param_value": 0.8,
+    "expected_score_min": 0.95, // High score expected despite scaling
+    "expected_score_max": 1.0
+  },
+  {
+    "test_id": "offset_test",
+    "ref_s3_key": "references/reference.mp4",
+    "student_s3_key": "students/student_offset_0.5s.mp4",
+    "transformation_type": "offset",
+    "param_value": 0.5,
+    "expected_score_min": 0.40, // Low score expected due to timing error
+    "expected_score_max": 0.60
+  },
+  ...
+]
+
+Storage Strategy
+
+Decision:
+The validation dataset will be hosted in Cloud Object Storage (AWS S3) rather than locally.
+Justification:
+Single Source of Truth: S3 provides a centralized, immutable repository. We ensure that all team members and CI runners validate the model against the exact same version of the generated data.
+Decoupling: Separation of Generation from Validation light compute, run frequently. We do not want to force every developer to install FFmpeg and generate 5GB of video just to run a test.
+
+Technologies Used
+OpenCV – Video reading/writing, frame transformations (scale, rotate, translate)
+NumPy – Array math for transformation matrices
+MediaPipe – Body pose detection to keep dancer on-screen
+Boto3 – AWS S3 uploads and presigned URL streaming
+Click – Command-line interface
+AWS S3 – Cloud video storage
+AWS STS – Credential validation
+
+When the pipelines will run and for which use cases 
+Data Generation: this runs when we are generating the validation dataset. It should ideally only run once and is simply used to create a dataset to validate our scoring model works correctly
+Model Validation: This pipeline will be run every time we create or modify our scoring algorithm in order to test it and ensure it performs as expected.
+
+Decisions and Trade Offs
+Decision 1: Synthetic 2D Transformations vs. Real "Bad" Dancers
+Decision: We utilize mathematical 2D affine transformations (rotation matrices, scaling) on the reference video rather than recording real humans performing errors.
+Rationale: Precision. We can mathematically guarantee that Clip B is exactly "Clip A rotated 15 degrees." This isolates the variable being tested. If we used real videos, a low score could be due to timing, limb length, or balance, making root-cause analysis impossible.
+Trade-off: Synthetic transformations lack biological physics. A "stretched" video does not perfectly mimic a different body type, and a "time-shifted" video does not capture the loss of balance a human experiences when missing a beat.
+
+Decision 2: Aspect Ratio Distortion vs. 3D Body Simulation
+Decision: We simulate different body types (heights/weights) by altering the video aspect ratio (stretching/squashing) rather than using complex 3D mesh simulations.
+Rationale: This serves as a sufficient proxy to verify that the pose normalization layer (which should mathematically standardize height and width) is functioning correctly. It avoids the complexity of generating synthetic 3D humans.
+Trade-off: Visual realism. The video will look unnaturally distorted to a human observer, even though the skeleton data remains valid for the algorithm.
+
+Decision 3: Multiple Transformation Stress Test
+Decision: We include a subset of test cases where all transformations (Scale + Rotate + Translate + Aspect Ratio) are applied simultaneously.
+Rationale: Unit tests catch isolated issues from one type of transformation, but Combination transformation tests ensure the normalization pipeline doesn't suffer from compounding errors (e.g., a rotation making a translation calculation incorrect).
+Trade-off: Debugging complexity. If a "Combo" test fails, it is difficult to determine which specific transformation caused the failure without reverting to the isolated test cases.
+
+Decision 4: Streaming Ingestion (Presigned URLs) vs. Bulk Download
+Decision: The validation worker streams video data directly from S3 using Presigned URLs, rather than downloading the dataset to disk.
+Rationale: Latency and startup time. Downloading the full dataset (gigabytes of videos) would make testing slow to start. Streaming allows the scoring engine to process frames immediately as they arrive.
+Trade-off: Network Jitter. If the S3 connection lags, the video decoder might drop frames or stall. We must implement "Blocking Read" logic in the loader to ensure the scoring algorithm doesn't penalize the dance for what is actually a network issue.
+
+Next steps for features you did not implement in the writeup
+TODO
+
+Audio Alignment Algorithm Validation Data Generation Pipeline.
+
+The Audio Alignment pipeline generates validation datasets by degrading audio clips with environmental noise and frequency filters while maintaining precise timestamp records. Its purpose is to verify that the algorithm can accurately synchronize a user's recording to a reference track based solely on audio content, ensuring robustness against variations in microphone quality or background interference.
+
+Data Processing Steps
+
+Step 1: Core Signal Selection
+Source: A random track (T) is sampled from the GTZAN dataset.
+Constraint: The entire clip is treated as the "Match Window" to maximize feature density.
+
+Step 2: Parallel Degradation
+The audio track is duplicated to make two clips (Clip A and Clip B), which are processed independently to ensure spectral divergence:
+Acoustic Simulation (EQ): Each branch applies a randomized Bandpass Filter (e.g., Clip A: 200Hz–3kHz; Clip B: 100Hz–5kHz) to simulate different microphone frequency responses.
+Environmental Injection: randomly selected audio clips from DEMAND are mixed into both clips at randomized Signal-to-Noise Ratios (SNR) ranging from 5dB to 20dB.
+
+Step 3: Temporal Shifting
+To generate the target offsets, we append "Distractor" audio to the start and end of both clips.
+Method: Random segments are sampled from the source dataset (distinct from T) and concatenated to the start/end of the degraded clips.
+Result: The algorithm must distinguish the target audio from semantically similar "distractor" audio, rather than simply detecting the onset of noise vs. silence.
+
+Step 4: Ground Truth Export
+For every generated pair, a JSON artifact is created containing the precise sample indices where T begins and ends in both files, providing a deterministic answer key for testing.
+
+Pipeline Diagram
+
+Data Schemas
+[
+	{
+	"test_id": "val_001_rock",
+"clip_1_path": "./data/val_001_A.wav",
+"clip_2_path": "./data/val_001_B.wav",
+"clip_1_start_sec": 2.0, // The timestamp where the shared audio BEGINS in clip 1
+"clip_1_end_sec": 12.0, // The timestamp where the shared audio ENDS in clip 1 "clip_2_start_sec": 5.5, // The timestamp where the shared audio BEGINS in clip 2
+"clip_2_end_sec": 15.5 // The timestamp where the shared audio ENDS in clip 2
+},
+…
+]
+Storage Strategy
+
+
+Production (Source of Truth): AWS S3
+Role: S3 acts as the canonical "Source of Truth" for all raw and generated datasets.
+Structure:
+s3://[bucket-name]/datasets/raw/: Immutable copies of GTZAN and DEMAND.
+s3://[bucket-name]/datasets/validation/v[x.x]: Versioned outputs of generated validation pairs.
+Justification: S3 ensures that every engineer and the CI/CD pipeline runs tests against the exact same binary files, eliminating "it works on my machine" inconsistencies caused by local file corruption or version mismatches.
+Development (Rapid Iteration): Local Cache / Generation
+Role: Engineers can run the pipeline locally for rapid debugging.
+Workflow: Developers have two options:
+Download: Pull a specific versioned dataset from S3 to their local machine for testing.
+Generate: Run the generation scripts locally (bypassing S3 upload) to test algorithm changes instantly without spending time pulling data or running their model in AWS.
+Technologies Used
+Librosa – Audio loading, resampling to mono at target sample rate
+SciPy – Butterworth bandpass filter design and application
+SoundFile – Writing processed audio clips to WAV format
+NumPy – Audio signal manipulation, RMS calculations, noise mixing
+Boto3 – AWS S3 uploads and presigned URL streaming
+AWS S3 – Cloud video storage
+AWS STS – Credential validation
+
+When the pipelines will run and for which use cases 
+TODO
+
+Decisions and Trade Offs
+
+Decision 1: Semantic "Distractor" Padding vs. Silence/Noise
+Decision: We utilize random music/speech clips from the dataset as padding rather than silence or Gaussian noise.
+Rationale: This prevents the algorithm from cheating by detecting simple energy onsets (i.e., finding where silence stops). It forces the model to perform true content matching, distinguishing the target signal from other valid audio signals.
+Trade-off: If the algorithm fails, it is harder to diagnose why. With silence padding, failure is obvious (it didn't find the signal). With semantic padding, a failure could mean the algorithm correctly found a "similar" spectral feature in the distractor audio (a False Positive), making root-cause analysis significantly more time-consuming.
+
+Decision 2: Environmental Noise vs. Synthetic (White) Noise
+Decision: We inject real-world environmental recordings (non-stationary noise) rather than mathematically generated White/Pink noise.
+Rationale: Synthetic noise is stationary (constant mean/variance) and easily removed by standard filters. Real-world noise (e.g., a car horn, a distinct voice) has dynamic time-frequency features that overlap with the target, providing the only valid test for real-world robustness.
+Trade-off: Unlike Gaussian noise which is generated via one line of code (np.random.normal), this approach requires curating, cleaning, and normalizing a secondary "Noise Dataset," adding dependency management and build complexity to the pipeline.
+
+Decision 3: Double-Blind Degradation
+Decision: Both files in the pair are degraded; neither is a "clean" reference.
+Rationale: This mirrors peer-to-peer alignment scenarios (e.g., syncing two user videos) where no "master" copy exists. It validates that the algorithm will work for the actual audio clips that are uploaded.
+Trade-off: When both signals are heavily degraded, the "true" mathematical peak of cross-correlation becomes wider and flatter. This inherently limits the maximum theoretical time-resolution we can validate (e.g., we may only be able to certify alignment to within ±50ms rather than ±1ms), as the "exact" match point becomes acoustically ambiguous.
+
+Decision 4: Cloud Storage (S3) vs. Local Storage
+Decision: We will host the master datasets and generation pipeline on AWS S3, transitioning away from pure local storage.
+Rationale: As the team and project scale, sharing 1.7GB+ datasets via Google Drive or git-LFS becomes unmanageable. S3 provides a centralized, versioned, and programmatic way to manage data. It allows us to trigger validation jobs automatically in the cloud (e.g., via AWS Batch or Lambda) without requiring an engineer's laptop to be running.
+Trade-off: This introduces network latency and AWS costs (storage + egress). However, the cost is negligible for this data size (<5GB), and the consistency benefits outweigh the latency.
+Decision 5: Hybrid Development Workflow (Local Caching)
+Decision: While S3 is the master, we will maintain tooling to run the pipeline entirely locally or cache S3 data locally.
+Rationale: Requiring a cloud upload/download for every single code change slows down the "write code -> test" loop. By allowing the generator to write to a local ./output directory during development, we reduce the amount of time we will have to spend waiting when testing our models for run enabling faster iteration.
+Trade-off: This requires maintaining two "modes" in our scripts (e.g., a --local flag vs. a --s3 flag), which adds slight code complexity to the file I/O handlers. 
+
+
+Next steps for features you did not implement in the writeup
+TODO
+
+EBS(Eight-Beat-Segment) Generation Pipeline.
+
+Data Processing Steps
+Is the aligned audio length fixed? I.e. do we always align a 10s audio?
+Most dance/pop music fall under 120-150 BPM
+120 BPM → 2 beats/sec → ~20 beats in 10s 
+150 BPM → 2.5 beats/sec → ~25 beats in 10s (3*8 primitives)
+Librosa: a library for beat recognition
+https://www.nature.com/articles/s41598-025-16345-2#Abs1
+https://ojs.aaai.org/index.php/AAAI/article/view/28893 
+Data Structure
+{
+  "test_id": "val_001_rock",
+  "clip_1_path": "./data/val_001_A.wav",
+  "clip_2_path": "./data/val_001_B.wav",
+
+  "aligned": {
+    "clip_1_start_sec": 2.0, // beats_shared[i]
+    "clip_1_end_sec": 12.0, //beats_shared[i+8]
+    "clip_2_start_sec": 5.5,
+    "clip_2_end_sec": 15.5,
+    "shared_len_sec": 10.0
+  },
+
+  "beats_shared_sec": [0.41, 0.93, 1.44, 1.95, 2.46, 2.98, 3.50, 4.02, 4.53, 5.05],
+
+  "segments": [
+    {
+      "seg_id": 1,
+      "beats": [0,8],
+      "shared_start_sec": 0.41,
+      "shared_end_sec": 4.02,
+
+      "clip_1_seg_start_sec": 2.41, -> note this is the first beat rather than the start time of the shared audio
+      "clip_1_seg_end_sec": 6.02,
+      "clip_2_seg_start_sec": 5.91,
+      "clip_2_seg_end_sec": 9.52
+    }
+  ]
+}
+
+
+Storage Strategy
+
+
+Decision:
+The validation dataset will be hosted locally on the development machine and google drive, rather than in cloud object storage (e.g., AWS S3).
+Justification:
+
+
+Dance similarity score Algorithm validation Data Generation Pipeline
+
+We anticipate the user input video to be often different from the source video since the user is likely to be learning from someone else. This then requires us to develop a dance similarity scoring algorithm that is resistant to noise like body types, background and more, and only evaluate similarity based on the execution of moves. The Dance Scoring Algorithm validation Data aims to establish data to create a scoring that is consistent and reliable for evaluating user input to the source video. We would use this dataset to tune our overlay mechanism and scoring. 
+
+Data Processing Steps
+Our strategy is to gain a dataset with alignment of execution with difference in dancer. Thus, we filter through the datasets in part2 for clips of different dancers performing the same dance at the same level of execution. We train the model to produce similar dance scores for these clips.
+
+Step 1: Find dances with multiple dancers at the same level
+Source: filter through all the relevant datasets() in part2 [this ended up to just be AIST] to obtain a dataset of videos of different dancers doing the same dance. We choose to group by dance because the level and style does not matter.
+Filtered source folder structure:
+	Dance
+	Dancer1
+		Vid1
+		Vid2
+		… (if applicable)
+	Dancer2
+Step 2: Preprocessing 
+*Optional alignment using The Dancer alignment pipeline if needed
+Segmentation: For each pair, use FFmpeg to cut into 3–5 second clips
+We work under the assumption that the filtered dance videos are of the same length, if not, we perform a cut off at the shortest video to maintain the same length.
+Pairing: generate combinations of dancers under the same dance (ex: dance1-001-003).
+Preprocessed clips folder structure:
+Dance
+Dancer1
+		clip1 (each 3-5 sec)
+		clip2
+		… 
+	Dancer2
+…
+Pipeline Diagram
+Data Schema
+[
+	{
+	"dance_id": "sourceDatasetName_001",
+	“dancer_id1”: “001”, 
+“dancer_id2”: “002”,
+//clip path follows dance_dancerid_clipid format
+"clip_1_path": "./data/dace_id/dancerid1_001.wav", 
+"clip_2_path": "./data/dancerid2_001.wav",
+“clip_id”: “001”,
+"clip_start_sec": 2.0, // The timestamp where the dance BEGINS in clip
+"clip_end_sec": 5.0, // The timestamp where the dance ENDS in clip 
+},
+…
+]
+
+Storage Strategy
+
+
+Decision:
+The validation dataset will be hosted locally on the development machine and google drive, rather than in cloud object storage (e.g., AWS S3).
+Justification:
+Scale: The resulting dataset after preprocessing and cleaning would be small enough to be stored on one computer.
+Latency: Training and validation loops require high-frequency file I/O (opening thousands of small audio clips). Local storage will make running these loops significantly faster than S3 HTTP requests.
+Reusability: We only plan to use this for training the and the scoring algorithm and the dataset will not be reused after. 
+
+
+Decisions and Trade Offs
+
+Decision 1: Filtering for same camera AND same dance
+Decision: Currently we start with the 1.3k dataset since this is for the MVP. 
+Rationale: With this split we won’t need to implement any alignment since the camera and choreography length is fixed. 
+Trade-off: We get significantly less data and we would have to reconstruct the dataset when we want to scale up.
+
+Decision 2: Choosing Mbps
+Decision: We went with 2Mbps instead of 10.
+Rationale: With the same duration. 10Mbps has a size of 514GB while 2Mbps has 82GB, for running efficiency and storage, we decided to go for the lower one.
+Trade-off: With lower Mbps we may get video with lower quality.
+
+
+Technologies Used
+pandas– filtering for relevant data and constructing the meta data
+FFmpeg – to cut the mp4 into smaller segments if needed
+
+When the pipelines will run and for which use cases
+The pipeline only runs once (or multiple times <5) to generate the dataset to support the creation of a good user-source similarity algorithm that is used for almost all use cases involving evaluation of user performance. 
+
+Next steps for features you did not implement in the writeup
+Currently we only have 1.3k of high similarity score (this is manually randomly sampled and validated that the moves have a similar performance quality.) For low score/ med score, we can implement later if needed 
+
+
+User Input cleaning Pipeline
+This is to be implemented after our MVP but we thought to mention this now. 
+Upon creation of our algorithm, the user will upload two videos: target and user dance video, these videos will go through the following pipeline:
+
+
+Part Four: Infrastructure as Code Implementation
+
+
+Part Five: Disaster Recovery Demonstration
+

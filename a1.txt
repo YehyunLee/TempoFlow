@@ -1,0 +1,176 @@
+CSC490A1
+Team members: Issac Abell, Thomas(Yehyun) Lee, Zoey Zhang, Jessica Zhang
+Interest Statements:
+In this section write a paragraph on what problem your team wants to work on within a domain. You should include why you care as a team about the problem. Next include a sentence from each team member on what area they are excited to contribute to in this project.
+Despite the massive J-pop and K-pop dancing community, many introductory dancers struggle to begin due to the difficulty to learn. We hope to build an AI-assisted dance app to make it easy for new dancers as well as to provide in-depth feedback to the experienced dancers.
+To build a “dance coach that catches what the eye misses.” A beat-synchronous video analysis system that compares a user’s dance clip to a reference clip of the same song using 2D/3D pose and music audio alignment. Instead of “move similarity,” the app extracts tacit micro-technique signals: micro-timing, groove phase, attack/decay control, isolation, and grounding, and turns them into timestamped coaching.
+If time allowed, it also retrieves dance masters with the closest movement-profile embedding for style-matched references.
+Isaac:
+I am excited to be a part of this project as it poses an interesting and challenging problem of creating a vision model that can compare two users' movement patterns to find the flaws and differences with extreme accuracy. Since dance movements require high precision, we need to ensure our model has a very high level of accuracy in order for it to be useful to potential users.
+
+Thomas:
+As a typical CS undergrad, I’m a person very far from a dancer. As someone who seeks to work on new projects outside my comfort zone, I’m curious to learn about how dancers practice, small details dancers care about, and generally how the industry works. From a business perspective, with the recent progress in generative AI, video analysis techniques, and from my research, that the industry is being hyper-focused on productivity application, I believe there are small fruits from the dance domain that have not been explored yet that our team can capture and build useful applications for dancers.
+
+Zoey: I am excited to contribute to the project with domain knowledge of dancers’ pain points in learning, experience conducting various user studies, and technical expertise in exploring new use cases for vision models. I want to build a product that helps dancers overcome the idea that talent is the key to success in dancing by capturing areas for improvement that are not easily spotted by the human eye. 
+
+Jessica: I am excited to contribute to this project as I am a dancer myself, and I observed learning barriers for beginner dancers. I hope to have a product that is integrative of all the functionalities that the community found to be helpful, and explore functionalities with machine learning to help dancers succeed.
+Landscape Analysis:
+	Based on your problem area, conduct a landscape analysis of companies, research and/or products that are relevant. Organize them in a table and provide some light commentary on why you chose them. The goal is to be concise in communication but understand what oppurtunities exist for your project. 10 strong entries in the table is sufficient. 
+
+
+https://github.com/Tencent/MimicMotion
+Open source motion transfer framework. It maps a person's likeness from a single photo onto a target motion video to create a personalized reference video. This could be a useful tool for users practicing, allowing them to follow themselves which may improve learning.
+SyncTrainer by Techie Ray 
+User flow
+Upload the video to their phone
+Analysis run onboard of the phone (author mentioned in the comment section here:[App Trailer] SyncTrainer - Analyse Synchronization with A.I.)
+Output ranking/scores on the above four dimensions
+Click on each dimension to show more detailed explanation and suggestions 
+DEVA stands for Decoupled Video Segmentation Architecture. It's a state-of-the-art video object tracking and segmentation framework developed to separate spatial (image-level) segmentation from temporal (frame-to-frame) tracking. https://arxiv.org/abs/2309.03903
+https://docs.ultralytics.com/models/yolo26/
+Provides high-frequency, 17-point skeletal tracking and persistent multi-person identification. This is useful for processing movements locally on the user's device, which eliminates cloud latency and allows for the real-time analysis of technique without expensive server costs.
+https://librosa.org/doc/latest/index.html
+A Python audio analysis library for extracting features (e.g., onsets, chroma, MFCCs) from sound. For this project, librosa can be used to process and compare audio from the reference and user videos so temporal alignment (e.g., beats or onset patterns) can be computed.
+https://www.steezy.co/
+Filmed and created by instructors (this app is fully human)
+Key features: digital studio(you can see all angles of a move), loop specific sections, adjust the playback speed without changing the pitch of the music, and virtual mirror to dance alongside the instructor.
+Revenue: $19 million in June 2024, this is a strong indicator of market and need.
+https://dalea.ai/
+“AI-powered dance practice app where students compare their recordings with teacher videos to perfect their technique at home.”
+Features: Teacher Video Uploads, Student Practice Recording, AI Pose Comparison, Accuracy Scoring, Timing Analysis, Step-by-Step Progress.
+No customer reviews on their website tho and it seems like its mainly targeting Bharatanatyam
+https://alphatheta.com/en/landing/dancetribe-free-app-for-dancers/
+This is mainly just ui stuff
+https://sparkyapp.framer.ai/
+Spark is a dance coaching app with features like overlay, speed control, and repetition of moves. It’s used for dance challenge practice.
+
+Some research notes & thoughts from Thomas:
+Market Competition
+
+Sparky and Dalea.ai are worth taking a look at when it comes to coaching app.
+When it comes to non-AI human coaching applications, STEEZY is undoubtedly most popular it seems?
+
+Sparky - dance coaching app with overlay, speed control, and repetition.
+Dalea.ai - dance practice app -- as already mentioned above.
+Wasn’t working
+
+STEPIN - dance battle app.
+Groovetime - app for casual dance games with friends.
+
+Thomas’ Thoughts
+It appears that for dancers, just watching some YouTube video is the most convenient way to learn to dance (I obviously will need to double check jess: yes as per my experience, i can do user study to back this up), or taking direct coaching from someone already good. Looking at some potential solutions from the current market, simply just showing metric values as numeric values will be meaningless for most dancers. One advantage our app may have is that it will be personalized. These YT videos, e.g. from STEEZY, are static, fixed, and the instructor cannot directly coach you within a couple of minutes. For dancers who want a fast, convenient way to check their dance, they may want something personalized and easy to understand in a visual way. It appears that finding what’s wrong with posture and movement involves a bit of detail. Like speed, timing, direction of posture, etc. And repetition is key for dancers to practice correct dance moves. So to make our app really useful, I’m thinking of 3 things:
+Generative AI video of a user conducting a good dance, to give motives for the user(?).
+Finding out what’s wrong. Not just basic things, but we should be able to catch a lot of details about what’s wrong,
+Coaching them in an extremely convenient visual way.
+Slow motion
+Visual effects to focus on a specific part of the body using circles, arrows, overlays, etc.
+If needed to show numeric values, show them in good visuals.
+
+Questions
+Who’s involved with any other dancers? Do we have contacts where we can ask them some questions, feedbacks, etc?
+Jess: I know dancers (jpop intermediate group of ~7?) I can try interviewing individually, and some friends who are more beginner dancers(jpop). Reaching out to a kpop instructor-level dancer Sunday. 
+Were there any requirements when it comes to ML? Do we need to strictly train everything from scratch, or is mixing use of some APIs, okay?
+Answer according to Piazza: 
+Slide 59 of the lecture covers the two paths for the project, in general your product should require some ML. It can be a LLM wrapper but should be well done with things like Evals, good data engineering, thorough testing, prompting best practices, different model experiments etc.
+In general its the general delivery of the project, if ml is a small component, the other ones need to be strong.
+Datasets:
+AIST++ Dataset
+10,108,015 frames of 3D keypoints with corresponding images.
+1,408 human dance motion sequences on 10 dance genres with music.
+9 views of camera intrinsic and extrinsic parameters.
+AIST Dance Video Database
+Parent dataset of AIST++
+
+GitHub - YunZhongNikki/ImperialDance-Dataset: This repo is for publishing the multi-modal dance motion-music dataset Imperial Dance that includes in the paper DanceMVP (AAAI2024)
+69,300 seconds of dance motions and music, 5 genres, 20 pieces of music and 20 choreographies with dancers of 3 different expertise levels
+Group*: https://github.com/aioz-ai/AIOZ-GDANCE 
+Project Outline: 
+
+Problem Statement
+Traditional dance practice relies heavily on mirrors and manual video review. Mirrors provide immediate feedback but do not allow for frame-by-frame analysis, while manual video comparison is time-consuming and lacks objective, quantitative data. Dancers often struggle to identify subtle technical errors in posture, timing, and extension because they cannot easily measure their movements against a professional standard.
+
+Proposed Solution
+An intelligent application that automates the feedback loop by recording a user and comparing their performance to a professional reference video of the same song. Using computer vision, the app extracts skeletal data to identify specific technical flaws. It provides the user with visual overlays and performance metrics, allowing for a data-driven approach to improving form and execution.
+
+High-level Technical Approach and Milestones
+
+Notes from Thomas before I write anything formal (just some research)
+Technology research:
+
+Tech stack: Expo (React Native) - aim to support iOS, Android, and website
+2D Pose estimation - YOLOv8 / MediaPipe BlazePose (YOLO is faster; MediaPipe is more mobile-friendly)
+
+Optional for depth analysis:
+3D Pose Lifting - MotionBERT / VideoPose3D
+
+If the reference has multiple dancers:
+Multi-person tracking - DEVA, ByteTrack
+
+https://www.youtube.com/watch?v=1j3gftruq9o
+https://www.youtube.com/watch?v=8RTCFe2O6eo
+
+
+
+
+
+Isaac
+Pose Estimation Integration: Implement a computer vision model (such as YOLO or MediaPipe) to extract skeletal coordinates and joint angles from video frames.
+Temporal Synchronization: Develop a synchronization layer to align the timing of the user performance with the reference video, even if the user starts early or late.
+Spatial Normalization: Create a geometric mapping system to normalize differences in body proportions and camera distances between the two videos.
+Feedback Logic: Build a comparison engine that calculates "deltas" (differences) in body positions to highlight errors in real time.
+Deployment and Optimization: Package the solution into a user-friendly mobile interface with a hybrid processing backend.
+
+Rewriting from Thomas:
+
+High-level Technical Approach and Milestones
+
+Detection and Overlay
+For our app, the core part of the system requires detecting the dancer’s body outline. There’s few different approaches to make this happen. One way we plan on taking is using the latest YOLO or MediaPipe BlazePose. BlazePose is more mobile-friendly but focuses on tracking only one person. The latest YOLO model have benefits of detecting multiple people. Depending on the benefits of BlazePose, we may use both where we use YOLO to track multiple dancers, crop by frame, and use BlazePose to process once again, or we could just choose to use single library. We’ll conduct experiment and choose the right approach.
+
+An important aspect is that we want to overlay the dancers’ outline, not a skeleton of a person’s body. Like the following:
+
+and we want to avoid the skeleton overlay like the following:
+
+
+Adding on, as a bit of detail to improve the UX, we would like to smooth out the overlay detection frequency and latency. Some of the latest detection models visualize new detection immediately and disregard the previous detection. While this is fast, it has two problems: one, it is visually unappealing. New detection every frame, looks a bit laggy. Two, when the model detects wrong and overlays in the wrong frame, and a few frames later, detects the correct frame, there’s a phantom phenomenon that happens where the overlay jumps back and forth with different frames. As our team’s major focus is on good UI/UX, we want to smooth this out, so the outline looks very smooth.
+
+Reliability
+Secondly, we need to make this happen extremely fast, on mobile, without lag. We aim to achieve this by conducting major computations on the device without relying too much on a server. As a case study from an earlier section, Spark had problems reported by users that the app often lags and pauses. We want to avoid this happening.
+
+
+Synchronization Logic
+Thirdly, there’s a question of synchronization logic. Are we going to sync the user’s dance move against the reference dance video purely based on when the music starts, or based on the minimum relative dance overlay difference? What is the most robust method to sync a user's movement with a reference image when the tempo or start time varies? While syncing the video simply based on when the music starts is easy and seems the best case, there might be occasional cases where, when we provide feedback to the user, we might want to crop some part of the video and sync based on the video and not the sound, and give feedback to the user based on that pure specific range of moment. This might be useful for beginners, since most times, their dance moves will be slower than the dance moves from the reference video, and dance move timing will likely vary with a lot of variance over time.
+
+
+Effective Way to Give Feedback to the User
+Fourthly, we need to come up with clever ways to give feedback to the user. Instead of relying on one method, we are thinking of using a variety of different styles of feedback to the user.
+
+One, we may be using a Gemini Live or other native AI systems with video processing capability to let it analyze and give feedback either in real time, or uploaded video after the dance is done.
+
+Two, we will use our dancers’ outline detection system and compare users’ against the reference dancer’s overlay. Here, there are different ways to give visual feedback, which will come down to a matter of UI/UX. But importantly, we want to rely on visual feedback, like using the circle spotlight effect, lightbox/mask effect and avoid simply displaying numeric values. Another effect we could include is the use of pointers/arrows and animation in specific gestures or moves.
+
+Third, we could use a generative AI video to suggest better moves in certain moves. This could be a generation of whole dance videos of users performing correct dance movement, or just a specific part of dance, where we generate a video to provide an example move.
+Importantly, we would like to combine some of these animations/features in a visually attractive way and a good UX. We may as well use an agent that determines at which point we should give feedback to the user, using which feature/style of feedback.
+
+
+
+List of Unknowns to Investigate
+Precision and Fidelity: Is YOLO accurate enough to catch the high-speed and precise micro-movements found in technical dance styles?
+User Experience Efficacy: Will generating visual overlays on a reference dancer actually help users improve, or will it be too visually distracting?
+Synchronization Logic: What is the most robust method to sync a user's movement with a reference image when the tempo or start time varies?
+Perspective Handling: How do we programmatically handle significant differences in body size or camera angles between the user's environment and the reference video?
+Hardware Constraints: Which parts of the analysis are performant enough to run locally on a user's mobile device, and which processes require the more compute power to run in a reasonable time via AWS?
+
+Project Press Release:
+Write a 1 page press release for your project, following the Amazon working backwards format. This should be written in a way that is accessible to a target audience and highlights the key features and benefits of your project. Include fictional quotes from users and stakeholders to illustrate the impact of your project. Include an appendix with a few iterations that you came up with.
+The product’s name
+The intended customer
+The problem the product solves
+The benefits to the customer
+A quote from someone at the company explaining in an inspirational way why you developed the product and what you hope it will do for your customer
+A call to action telling the customer how to advantage of the product right away
+Optional addendum: FAQ answering the business or tactical questions about building the product
+
+More notes:
+Overlays are 2d, do we separate the feedback into body parts
+Facial expression stuff 
