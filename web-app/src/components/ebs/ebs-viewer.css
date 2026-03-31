@@ -267,34 +267,92 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: 12px;
   flex: 1 1 auto;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .viewer-debug-pill {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: rgba(224, 242, 254, 0.72);
-  border: 1px solid rgba(191, 219, 254, 0.9);
-  white-space: nowrap;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 132px;
+  padding: 10px 12px;
+  border-radius: 18px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(239, 248, 255, 0.92) 100%);
+  border: 1px solid rgba(186, 230, 253, 0.95);
+  box-shadow: 0 10px 24px rgba(14, 165, 233, 0.08);
+}
+
+.viewer-debug-pill.working {
+  border-color: rgba(125, 211, 252, 0.95);
+}
+
+.viewer-debug-pill.complete {
+  background:
+    linear-gradient(180deg, rgba(240, 253, 250, 0.96) 0%, rgba(220, 252, 231, 0.92) 100%);
+  border-color: rgba(110, 231, 183, 0.95);
+  box-shadow: 0 10px 24px rgba(16, 185, 129, 0.1);
+}
+
+.viewer-debug-pill-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .viewer-debug-label {
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--text2);
 }
 
-.viewer-debug-value {
-  font-size: 11px;
+.viewer-debug-meta {
+  font-size: 10px;
   font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #0369a1;
+}
+
+.viewer-debug-pill.complete .viewer-debug-meta {
+  color: #047857;
+}
+
+.viewer-debug-value {
+  font-size: 24px;
+  line-height: 1;
+  font-weight: 800;
+  letter-spacing: -0.04em;
   color: var(--text);
+}
+
+.viewer-debug-rail {
+  height: 6px;
+  width: 100%;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(186, 230, 253, 0.72);
+}
+
+.viewer-debug-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #38bdf8 0%, #2563eb 100%);
+  transition: width 0.25s ease;
+}
+
+.viewer-debug-pill.complete .viewer-debug-rail {
+  background: rgba(167, 243, 208, 0.85);
+}
+
+.viewer-debug-pill.complete .viewer-debug-fill {
+  background: linear-gradient(90deg, #34d399 0%, #10b981 100%);
 }
 
 .mode-group {

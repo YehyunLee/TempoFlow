@@ -489,7 +489,7 @@ describe("FeedbackViewer", () => {
     const visualMarkers = await screen.findAllByLabelText(/Visual cue at/i);
     expect(visualMarkers.length).toBeGreaterThan(0);
     expect(visualMarkers[0]?.getAttribute("aria-label")).toMatch(/Visual cue at 0:02\.[12]/i);
-    expect(await screen.findByLabelText(/Gemini cue at/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/AI cue at/i)).toBeInTheDocument();
     expect(container.querySelector(".timeline-feedback-marker.visual.moderate")).not.toBeNull();
     expect(container.querySelector(".timeline-feedback-marker.gemini.minor")).not.toBeNull();
   });
@@ -917,7 +917,7 @@ describe("FeedbackViewer", () => {
       />,
     );
 
-    fireEvent.click(await screen.findByLabelText(/Gemini cue at/i));
+    fireEvent.click(await screen.findByLabelText(/AI cue at/i));
     expect(mockActions.seekToShared).toHaveBeenCalledWith(4);
   });
 

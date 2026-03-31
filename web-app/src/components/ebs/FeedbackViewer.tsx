@@ -1548,26 +1548,44 @@ export function FeedbackViewer(props: EbsViewerProps) {
       return refReady.has(index) && userReady.has(index) ? count + 1 : count;
     }, 0);
   }, [state.segments, visualReferenceSamples, visualUserSamples]);
-  const centerDebugItems = useMemo(
-    () => [
+  const centerDebugItems = useMemo(() => {
+    const totalSegments = state.segments.length;
+    const aiTotal = geminiPipelineProgress.total || totalSegments;
+    const aiDone = Math.min(geminiPipelineProgress.done, aiTotal);
+    const buildProgressState = (done: number, total: number) => {
+      if (total <= 0) return { progress: 0, status: "Idle", tone: "idle" as const };
+      if (done >= total) return { progress: 1, status: "Done", tone: "complete" as const };
+      if (done <= 0) return { progress: 0, status: "Starting", tone: "working" as const };
+      return { progress: done / total, status: "Processing", tone: "working" as const };
+    };
+
+    return [
       {
         key: "seg",
-        label: "Seg",
-        value: `${activeMoveReadiness.readySegments}/${state.segments.length}`,
+        label: "Segments",
+        value: `${activeMoveReadiness.readySegments}/${totalSegments}`,
+        ...buildProgressState(activeMoveReadiness.readySegments, totalSegments),
       },
       {
         key: "visual",
-        label: "Visual",
-        value: `${visualFeedbackReadySegments}/${state.segments.length}`,
+        label: "Angle Feedback",
+        value: `${visualFeedbackReadySegments}/${totalSegments}`,
+        ...buildProgressState(visualFeedbackReadySegments, totalSegments),
       },
       {
-        key: "gemini",
-        label: "Gemini",
-        value: `${Math.min(geminiPipelineProgress.done, geminiPipelineProgress.total || state.segments.length)}/${geminiPipelineProgress.total || state.segments.length}`,
+        key: "ai",
+        label: "Micro Timing",
+        value: `${aiDone}/${aiTotal}`,
+        ...buildProgressState(aiDone, aiTotal),
       },
-    ],
-    [activeMoveReadiness.readySegments, geminiPipelineProgress.done, geminiPipelineProgress.total, state.segments.length, visualFeedbackReadySegments],
-  );
+    ];
+  }, [
+    activeMoveReadiness.readySegments,
+    geminiPipelineProgress.done,
+    geminiPipelineProgress.total,
+    state.segments.length,
+    visualFeedbackReadySegments,
+  ]);
 
   const timelineFeedbackMarkers = useMemo<TimelineFeedbackMarker[]>(() => {
     const visualMarkers = !showAngleFeedback
@@ -1646,8 +1664,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
               time: start,
               kind: "gemini",
               seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
-              label: "Gemini cue",
-              title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
+              label: "AI cue",
+              title: move.coaching_note || move.micro_timing_evidence || "AI feedback",
             };
           });
 
@@ -2327,9 +2345,18 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 {sessionMode ? (
                   <div className="viewer-debug-status" aria-live="polite">
                     {centerDebugItems.map((item) => (
-                      <div key={item.key} className="viewer-debug-pill">
-                        <span className="viewer-debug-label">{item.label}</span>
+                      <div key={item.key} className={`viewer-debug-pill ${item.tone}`}>
+                        <div className="viewer-debug-pill-head">
+                          <span className="viewer-debug-label">{item.label}</span>
+                          <span className="viewer-debug-meta">{item.status}</span>
+                        </div>
                         <span className="viewer-debug-value">{item.value}</span>
+                        <div className="viewer-debug-rail" aria-hidden="true">
+                          <div
+                            className="viewer-debug-fill"
+                            style={{ width: `${Math.max(0, Math.min(100, item.progress * 100))}%` }}
+                          />
+                        </div>
                       </div>
                     ))}
                   </div>
