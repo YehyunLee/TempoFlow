@@ -6,6 +6,7 @@ import math
 import tempfile
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -1229,8 +1230,7 @@ def _run_hybrid_overlay_job(
         cap.release()
         return
 
-    seg_model = YOLO(str(seg_weights))
-    pose_model = YOLO(str(pose_weights))
+    seg_model, pose_model = _get_shared_yolo_models()
     written = 0
     out_dt = 1.0 / float(out_fps)
     next_out_time = 0.0
@@ -1646,6 +1646,25 @@ async def overlay_yolo_pose_result(job_id: str, layer: str, background_tasks: Ba
     )
 
 
+# Use a shared executor to limit concurrent YOLO inference tasks
+YOLO_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+# Global models cached to avoid reloading weights in every thread
+_YOLO_SEG_MODEL_CACHE: Any = None
+_YOLO_POSE_MODEL_CACHE: Any = None
+_YOLO_MODEL_LOCK = threading.Lock()
+
+def _get_shared_yolo_models():
+    global _YOLO_SEG_MODEL_CACHE, _YOLO_POSE_MODEL_CACHE
+    with _YOLO_MODEL_LOCK:
+        if _YOLO_SEG_MODEL_CACHE is None:
+            from ultralytics import YOLO
+            _YOLO_SEG_MODEL_CACHE = YOLO(str(_weights_path("yolo26n-seg.pt")))
+        if _YOLO_POSE_MODEL_CACHE is None:
+            from ultralytics import YOLO
+            _YOLO_POSE_MODEL_CACHE = YOLO(str(_weights_path("yolo26n-pose.pt")))
+    return _YOLO_SEG_MODEL_CACHE, _YOLO_POSE_MODEL_CACHE
+
 @router.post("/api/overlay/yolo-hybrid/start")
 async def overlay_yolo_hybrid_start(
     video: UploadFile = File(...),
@@ -1663,6 +1682,7 @@ async def overlay_yolo_hybrid_start(
     seg_out = tempfile.NamedTemporaryFile(prefix=f"hybrid_seg_{job_id}_", suffix=".webm", delete=False).name
     arms_out = tempfile.NamedTemporaryFile(prefix=f"hybrid_arms_{job_id}_", suffix=".webm", delete=False).name
     legs_out = tempfile.NamedTemporaryFile(prefix=f"hybrid_legs_{job_id}_", suffix=".webm", delete=False).name
+    
     HYBRID_JOBS[job_id] = {
         "status": "queued",
         "progress": 0.0,
@@ -1679,11 +1699,13 @@ async def overlay_yolo_hybrid_start(
         "error": None,
         "served_layers": set(),
     }
-    threading.Thread(
-        target=_run_hybrid_overlay_job,
-        args=(job_id, tmp_in, seg_out, arms_out, legs_out, color, arms_color, legs_color, fps, start_sec, end_sec),
-        daemon=True,
-    ).start()
+    
+    # Run in serialized executor to prevent CPU saturation
+    YOLO_EXECUTOR.submit(
+        _run_hybrid_overlay_job,
+        job_id, tmp_in, seg_out, arms_out, legs_out, color, arms_color, legs_color, fps, start_sec, end_sec
+    )
+    
     return JSONResponse({"job_id": job_id}, status_code=200)
 
 
