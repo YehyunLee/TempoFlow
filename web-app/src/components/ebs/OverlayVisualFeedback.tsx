@@ -197,18 +197,41 @@ export function OverlayVisualFeedback(props: {
     };
 
     update();
+    let rafId = 0;
+    let settleTimeout = 0;
+    const scheduleSettledUpdate = () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      rafId = window.requestAnimationFrame(() => {
+        update();
+      });
+    };
+
+    scheduleSettledUpdate();
+    settleTimeout = window.setTimeout(update, 120);
     const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
     resizeObserver?.observe(stage);
     resizeObserver?.observe(media);
     media.addEventListener("loadedmetadata", update);
+    media.addEventListener("loadeddata", update);
+    media.addEventListener("canplay", update);
+    media.addEventListener("seeked", scheduleSettledUpdate);
     window.addEventListener("resize", update);
 
     return () => {
+      if (rafId) {
+        window.cancelAnimationFrame(rafId);
+      }
+      window.clearTimeout(settleTimeout);
       resizeObserver?.disconnect();
       media.removeEventListener("loadedmetadata", update);
+      media.removeEventListener("loadeddata", update);
+      media.removeEventListener("canplay", update);
+      media.removeEventListener("seeked", scheduleSettledUpdate);
       window.removeEventListener("resize", update);
     };
-  }, [cue.id, intrinsicHeight, intrinsicWidth, mediaRef]);
+  }, [cue.id, intrinsicHeight, intrinsicWidth, mediaRef, mediaRef?.current]);
 
   const styleVars = {
     ["--overlay-feedback-tone" as string]: cue.color,
