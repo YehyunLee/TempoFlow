@@ -334,12 +334,17 @@ def process_videos_from_paths(ref_video_path: str, user_video_path: str) -> dict
     ref_wav: str | None = None
     user_wav: str | None = None
     try:
-        # Adaptive loading for RAM efficiency
-        meta = probe_video_metadata(ref_video_path)
+        # Determine sample rate for efficiency
+        meta_ref = probe_video_metadata(ref_video_path)
         load_sr = SAMPLE_RATE
-        if meta["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
+        if meta_ref["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
             load_sr = LOWER_SAMPLE_RATE
 
+        # Run extraction
+        ref_wav = extract_audio_from_video(ref_video_path, sr=load_sr)
+        user_wav = extract_audio_from_video(user_video_path, sr=load_sr)
+
+        # Load into memory
         ref_audio, _ = librosa.load(ref_wav, sr=load_sr, mono=True)
         user_audio, _ = librosa.load(user_wav, sr=load_sr, mono=True)
 
