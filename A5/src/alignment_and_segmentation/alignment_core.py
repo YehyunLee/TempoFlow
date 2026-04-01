@@ -1,5 +1,6 @@
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+import numba
 
 def compute_similarity_matrix(chroma_a: np.ndarray, chroma_b: np.ndarray) -> np.ndarray:
     """
@@ -16,6 +17,7 @@ def compute_similarity_matrix(chroma_a: np.ndarray, chroma_b: np.ndarray) -> np.
     S = cosine_similarity(chroma_a.T, chroma_b.T)  
     return S
 
+@numba.jit(nopython=True)
 def smith_waterman(S: np.ndarray, match_score_bias: float = 0.5) -> np.ndarray:
     """
     Perform Smith-Waterman local alignment algorithm.

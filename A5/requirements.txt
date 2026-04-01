@@ -3,6 +3,7 @@
 
 fastapi
 uvicorn
+opencv-python-headless
 python-multipart
 librosa
 numpy
@@ -14,7 +15,6 @@ pandas
 httpx
 certifi
 tqdm
-opencv-python-headless
 torch==2.11.0
 torchvision==0.26.0
 ultralytics
@@ -22,3 +22,4 @@ google-generativeai>=0.8.0
 jinja2
 aiofiles
 python-dotenv
+numba
