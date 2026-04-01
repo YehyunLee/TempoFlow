@@ -64,9 +64,10 @@ function AnalysisPageContent() {
     let referenceUrlToCleanup: string | null = null;
     let practiceUrlToCleanup: string | null = null;
     let cancelled = false;
+    const resolvedSessionId = searchParams?.get("session") ?? getCurrentSessionId();
 
     const loadSession = async () => {
-      const sessionId = searchParams.get("session") ?? getCurrentSessionId();
+      const sessionId = resolvedSessionId;
       if (!sessionId) {
         setPageError("No local session was found. Upload a reference and practice clip first.");
         setLoadingSession(false);
@@ -142,7 +143,7 @@ function AnalysisPageContent() {
 
     void loadSession();
     const unsubscribe = subscribeSessions(() => {
-      const sessionId = searchParams.get("session") ?? getCurrentSessionId();
+      const sessionId = resolvedSessionId;
       if (!sessionId) return;
       const nextSession = getSession(sessionId);
       if (!nextSession) return;
