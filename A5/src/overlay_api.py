@@ -5,11 +5,9 @@ import json
 import math
 import tempfile
 import threading
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
@@ -813,7 +811,7 @@ def _predict_segmentation_mask(
     import cv2  # type: ignore
     import numpy as np  # type: ignore
 
-    result = model.predict(frame, imgsz=640, conf=0.12, iou=0.5, classes=[0], verbose=False)
+    result = model.predict(frame, imgsz=768, conf=0.12, iou=0.5, classes=[0], verbose=False)
     alpha_u8, summaries = _extract_segmentation_mask_data(
         result,
         w,
@@ -983,7 +981,7 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
         if rel_t + (out_dt * 0.25) < next_out_time:
             continue
 
-        result = model.predict(frame, imgsz=640, conf=0.12, iou=0.5, classes=[0], verbose=False)
+        result = model.predict(frame, imgsz=768, conf=0.12, iou=0.5, classes=[0], verbose=False)
         alpha_u8, summaries = _extract_segmentation_mask_data(result, w, h, blur_sigma=0.9, primary_only=True)
         overlay_summary_frames.append(summaries)
         overlay = _build_segmentation_overlay(alpha_u8, color)
@@ -993,9 +991,6 @@ def _run_yolo_overlay_job(job_id: str, tmp_in: str, tmp_out: str, color: str, fp
         next_out_time += out_dt
         OVERLAY_JOBS[job_id]["frames_written"] = written
         OVERLAY_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
-        if written % 10 == 0:
-            print(f"[yolo_job:{job_id}] Progress: {int(OVERLAY_JOBS[job_id]['progress']*100)}% ({written}/{expected})")
-
     while written < expected:
         if _job_cancel_requested(OVERLAY_JOBS, job_id):
             cap.release()
@@ -1112,7 +1107,7 @@ def _run_pose_overlay_job(
 
         arms_overlay = np.zeros((h, w, 3), dtype=np.uint8)
         legs_overlay = np.zeros((h, w, 3), dtype=np.uint8)
-        result = pose_model.predict(frame, imgsz=640, conf=0.2, iou=0.5, verbose=False)
+        result = pose_model.predict(frame, imgsz=768, conf=0.2, iou=0.5, verbose=False)
         pose_anchor: tuple[float, float] | None = None
         if result and getattr(result[0], "keypoints", None) is not None and len(result[0].keypoints.xy) > 0:
             kp = result[0].keypoints
@@ -1240,7 +1235,8 @@ def _run_hybrid_overlay_job(
         cap.release()
         return
 
-    seg_model, pose_model = _get_shared_yolo_models()
+    seg_model = YOLO(str(seg_weights))
+    pose_model = YOLO(str(pose_weights))
     written = 0
     out_dt = 1.0 / float(out_fps)
     next_out_time = 0.0
@@ -1252,7 +1248,6 @@ def _run_hybrid_overlay_job(
     pose_frames: list[dict[str, Any] | None] = []
     last_pose_frame: dict[str, Any] | None = None
 
-    t0 = time.time()
     while written < expected:
         if _job_cancel_requested(HYBRID_JOBS, job_id):
             cap.release()
@@ -1273,7 +1268,7 @@ def _run_hybrid_overlay_job(
 
         arms_overlay = np.zeros((h, w, 3), dtype=np.uint8)
         legs_overlay = np.zeros((h, w, 3), dtype=np.uint8)
-        pose_result = pose_model.predict(frame, imgsz=640, conf=0.2, iou=0.5, verbose=False)
+        pose_result = pose_model.predict(frame, imgsz=768, conf=0.2, iou=0.5, verbose=False)
         pose_anchor: tuple[float, float] | None = None
         if pose_result and getattr(pose_result[0], "keypoints", None) is not None and len(pose_result[0].keypoints.xy) > 0:
             kp = pose_result[0].keypoints
@@ -1300,7 +1295,7 @@ def _run_hybrid_overlay_job(
             pose_summary_frames.append([])
             pose_frame = None
 
-        seg_result = seg_model.predict(frame, imgsz=640, conf=0.12, iou=0.5, classes=[0], verbose=False)
+        seg_result = seg_model.predict(frame, imgsz=768, conf=0.12, iou=0.5, classes=[0], verbose=False)
         alpha_u8, seg_summaries = _extract_segmentation_mask_data(
             seg_result,
             w,
@@ -1326,9 +1321,6 @@ def _run_hybrid_overlay_job(
         next_out_time += out_dt
         HYBRID_JOBS[job_id]["frames_written"] = written
         HYBRID_JOBS[job_id]["progress"] = min(1.0, written / float(expected))
-        if written % 10 == 0:
-            print(f"[hybrid_job:{job_id}] Progress: {int(HYBRID_JOBS[job_id]['progress']*100)}% ({written}/{expected})")
-
     while written < expected:
         if _job_cancel_requested(HYBRID_JOBS, job_id):
             cap.release()
@@ -1356,7 +1348,6 @@ def _run_hybrid_overlay_job(
     HYBRID_JOBS[job_id]["pose_summary"] = _aggregate_pose_summaries(pose_summary_frames)
     HYBRID_JOBS[job_id]["pose_frames"] = pose_frames
     HYBRID_JOBS[job_id]["status"] = "done"
-    print(f"[hybrid_job:{job_id}] Done in {time.time() - t0:.2f}s")
 
 
 def _run_bodypx_job(job_id: str, tmp_in: str, out_path: str, arms_color: str, legs_color: str, torso_color: str, head_color: str, fps: int, start_sec: float | None, end_sec: float | None) -> None:
@@ -1431,7 +1422,7 @@ def _run_bodypx_job(job_id: str, tmp_in: str, out_path: str, arms_color: str, le
             continue
 
         overlay = np.zeros((h, w, 3), dtype=np.uint8)
-        result = model.predict(frame, imgsz=640, conf=0.2, iou=0.5, verbose=False)
+        result = model.predict(frame, imgsz=768, conf=0.2, iou=0.5, verbose=False)
         if result and getattr(result[0], "keypoints", None) is not None and len(result[0].keypoints.xy) > 0:
             kp = result[0].keypoints
             for xy, conf in _iter_pose_instances(kp):
@@ -1658,25 +1649,6 @@ async def overlay_yolo_pose_result(job_id: str, layer: str, background_tasks: Ba
     )
 
 
-# Use a shared executor to limit concurrent YOLO inference tasks
-YOLO_EXECUTOR = ThreadPoolExecutor(max_workers=2)
-
-# Global models cached to avoid reloading weights in every thread
-_YOLO_SEG_MODEL_CACHE: Any = None
-_YOLO_POSE_MODEL_CACHE: Any = None
-_YOLO_MODEL_LOCK = threading.Lock()
-
-def _get_shared_yolo_models():
-    global _YOLO_SEG_MODEL_CACHE, _YOLO_POSE_MODEL_CACHE
-    with _YOLO_MODEL_LOCK:
-        if _YOLO_SEG_MODEL_CACHE is None:
-            from ultralytics import YOLO
-            _YOLO_SEG_MODEL_CACHE = YOLO(str(_weights_path("yolo26n-seg.pt")))
-        if _YOLO_POSE_MODEL_CACHE is None:
-            from ultralytics import YOLO
-            _YOLO_POSE_MODEL_CACHE = YOLO(str(_weights_path("yolo26n-pose.pt")))
-    return _YOLO_SEG_MODEL_CACHE, _YOLO_POSE_MODEL_CACHE
-
 @router.post("/api/overlay/yolo-hybrid/start")
 async def overlay_yolo_hybrid_start(
     video: UploadFile | None = File(None),
@@ -1721,13 +1693,12 @@ async def overlay_yolo_hybrid_start(
         "error": None,
         "served_layers": set(),
     }
-    
-    # Run in serialized executor to prevent CPU saturation
-    YOLO_EXECUTOR.submit(
-        _run_hybrid_overlay_job,
-        job_id, tmp_in, seg_out, arms_out, legs_out, color, arms_color, legs_color, fps, start_sec, end_sec
-    )
-    
+    threading.Thread(
+        target=_run_hybrid_overlay_job,
+        args=(job_id, tmp_in, seg_out, arms_out, legs_out, color, arms_color, legs_color, fps, start_sec, end_sec),
+        daemon=True,
+    ).start()
+
     return JSONResponse({"job_id": job_id}, status_code=200)
 
 
