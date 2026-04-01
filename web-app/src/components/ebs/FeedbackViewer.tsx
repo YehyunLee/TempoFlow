@@ -69,6 +69,7 @@ import {
   pickActiveSegmentFeedback,
   type OverlayVisualCue,
 } from "./overlayFeedbackCue";
+import { buildOverlayPosePairs, transformReferencePoseToPractice } from "./overlayPoseMatching";
 import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
 import {
   createSession,
@@ -218,6 +219,12 @@ type OverlayNormalization = {
   pivotY: number;
 };
 
+type ReferenceOverlayAdjustments = {
+  scaleX: number;
+  scaleY: number;
+  offsetX: number;
+  offsetY: number;
+};
 type PoseBounds = {
   minX: number;
   maxX: number;
@@ -600,6 +607,284 @@ function computeOverlayDifferenceScore(params: {
   );
 }
 
+type StoredOverlayPoseKeypoint = {
+  name?: string;
+  x: number;
+  y: number;
+  score: number;
+};
+
+type StoredOverlayPoseInstance = {
+  keypoints?: StoredOverlayPoseKeypoint[];
+  part_coverage?: Record<string, number> | null;
+};
+
+type StoredOverlayPoseFrame = StoredOverlayPoseInstance & {
+  instances?: StoredOverlayPoseInstance[] | null;
+};
+
+function readStoredOverlayPoseFrames(segment: OverlaySegmentArtifact | null | undefined): Array<StoredOverlayPoseFrame | null> {
+  const poseFrames = segment?.meta?.poseFrames;
+  return Array.isArray(poseFrames) ? (poseFrames as Array<StoredOverlayPoseFrame | null>) : [];
+}
+
+function toOverlayPoseKeypoints(
+  keypoints: StoredOverlayPoseKeypoint[] | undefined,
+  width: number,
+  height: number,
+): PoseKeypoint[] {
+  const safeWidth = Math.max(1, width);
+  const safeHeight = Math.max(1, height);
+  return Array.from({ length: 17 }, (_, index) => {
+    const point = keypoints?.[index];
+    return {
+      name: point?.name ?? `kp-${index}`,
+      x: typeof point?.x === "number" ? point.x / safeWidth : 0,
+      y: typeof point?.y === "number" ? point.y / safeHeight : 0,
+      score: typeof point?.score === "number" ? point.score : 0,
+    };
+  });
+}
+
+function getStoredOverlayPoseInstances(segment: OverlaySegmentArtifact | null, sharedTime: number): PoseKeypoint[][] {
+  if (!segment) return [];
+  const frames = readStoredOverlayPoseFrames(segment);
+  if (!frames.length) return [];
+  const sharedStartSec =
+    typeof segment.meta?.sharedStartSec === "number" ? segment.meta.sharedStartSec : segment.startSec;
+  const duration = Math.max(0, segment.endSec - segment.startSec);
+  const localTime = Math.max(0, Math.min(duration, sharedTime - sharedStartSec));
+  const frameIndex = Math.max(0, Math.min(frames.length - 1, Math.round(localTime * Math.max(1, segment.fps || 1))));
+  const frame = frames[frameIndex];
+  if (!frame) return [];
+  const instances = Array.isArray(frame.instances) && frame.instances.length ? frame.instances : [frame];
+  return instances
+    .map((instance) => toOverlayPoseKeypoints(instance?.keypoints, segment.width, segment.height))
+    .filter((instance) => instance.some((point) => (point.score ?? 0) >= OVERLAY_SCORE_CONFIDENCE));
+}
+
+function normalizeSampleKeypoints(sample: SampledPoseFrame) {
+  const width = Math.max(1, sample.frameWidth || 1);
+  const height = Math.max(1, sample.frameHeight || 1);
+  return sample.keypoints.map((point) => ({
+    ...point,
+    x: point.x / width,
+    y: point.y / height,
+  }));
+}
+
+function chooseClosestOverlayPoseInstance(
+  instances: PoseKeypoint[][],
+  targetSample: SampledPoseFrame | null,
+) {
+  if (!instances.length) return null;
+  if (!targetSample) return instances[0] ?? null;
+
+  const target = normalizeSampleKeypoints(targetSample);
+  let bestInstance: PoseKeypoint[] | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+
+  instances.forEach((instance) => {
+    let total = 0;
+    let count = 0;
+    for (let index = 0; index < Math.min(instance.length, target.length); index += 1) {
+      const livePoint = instance[index];
+      const targetPoint = target[index];
+      if ((livePoint?.score ?? 0) < OVERLAY_SCORE_CONFIDENCE || (targetPoint?.score ?? 0) < OVERLAY_SCORE_CONFIDENCE) {
+        continue;
+      }
+      total += Math.hypot((livePoint?.x ?? 0) - (targetPoint?.x ?? 0), (livePoint?.y ?? 0) - (targetPoint?.y ?? 0));
+      count += 1;
+    }
+    if (count < 4) return;
+    const score = total / count;
+    if (score < bestScore) {
+      bestScore = score;
+      bestInstance = instance;
+    }
+  });
+
+  return bestInstance ?? instances[0] ?? null;
+}
+
+function buildSampledPoseFrameFromOverlayInstance(params: {
+  instance: PoseKeypoint[];
+  segmentIndex: number;
+  timestamp: number;
+}): SampledPoseFrame {
+  const { instance, segmentIndex, timestamp } = params;
+  return {
+    timestamp,
+    segmentIndex,
+    frameWidth: 1,
+    frameHeight: 1,
+    keypoints: instance.map((point) => ({
+      ...point,
+      x: point.x,
+      y: point.y,
+    })),
+    partCoverage: {
+      head: 1,
+      arms: 1,
+      torso: 1,
+      legs: 1,
+      full_body: 1,
+    },
+  };
+}
+
+function getContainedVideoRect(containerWidth: number, containerHeight: number, mediaWidth: number, mediaHeight: number) {
+  const safeMediaWidth = Math.max(1, mediaWidth);
+  const safeMediaHeight = Math.max(1, mediaHeight);
+  const scale = Math.min(containerWidth / safeMediaWidth, containerHeight / safeMediaHeight);
+  const width = safeMediaWidth * scale;
+  const height = safeMediaHeight * scale;
+  return {
+    x: (containerWidth - width) / 2,
+    y: (containerHeight - height) / 2,
+    width,
+    height,
+  };
+}
+
+function drawPoseInstance(
+  ctx: CanvasRenderingContext2D,
+  rect: { x: number; y: number; width: number; height: number },
+  keypoints: PoseKeypoint[],
+  stroke: string,
+  fill: string,
+  nodeFill: string,
+) {
+  const headIndexes = [0, 1, 2, 3, 4];
+  const segments = [
+    [5, 6],
+    [5, 7],
+    [7, 9],
+    [6, 8],
+    [8, 10],
+    [5, 11],
+    [6, 12],
+    [11, 12],
+    [11, 13],
+    [13, 15],
+    [12, 14],
+    [14, 16],
+  ];
+  const visible = (index: number) => (keypoints[index]?.score ?? 0) >= OVERLAY_SCORE_CONFIDENCE;
+  const pointAt = (index: number) => ({
+    x: rect.x + (keypoints[index]?.x ?? 0) * rect.width,
+    y: rect.y + (keypoints[index]?.y ?? 0) * rect.height,
+  });
+
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = stroke;
+  ctx.fillStyle = fill;
+  ctx.lineWidth = Math.max(3, rect.width * 0.008);
+
+  const torsoIndexes = [5, 6, 12, 11].filter(visible);
+  if (torsoIndexes.length >= 3) {
+    ctx.beginPath();
+    torsoIndexes.forEach((index, pointIndex) => {
+      const point = pointAt(index);
+      if (pointIndex === 0) ctx.moveTo(point.x, point.y);
+      else ctx.lineTo(point.x, point.y);
+    });
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  segments.forEach(([from, to]) => {
+    if (!visible(from) || !visible(to)) return;
+    const start = pointAt(from);
+    const end = pointAt(to);
+    ctx.beginPath();
+    ctx.moveTo(start.x, start.y);
+    ctx.lineTo(end.x, end.y);
+    ctx.stroke();
+  });
+
+  const visibleHeadPoints = headIndexes.filter(visible).map(pointAt);
+  if (visibleHeadPoints.length > 0) {
+    const headCenter = {
+      x: visibleHeadPoints.reduce((sum, point) => sum + point.x, 0) / visibleHeadPoints.length,
+      y: visibleHeadPoints.reduce((sum, point) => sum + point.y, 0) / visibleHeadPoints.length,
+    };
+    const shoulderSpan =
+      visible(5) && visible(6) ? Math.abs(pointAt(6).x - pointAt(5).x) : rect.width * 0.08;
+    const headRadius = Math.max(8, shoulderSpan * 0.22);
+    ctx.beginPath();
+    ctx.arc(headCenter.x, headCenter.y, headRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = nodeFill;
+  keypoints.forEach((point, index) => {
+    if (headIndexes.includes(index)) return;
+    if (!visible(index)) return;
+    const drawn = pointAt(index);
+    ctx.beginPath();
+    ctx.arc(drawn.x, drawn.y, Math.max(4, rect.width * 0.012), 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function DirectReferencePoseOverlay(props: {
+  videoRef: RefObject<HTMLVideoElement | null>;
+  referenceSegment: OverlaySegmentArtifact | null;
+  practiceSegment: OverlaySegmentArtifact | null;
+  sharedTime: number;
+}) {
+  const { videoRef, referenceSegment, practiceSegment, sharedTime } = props;
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    const cssWidth = video.clientWidth || 0;
+    const cssHeight = video.clientHeight || 0;
+    if (cssWidth <= 0 || cssHeight <= 0) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const pixelWidth = Math.max(1, Math.round(cssWidth * dpr));
+    const pixelHeight = Math.max(1, Math.round(cssHeight * dpr));
+    if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+      canvas.width = pixelWidth;
+      canvas.height = pixelHeight;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+
+    const referenceInstances = getStoredOverlayPoseInstances(referenceSegment, sharedTime);
+    const practiceInstances = getStoredOverlayPoseInstances(practiceSegment, sharedTime);
+    if (!referenceInstances.length || !practiceInstances.length) return;
+
+    const mediaWidth =
+      video.videoWidth ||
+      practiceSegment?.width ||
+      referenceSegment?.width ||
+      cssWidth;
+    const mediaHeight =
+      video.videoHeight ||
+      practiceSegment?.height ||
+      referenceSegment?.height ||
+      cssHeight;
+    const rect = getContainedVideoRect(cssWidth, cssHeight, mediaWidth, mediaHeight);
+    const pairs = buildOverlayPosePairs(referenceInstances, practiceInstances);
+    pairs.forEach((pair) => {
+      const transformed = transformReferencePoseToPractice(pair.reference, pair.practice);
+      drawPoseInstance(ctx, rect, transformed, "rgba(125, 211, 252, 0.95)", "rgba(56, 189, 248, 0.18)", "rgba(147, 197, 253, 0.9)");
+    });
+  }, [practiceSegment, referenceSegment, sharedTime, videoRef]);
+
+  return <canvas ref={canvasRef} className="pointer-events-none absolute inset-0 z-30 h-full w-full" />;
+}
+
 function YoloHybridOverlayStack(props: {
   videoRef: RefObject<HTMLVideoElement | null>;
   layers: Array<{
@@ -650,6 +935,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [viewMode, setViewMode] = useState<"side" | "overlay">("side");
   const [overlayViewSource, setOverlayViewSource] = useState<"reference" | "user" | "both">("both");
   const [overlayDetector] = useState<"bodypix" | "yolo">("yolo");
+  const [referenceOverlayAdjustments, setReferenceOverlayAdjustments] = useState<ReferenceOverlayAdjustments>({
+    scaleX: 1,
+    scaleY: 1,
+    offsetX: 0,
+    offsetY: 0,
+  });
   const [feedbackDifficulty, setFeedbackDifficulty] = useState<FeedbackDifficulty>("standard");
   const [pauseAtFeedback, setPauseAtFeedback] = useState(true);
   const overlayVideoRef = useRef<HTMLVideoElement>(null);
@@ -1772,6 +2063,20 @@ export function FeedbackViewer(props: EbsViewerProps) {
     },
     [],
   );
+  const updateReferenceOverlayAdjustment = useCallback(
+    (key: keyof ReferenceOverlayAdjustments, value: number) => {
+      setReferenceOverlayAdjustments((current) => ({ ...current, [key]: value }));
+    },
+    [],
+  );
+  const resetReferenceOverlayAdjustments = useCallback(() => {
+    setReferenceOverlayAdjustments({
+      scaleX: 1,
+      scaleY: 1,
+      offsetX: 0,
+      offsetY: 0,
+    });
+  }, []);
   const getRenderableSegment = useCallback((artifact: OverlayArtifact | null, index: number) => {
     return (
       artifact?.segments?.find(
@@ -2227,6 +2532,18 @@ export function FeedbackViewer(props: EbsViewerProps) {
       })),
     [mapArtifactToOverlayTimeline, userYoloLayers],
   );
+  const overlayUserPoseOnlyLayers = useMemo(
+    () => overlayUserYoloLayers.filter((layer) => layer.key !== "user-yolo-seg"),
+    [overlayUserYoloLayers],
+  );
+  const activeOverlayReferenceSegment = useMemo(
+    () => (activeVideoSegmentIndex >= 0 ? getRenderableSegment(overlayCueReferenceArtifact, activeVideoSegmentIndex) : null),
+    [activeVideoSegmentIndex, getRenderableSegment, overlayCueReferenceArtifact],
+  );
+  const activeOverlayPracticeSegment = useMemo(
+    () => (activeVideoSegmentIndex >= 0 ? getRenderableSegment(overlayCuePracticeArtifact, activeVideoSegmentIndex) : null),
+    [activeVideoSegmentIndex, getRenderableSegment, overlayCuePracticeArtifact],
+  );
   // Overlay diff: get frame from per-segment BodyPix artifacts for current time
   const getOverlayDiffFrame = useCallback((
     artifact: OverlayArtifact | null,
@@ -2384,6 +2701,32 @@ export function FeedbackViewer(props: EbsViewerProps) {
     if (activeVideoSegmentIndex < 0) return null;
     return getNearestSegmentSample(visualReferenceSamples, activeVideoSegmentIndex, state.sharedTime);
   }, [activeVideoSegmentIndex, state.sharedTime, visualReferenceSamples]);
+  const liveCuePracticeSample = useMemo(() => {
+    if (activeVideoSegmentIndex < 0 || !activeOverlayPracticeSegment) return currentVisualPracticeSample;
+    const instance = chooseClosestOverlayPoseInstance(
+      getStoredOverlayPoseInstances(activeOverlayPracticeSegment, state.sharedTime),
+      currentVisualPracticeSample,
+    );
+    if (!instance) return currentVisualPracticeSample;
+    return buildSampledPoseFrameFromOverlayInstance({
+      instance,
+      segmentIndex: activeVideoSegmentIndex,
+      timestamp: state.sharedTime,
+    });
+  }, [activeOverlayPracticeSegment, activeVideoSegmentIndex, currentVisualPracticeSample, state.sharedTime]);
+  const liveCueReferenceSample = useMemo(() => {
+    if (activeVideoSegmentIndex < 0 || !activeOverlayReferenceSegment) return currentVisualReferenceSample;
+    const instance = chooseClosestOverlayPoseInstance(
+      getStoredOverlayPoseInstances(activeOverlayReferenceSegment, state.sharedTime),
+      currentVisualReferenceSample,
+    );
+    if (!instance) return currentVisualReferenceSample;
+    return buildSampledPoseFrameFromOverlayInstance({
+      instance,
+      segmentIndex: activeVideoSegmentIndex,
+      timestamp: state.sharedTime,
+    });
+  }, [activeOverlayReferenceSegment, activeVideoSegmentIndex, currentVisualReferenceSample, state.sharedTime]);
 
   const overlayVisualCue = useMemo(
     () => {
@@ -2394,10 +2737,10 @@ export function FeedbackViewer(props: EbsViewerProps) {
           practiceArtifact: overlayCuePracticeArtifact,
           referenceArtifact: overlayCueReferenceArtifact,
           practiceSample:
-            currentVisualPracticeSample ??
+            liveCuePracticeSample ??
             (typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualUserSamples[sampleIndex] ?? null) : null),
           referenceSample:
-            currentVisualReferenceSample ??
+            liveCueReferenceSample ??
             (typeof sampleIndex === "number" && sampleIndex >= 0 ? (visualReferenceSamples[sampleIndex] ?? null) : null),
         });
       };
@@ -2427,8 +2770,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
     [
       activeVisualFeedback,
       activeVisualFeedbackRows,
-      currentVisualPracticeSample,
-      currentVisualReferenceSample,
+      liveCuePracticeSample,
+      liveCueReferenceSample,
       overlayCuePracticeArtifact,
       overlayCueReferenceArtifact,
       visualReferenceSamples,
@@ -2788,6 +3131,88 @@ export function FeedbackViewer(props: EbsViewerProps) {
               ) : null}
             </div>
           ) : null}
+          {viewMode === "overlay" && overlayDetector === "yolo" && overlayViewSource !== "user" ? (
+            <div className="mb-3 rounded-3xl border border-slate-200 bg-white/92 px-4 py-4 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+                    Reference Overlay Fit
+                  </div>
+                  <div className="mt-1 text-sm text-slate-700">
+                    Fine-tune the blue reference segmentation and pose layers after foot anchoring.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={resetReferenceOverlayAdjustments}
+                  className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-medium text-slate-700 transition hover:bg-slate-100"
+                >
+                  Reset fit
+                </button>
+              </div>
+              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                {[
+                  {
+                    key: "scaleX",
+                    label: "Width",
+                    min: 0.1,
+                    max: 3,
+                    step: 0.01,
+                    value: referenceOverlayAdjustments.scaleX,
+                    format: (value: number) => `${Math.round(value * 100)}%`,
+                  },
+                  {
+                    key: "scaleY",
+                    label: "Height",
+                    min: 0.1,
+                    max: 3,
+                    step: 0.01,
+                    value: referenceOverlayAdjustments.scaleY,
+                    format: (value: number) => `${Math.round(value * 100)}%`,
+                  },
+                  {
+                    key: "offsetX",
+                    label: "Foot X",
+                    min: -1,
+                    max: 1,
+                    step: 0.01,
+                    value: referenceOverlayAdjustments.offsetX,
+                    format: (value: number) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`,
+                  },
+                  {
+                    key: "offsetY",
+                    label: "Foot Y",
+                    min: -1,
+                    max: 1,
+                    step: 0.01,
+                    value: referenceOverlayAdjustments.offsetY,
+                    format: (value: number) => `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}%`,
+                  },
+                ].map((control) => (
+                  <label key={control.key} className="rounded-2xl border border-slate-100 bg-slate-50/85 px-3 py-3">
+                    <div className="flex items-center justify-between gap-3 text-sm">
+                      <span className="font-medium text-slate-700">{control.label}</span>
+                      <span className="font-mono text-xs text-slate-500">{control.format(control.value)}</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={control.min}
+                      max={control.max}
+                      step={control.step}
+                      value={control.value}
+                      onChange={(event) =>
+                        updateReferenceOverlayAdjustment(
+                          control.key as keyof ReferenceOverlayAdjustments,
+                          Number(event.target.value),
+                        )
+                      }
+                      className="mt-3 h-2 w-full cursor-pointer accent-sky-500"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
           {viewMode === "side" ? (
             <div className="videos">
               <div className="video-panel">
@@ -2883,10 +3308,15 @@ export function FeedbackViewer(props: EbsViewerProps) {
                   {overlayDetector === "yolo" ? (
                     <>
                       {(overlayViewSource === "reference" || overlayViewSource === "both") && (
-                        <YoloHybridOverlayStack videoRef={overlayVideoRef} layers={overlayReferenceYoloLayers} />
+                        <DirectReferencePoseOverlay
+                          videoRef={overlayVideoRef}
+                          referenceSegment={activeOverlayReferenceSegment}
+                          practiceSegment={activeOverlayPracticeSegment}
+                          sharedTime={state.sharedTime}
+                        />
                       )}
                       {(overlayViewSource === "user" || overlayViewSource === "both") && (
-                        <YoloHybridOverlayStack videoRef={overlayVideoRef} layers={overlayUserYoloLayers} />
+                        <YoloHybridOverlayStack videoRef={overlayVideoRef} layers={overlayUserPoseOnlyLayers} />
                       )}
                     </>
                   ) : (
@@ -2924,7 +3354,12 @@ export function FeedbackViewer(props: EbsViewerProps) {
                     </>
                   )}
                   {sessionMode && showFeedback && overlayVisualCue ? (
-                    <OverlayVisualFeedback cue={overlayVisualCue} mediaRef={overlayVideoRef} />
+                    <OverlayVisualFeedback
+                      cue={overlayVisualCue}
+                      mediaRef={overlayVideoRef}
+                      intrinsicWidth={activeOverlayPracticeSegment?.width}
+                      intrinsicHeight={activeOverlayPracticeSegment?.height}
+                    />
                   ) : null}
                   {sessionMode && showFeedback && positionedOverlayGeminiCue ? (
                     <OverlayVisualFeedback
@@ -2932,6 +3367,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       mediaRef={overlayVideoRef}
                       showFocus={false}
                       variant="gemini"
+                      intrinsicWidth={activeOverlayPracticeSegment?.width}
+                      intrinsicHeight={activeOverlayPracticeSegment?.height}
                     />
                   ) : null}
                 </div>

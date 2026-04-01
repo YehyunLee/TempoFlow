@@ -24,6 +24,11 @@ ROUNDING_PRECISION = 3
 BEATS_PER_SEGMENT = 8
 FALLBACK_CHUNK_SEC = 3.0
 
+# Performance constants for long videos
+LONG_SESSION_THRESHOLD_SEC = 300  # 5 minutes
+LOWER_SAMPLE_RATE = 11025
+LARGER_HOP_LENGTH = 1024
+
 
 def sanitize_json(obj: Any) -> Any:
     if isinstance(obj, float):
@@ -119,9 +124,21 @@ def probe_video_metadata(video_path: str) -> dict[str, Any]:
     return {"fps": fps, "duration_sec": duration_sec, "frame_count": frame_count}
 
 
-def _auto_align(ref_audio: np.ndarray, user_audio: np.ndarray, sr: int = SAMPLE_RATE) -> dict[str, float | str]:
-    chroma_a = librosa.feature.chroma_stft(y=ref_audio, sr=sr, hop_length=CHROMA_HOP_LENGTH)
-    chroma_b = librosa.feature.chroma_stft(y=user_audio, sr=sr, hop_length=CHROMA_HOP_LENGTH)
+    # Choose adaptive SR/Hop
+    ref_dur = len(ref_audio) / sr
+    eff_sr = sr
+    eff_hop = CHROMA_HOP_LENGTH
+    
+    if ref_dur > LONG_SESSION_THRESHOLD_SEC:
+        eff_sr = LOWER_SAMPLE_RATE
+        eff_hop = LARGER_HOP_LENGTH
+        # Downsample if needed for alignment speed
+        if sr != eff_sr:
+            ref_audio = librosa.resample(ref_audio, orig_sr=sr, target_sr=eff_sr)
+            user_audio = librosa.resample(user_audio, orig_sr=sr, target_sr=eff_sr)
+
+    chroma_a = librosa.feature.chroma_stft(y=ref_audio, sr=eff_sr, hop_length=eff_hop)
+    chroma_b = librosa.feature.chroma_stft(y=user_audio, sr=eff_sr, hop_length=eff_hop)
 
     start_a, end_a, start_b, end_b = perform_alignment(chroma_a, chroma_b)
     if end_a < start_a:
@@ -135,10 +152,10 @@ def _auto_align(ref_audio: np.ndarray, user_audio: np.ndarray, sr: int = SAMPLE_
     start_b = int(np.clip(start_b, 0, tb - 1))
     end_b = int(np.clip(end_b, 0, tb - 1))
 
-    start_time_a = float(librosa.frames_to_time(start_a, sr=sr, hop_length=CHROMA_HOP_LENGTH))
-    end_time_a = float(librosa.frames_to_time(end_a, sr=sr, hop_length=CHROMA_HOP_LENGTH))
-    start_time_b = float(librosa.frames_to_time(start_b, sr=sr, hop_length=CHROMA_HOP_LENGTH))
-    end_time_b = float(librosa.frames_to_time(end_b, sr=sr, hop_length=CHROMA_HOP_LENGTH))
+    start_time_a = float(librosa.frames_to_time(start_a, sr=eff_sr, hop_length=eff_hop))
+    end_time_a = float(librosa.frames_to_time(end_a, sr=eff_sr, hop_length=eff_hop))
+    start_time_b = float(librosa.frames_to_time(start_b, sr=eff_sr, hop_length=eff_hop))
+    end_time_b = float(librosa.frames_to_time(end_b, sr=eff_sr, hop_length=eff_hop))
 
     ref_dur = len(ref_audio) / sr
     usr_dur = len(user_audio) / sr
@@ -222,12 +239,16 @@ def process_uploads(ref_video: UploadFile, user_video: UploadFile) -> dict[str, 
     ref_wav = None
     user_wav = None
     try:
-        ref_wav = extract_audio_from_video(ref_tmp)
-        user_wav = extract_audio_from_video(user_tmp)
-        ref_audio, _ = librosa.load(ref_wav, sr=SAMPLE_RATE, mono=True)
-        user_audio, _ = librosa.load(user_wav, sr=SAMPLE_RATE, mono=True)
+        # Adaptive loading for RAM efficiency
+        meta = probe_video_metadata(ref_tmp)
+        load_sr = SAMPLE_RATE
+        if meta["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
+            load_sr = LOWER_SAMPLE_RATE
 
-        alignment = _auto_align(ref_audio, user_audio, SAMPLE_RATE)
+        ref_audio, _ = librosa.load(ref_wav, sr=load_sr, mono=True)
+        user_audio, _ = librosa.load(user_wav, sr=load_sr, mono=True)
+
+        alignment = _auto_align(ref_audio, user_audio, load_sr)
         shared_start = alignment["clip_1_start_sec"]
         shared_end = alignment["clip_1_end_sec"]
         shared_len_sec = round(float(shared_end - shared_start), ROUNDING_PRECISION)
@@ -306,12 +327,16 @@ def process_videos_from_paths(ref_video_path: str, user_video_path: str) -> dict
     ref_wav: str | None = None
     user_wav: str | None = None
     try:
-        ref_wav = extract_audio_from_video(ref_video_path)
-        user_wav = extract_audio_from_video(user_video_path)
-        ref_audio, _ = librosa.load(ref_wav, sr=SAMPLE_RATE, mono=True)
-        user_audio, _ = librosa.load(user_wav, sr=SAMPLE_RATE, mono=True)
+        # Adaptive loading for RAM efficiency
+        meta = probe_video_metadata(ref_video_path)
+        load_sr = SAMPLE_RATE
+        if meta["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
+            load_sr = LOWER_SAMPLE_RATE
 
-        alignment = _auto_align(ref_audio, user_audio, SAMPLE_RATE)
+        ref_audio, _ = librosa.load(ref_wav, sr=load_sr, mono=True)
+        user_audio, _ = librosa.load(user_wav, sr=load_sr, mono=True)
+
+        alignment = _auto_align(ref_audio, user_audio, load_sr)
         shared_start = alignment["clip_1_start_sec"]
         shared_end = alignment["clip_1_end_sec"]
         shared_len_sec = round(float(shared_end - shared_start), ROUNDING_PRECISION)
