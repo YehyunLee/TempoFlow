@@ -56,16 +56,8 @@ app.include_router(eval_router)
 
 SESSION_STATUS: dict[str, str] = {}
 SESSION_RESULTS: dict[str, dict[str, Any]] = {}
-SESSION_TIMESTAMPS: dict[str, float] = {}  # Added: track when sessions were last updated
 
 MOVE_FEEDBACK_JOBS: dict[str, dict[str, Any]] = {}
-
-# Added: Limit concurrent Gemini workers to avoid CPU saturation
-from concurrent.futures import ThreadPoolExecutor
-import time
-
-GEMINI_EXECUTOR = ThreadPoolExecutor(max_workers=2)
-MAX_STATE_AGE_SEC = 45 * 60  # Cleanup state older than 45 minutes
 
 
 def _parse_optional_bool(val: str | None, default: bool) -> bool:
@@ -130,42 +122,6 @@ def _move_feedback_worker(
             except OSError:
                 pass
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Cleanup orphaned temp files and start the stale state monitor."""
-    import glob
-
-    # 1. Cleanup old files from previous system runs
-    for pattern in ["/tmp/ebs_*", "/tmp/gemini_clip_*"]:
-        for f in glob.glob(pattern):
-            try:
-                Path(f).unlink(missing_ok=True)
-            except OSError:
-                pass
-
-    # 2. Start a background task to prune stale in-memory dicts
-    async def stale_state_monitor():
-        while True:
-            await asyncio.sleep(600)  # Check every 10 minutes
-            now = time.time()
-
-            # Prune old sessions
-            for sid in list(SESSION_TIMESTAMPS.keys()):
-                if now - SESSION_TIMESTAMPS[sid] > MAX_STATE_AGE_SEC:
-                    SESSION_STATUS.pop(sid, None)
-                    SESSION_RESULTS.pop(sid, None)
-                    SESSION_TIMESTAMPS.pop(sid, None)
-
-            # Prune old Gemini jobs
-            for jid in list(MOVE_FEEDBACK_JOBS.keys()):
-                job = MOVE_FEEDBACK_JOBS[jid]
-                created = job.get("created_at", 0)
-                if created > 0 and now - created > MAX_STATE_AGE_SEC:
-                    MOVE_FEEDBACK_JOBS.pop(jid, None)
-
-    asyncio.create_task(stale_state_monitor())
-
 @app.get("/")
 async def root():
     return {"message": "Audio Alignment API is running"}
@@ -188,7 +144,6 @@ async def process(
 ):
     sid = (session_id or "").strip() or "default"
     SESSION_STATUS[sid] = "processing"
-    SESSION_TIMESTAMPS[sid] = time.time()
 
     ref = ref_video or file_a
     usr = user_video or file_b
@@ -209,7 +164,6 @@ async def process(
         artifact = await asyncio.to_thread(process_videos_from_paths, ref_tmp, user_tmp)
         SESSION_RESULTS[sid] = artifact
         SESSION_STATUS[sid] = "done"
-        SESSION_TIMESTAMPS[sid] = time.time()
         return JSONResponse(artifact, status_code=200)
     except Exception as exc:
         SESSION_STATUS[sid] = "error"
@@ -302,7 +256,6 @@ async def move_feedback_start(
             "error": None,
             "session_id": sid,
             "segment_index": segment_index,
-            "created_at": time.time(),  # Track for pruning
         }
 
         pose_priors = _parse_pose_priors_json(pose_priors_json)
@@ -310,19 +263,12 @@ async def move_feedback_start(
         burn_in = _parse_optional_bool(burn_in_labels, True)
         audio_on = _parse_optional_bool(include_audio, False)
 
-        # Use ThreadPoolExecutor instead of raw daemon threads for resource control
-        GEMINI_EXECUTOR.submit(
-            _move_feedback_worker,
-            job_id,
-            ref_tmp,
-            user_tmp,
-            ebs_data,
-            segment_index,
-            pose_priors,
-            yolo_context,
-            burn_in,
-            audio_on,
+        t = threading.Thread(
+            target=_move_feedback_worker,
+            args=(job_id, ref_tmp, user_tmp, ebs_data, segment_index, pose_priors, yolo_context, burn_in, audio_on),
+            daemon=True,
         )
+        t.start()
 
         return JSONResponse({"job_id": job_id}, status_code=200)
     except Exception as exc:

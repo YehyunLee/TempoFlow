@@ -132,8 +132,6 @@ describe("GeminiFeedbackPanel", () => {
     vi.stubGlobal("fetch", vi.fn());
     // Mock video files
     (getSessionVideo as any).mockResolvedValue(new File([""], "video.mp4", { type: "video/mp4" }));
-    (getFeedbackSegment as any).mockReset();
-    (getFeedbackSegment as any).mockResolvedValue(null);
     vi.spyOn(window, "setTimeout").mockImplementation(((fn: TimerHandler, _delay?: number, ...args: any[]) => {
       return nativeSetTimeout(fn as any, 0, ...args) as any;
     }) as typeof window.setTimeout);
@@ -205,43 +203,6 @@ describe("GeminiFeedbackPanel", () => {
 
     // Should seek to shared_start_sec (1.2)
     expect(onSeek).toHaveBeenCalledWith(1.2);
-  });
-
-  it("reports cached segment progress through onPipelineProgress", async () => {
-    const cachedRows = [
-      mockApiResponse,
-      { ...mockApiResponse, segment_index: 1, moves: [] },
-      { ...mockApiResponse, segment_index: 2, moves: [] },
-    ];
-    (getFeedbackSegment as any).mockImplementation(async (_key: string) => {
-      const match = /seg:(\d+)$/.exec(_key);
-      const segmentIndex = match ? Number.parseInt(match[1] ?? "", 10) : -1;
-      return cachedRows.find((row) => row.segment_index === segmentIndex) ?? null;
-    });
-
-    const onPipelineProgress = vi.fn();
-    render(
-      <GeminiFeedbackPanel
-        sessionId={mockSessionId}
-        ebsData={mockEbsData as any}
-        segments={[
-          ...mockSegments,
-          { beat_idx_range: [10, 20], shared_start_sec: 5, shared_end_sec: 10 },
-          { beat_idx_range: [20, 30], shared_start_sec: 10, shared_end_sec: 15 },
-          { beat_idx_range: [30, 40], shared_start_sec: 15, shared_end_sec: 20 },
-          { beat_idx_range: [40, 50], shared_start_sec: 20, shared_end_sec: 25 },
-          { beat_idx_range: [50, 60], shared_start_sec: 25, shared_end_sec: 30 },
-        ] as any}
-        sharedTime={0}
-        onSeek={vi.fn()}
-        onPipelineProgress={onPipelineProgress}
-      />,
-    );
-
-    await flushAsyncRender();
-    await waitFor(() => {
-      expect(onPipelineProgress).toHaveBeenCalledWith({ done: 3, total: 6 });
-    });
   });
 
   it("handles API errors gracefully", async () => {
@@ -377,7 +338,7 @@ describe("GeminiFeedbackPanel", () => {
     });
 
     await waitFor(() => {
-      expect(document.body.textContent).toContain("AI feedback is rate limited. Retrying in 39s.");
+      expect(document.body.textContent).toContain("Gemini rate limited. Retrying in 39s.");
     });
 
     expect((fetch as any).mock.calls).toHaveLength(1);

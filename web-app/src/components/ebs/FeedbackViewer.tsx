@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
-import { useRouter } from "next/navigation";
 import { useEbsViewer } from "./useEbsViewer";
 import type { EbsData } from "./types";
 import { buildMovesForSegment } from "./ebsViewerLogic";
@@ -70,20 +69,7 @@ import {
   type OverlayVisualCue,
 } from "./overlayFeedbackCue";
 import { shouldIgnoreViewerShortcutTarget } from "./keyboardShortcutTargets";
-import {
-  createSession,
-  getAnalysisMode,
-  getSession,
-  getStorageMode,
-  updateSession,
-} from "../../lib/sessionStorage";
-import {
-  type PracticeRetryScope,
-  type PracticeRetryTarget,
-} from "../../lib/practiceRetryStorage";
-import { storeSessionVideo, getSessionVideo } from "../../lib/videoStorage";
-import { extractVideoSegment } from "../../lib/videoClip";
-import { replaceVideoSegment } from "../../lib/videoReplace";
+import { getSession, updateSession } from "../../lib/sessionStorage";
 
 type ManualViewerProps = {
   mode?: "manual";
@@ -632,7 +618,6 @@ function YoloHybridOverlayStack(props: {
 }
 
 export function FeedbackViewer(props: EbsViewerProps) {
-  const router = useRouter();
   const sessionMode = props.mode === "session";
   const sessionProps = sessionMode ? props : null;
   const refVideo = useRef<HTMLVideoElement | null>(null);
@@ -702,27 +687,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
   const [showFinalScoreCelebration, setShowFinalScoreCelebration] = useState(false);
   const finalScoreCelebratedKeyRef = useRef<string | null>(null);
   const [geminiPipelineProgress, setGeminiPipelineProgress] = useState({ done: 0, total: 0 });
-  const [retryStatus, setRetryStatus] = useState<{ message: string; type: "error" | "success" } | null>(null);
-  const [retryLaunching, setRetryLaunching] = useState(false);
-  const [retryPanelOpen, setRetryPanelOpen] = useState(false);
-  const [retryPanelScope, setRetryPanelScope] = useState<PracticeRetryScope>("segment");
-  const retryFileInputRef = useRef<HTMLInputElement | null>(null);
-  const pendingRetryUploadScopeRef = useRef<PracticeRetryScope | null>(null);
-  const [guideRecorderOpen, setGuideRecorderOpen] = useState(false);
-  const [guideRecorderScope, setGuideRecorderScope] = useState<PracticeRetryScope | null>(null);
-  const [guideCameraReady, setGuideCameraReady] = useState(false);
-  const [guideRecording, setGuideRecording] = useState(false);
-  const [guideCountdownValue, setGuideCountdownValue] = useState<number | null>(null);
-  const [guideRecordingSeconds, setGuideRecordingSeconds] = useState(0);
-  const [guideReferenceAudioEnabled, setGuideReferenceAudioEnabled] = useState(true);
-  const [guideRecorderError, setGuideRecorderError] = useState<string | null>(null);
-  const guideLiveVideoRef = useRef<HTMLVideoElement | null>(null);
-  const guideReferenceVideoRef = useRef<HTMLVideoElement | null>(null);
-  const guideStreamRef = useRef<MediaStream | null>(null);
-  const guideMediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const guideRecordedChunksRef = useRef<Blob[]>([]);
-  const guideRecordingTimerRef = useRef<number | null>(null);
-  const guideCountdownTimeoutRef = useRef<number | null>(null);
   const [bodyPixSegmentProgress, setBodyPixSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [yoloSegmentProgress, setYoloSegmentProgress] = useState<{ segmentIndex: number; progress: number } | null>(null);
   const [overlayCacheReady, setOverlayCacheReady] = useState(false);
@@ -1385,356 +1349,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
     currentPracticeSegment && state.practice.moves.length
       ? `${state.practice.moves.length} moves · ${(currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec).toFixed(1)}s section · plays ${((currentPracticeSegment.shared_end_sec - currentPracticeSegment.shared_start_sec) / state.practice.playbackRate).toFixed(1)}s at ${practiceSpeedText}`
       : "";
-  const currentPracticeMove =
-    state.practice.currentMoveIndex >= 0 ? state.practice.moves[state.practice.currentMoveIndex] ?? null : null;
-  const currentSegmentRetryTarget = useMemo<PracticeRetryTarget | null>(() => {
-    if (!sessionId || state.practice.segmentIndex < 0) return null;
-    return {
-      sessionId,
-      scope: "segment",
-      segmentIndex: state.practice.segmentIndex,
-      moveIndex: null,
-    };
-  }, [sessionId, state.practice.segmentIndex]);
-  const currentMoveRetryTarget = useMemo<PracticeRetryTarget | null>(() => {
-    if (!sessionId || state.practice.segmentIndex < 0 || !currentPracticeMove) return null;
-    return {
-      sessionId,
-      scope: "move",
-      segmentIndex: state.practice.segmentIndex,
-      moveIndex: currentPracticeMove.idx,
-    };
-  }, [currentPracticeMove, sessionId, state.practice.segmentIndex]);
-  const getRetryScopeWindow = useCallback(
-    (scope: PracticeRetryScope) => {
-      if (!sessionEbsData?.alignment) return null;
-      if (scope === "move" && currentPracticeMove) {
-        return {
-          scope,
-          title: `Move ${currentPracticeMove.num}${currentPracticeMove.isTransition ? " (Transition)" : ""}`,
-          sharedStartSec: currentPracticeMove.startSec,
-          sharedEndSec: currentPracticeMove.endSec,
-          referenceStartSec: sessionEbsData.alignment.clip_1_start_sec + currentPracticeMove.startSec,
-          referenceEndSec: sessionEbsData.alignment.clip_1_start_sec + currentPracticeMove.endSec,
-          userStartSec: sessionEbsData.alignment.clip_2_start_sec + currentPracticeMove.startSec,
-          userEndSec: sessionEbsData.alignment.clip_2_start_sec + currentPracticeMove.endSec,
-          target: currentMoveRetryTarget,
-        };
-      }
-      if (scope === "segment" && currentPracticeSegment) {
-        const referenceStartSec =
-          currentPracticeSegment.clip_1_seg_start_sec ??
-          sessionEbsData.alignment.clip_1_start_sec + currentPracticeSegment.shared_start_sec;
-        const referenceEndSec =
-          currentPracticeSegment.clip_1_seg_end_sec ??
-          sessionEbsData.alignment.clip_1_start_sec + currentPracticeSegment.shared_end_sec;
-        const userStartSec =
-          currentPracticeSegment.clip_2_seg_start_sec ??
-          sessionEbsData.alignment.clip_2_start_sec + currentPracticeSegment.shared_start_sec;
-        const userEndSec =
-          currentPracticeSegment.clip_2_seg_end_sec ??
-          sessionEbsData.alignment.clip_2_start_sec + currentPracticeSegment.shared_end_sec;
-        return {
-          scope,
-          title: `Section ${state.practice.segmentIndex + 1}`,
-          sharedStartSec: currentPracticeSegment.shared_start_sec,
-          sharedEndSec: currentPracticeSegment.shared_end_sec,
-          referenceStartSec,
-          referenceEndSec,
-          userStartSec,
-          userEndSec,
-          target: currentSegmentRetryTarget,
-        };
-      }
-      return null;
-    },
-    [currentMoveRetryTarget, currentPracticeMove, currentPracticeSegment, currentSegmentRetryTarget, sessionEbsData, state.practice.segmentIndex],
-  );
-
-  const activeGuideWindow = useMemo(
-    () => (guideRecorderScope ? getRetryScopeWindow(guideRecorderScope) : null),
-    [getRetryScopeWindow, guideRecorderScope],
-  );
-
-  const closeGuideRecorder = useCallback(() => {
-    if (guideRecordingTimerRef.current != null) {
-      window.clearInterval(guideRecordingTimerRef.current);
-      guideRecordingTimerRef.current = null;
-    }
-    if (guideCountdownTimeoutRef.current != null) {
-      window.clearTimeout(guideCountdownTimeoutRef.current);
-      guideCountdownTimeoutRef.current = null;
-    }
-    if (guideMediaRecorderRef.current && guideMediaRecorderRef.current.state !== "inactive") {
-      guideMediaRecorderRef.current.stop();
-    }
-    guideStreamRef.current?.getTracks().forEach((track) => track.stop());
-    guideStreamRef.current = null;
-    guideMediaRecorderRef.current = null;
-    guideRecordedChunksRef.current = [];
-    if (guideReferenceVideoRef.current) {
-      guideReferenceVideoRef.current.pause();
-      if (activeGuideWindow) {
-        guideReferenceVideoRef.current.currentTime = activeGuideWindow.referenceStartSec;
-      }
-    }
-    setGuideRecorderOpen(false);
-    setGuideRecorderScope(null);
-    setGuideCameraReady(false);
-    setGuideRecording(false);
-    setGuideCountdownValue(null);
-    setGuideRecordingSeconds(0);
-    setGuideRecorderError(null);
-  }, [activeGuideWindow]);
-
-  useEffect(() => {
-    return () => {
-      guideStreamRef.current?.getTracks().forEach((track) => track.stop());
-      if (guideRecordingTimerRef.current != null) {
-        window.clearInterval(guideRecordingTimerRef.current);
-      }
-      if (guideCountdownTimeoutRef.current != null) {
-        window.clearTimeout(guideCountdownTimeoutRef.current);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (state.practice.enabled) return;
-    if (!guideRecorderOpen) return;
-    closeGuideRecorder();
-  }, [closeGuideRecorder, guideRecorderOpen, state.practice.enabled]);
-
-  useEffect(() => {
-    if (guideRecorderOpen || retryLaunching || retryStatus) {
-      setRetryPanelOpen(true);
-    }
-  }, [guideRecorderOpen, retryLaunching, retryStatus]);
-
-  const launchRetryAnalysis = useCallback(
-    async (scope: PracticeRetryScope, practiceRetryFile: File) => {
-      const windowInfo = getRetryScopeWindow(scope);
-      if (!windowInfo?.target || !sessionId) {
-        setRetryStatus({ message: "Choose a section or move before retrying.", type: "error" });
-        return;
-      }
-      setRetryLaunching(true);
-      setRetryStatus({
-        message: `Preparing a focused ${scope === "move" ? "move" : "section"} retry session...`,
-        type: "success",
-      });
-      try {
-        const [referenceSource, originalPracticeSource] = await Promise.all([
-          getSessionVideo(sessionId, "reference"),
-          getSessionVideo(sessionId, "practice"),
-        ]);
-        if (!referenceSource || !originalPracticeSource) {
-          throw new Error("Original session videos are missing.");
-        }
-        const retryDurationSec = Math.max(0.05, windowInfo.sharedEndSec - windowInfo.sharedStartSec);
-        const replacementPracticeFile = await extractVideoSegment({
-          file: practiceRetryFile,
-          startSec: 0,
-          endSec: retryDurationSec,
-          fileName: `${windowInfo.title.toLowerCase().replace(/[^a-z0-9]+/gi, "-")}-replacement`,
-        });
-        const rebuiltPracticeFile = await replaceVideoSegment({
-          originalFile: originalPracticeSource,
-          replacementFile: replacementPracticeFile,
-          startSec: windowInfo.userStartSec,
-          endSec: windowInfo.userEndSec,
-          fileName: `${windowInfo.title.toLowerCase().replace(/[^a-z0-9]+/gi, "-")}-full-practice`,
-        });
-
-        const createdSession = createSession({
-          referenceName: referenceSource.name,
-          practiceName: rebuiltPracticeFile.name,
-          referenceSize: referenceSource.size,
-          practiceSize: rebuiltPracticeFile.size,
-          storageMode: getStorageMode(),
-          analysisMode: getAnalysisMode(),
-        });
-
-        await Promise.all([
-          storeSessionVideo(createdSession.id, "reference", referenceSource),
-          storeSessionVideo(createdSession.id, "practice", rebuiltPracticeFile),
-        ]);
-
-        updateSession(createdSession.id, {
-          status: "analyzing",
-          ebsStatus: "processing",
-          ebsErrorMessage: undefined,
-          errorMessage: undefined,
-        });
-        router.push(`/analysis?session=${createdSession.id}`);
-      } catch (error) {
-        console.error(error);
-        setRetryStatus({
-          message: error instanceof Error ? error.message : "Couldn't start the retry analysis.",
-          type: "error",
-        });
-      } finally {
-        setRetryLaunching(false);
-      }
-    },
-    [getRetryScopeWindow, router, sessionId],
-  );
-
-  const openRetryUpload = useCallback((scope: PracticeRetryScope) => {
-    setRetryPanelOpen(true);
-    setRetryPanelScope(scope);
-    setRetryStatus(null);
-    pendingRetryUploadScopeRef.current = scope;
-    retryFileInputRef.current?.click();
-  }, []);
-
-  const handleRetryFileSelected = useCallback(
-    async (event: React.ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      const scope = pendingRetryUploadScopeRef.current;
-      event.target.value = "";
-      if (!file || !scope) return;
-      const target = scope === "move" ? currentMoveRetryTarget : currentSegmentRetryTarget;
-      if (!target) {
-        setRetryStatus({ message: "Choose a section or move before uploading a retry take.", type: "error" });
-        return;
-      }
-      if (!file.type.startsWith("video/")) {
-        setRetryStatus({ message: "Retry takes need to be video files.", type: "error" });
-        return;
-      }
-      await launchRetryAnalysis(scope, file);
-    },
-    [currentMoveRetryTarget, currentSegmentRetryTarget, launchRetryAnalysis],
-  );
-
-  const openGuideRecorder = useCallback(
-    async (scope: PracticeRetryScope) => {
-      if (!navigator.mediaDevices?.getUserMedia) {
-        setRetryStatus({ message: "This browser does not support guide recording.", type: "error" });
-        return;
-      }
-      const windowInfo = getRetryScopeWindow(scope);
-      if (!windowInfo) {
-        setRetryStatus({ message: "Select a section or move first.", type: "error" });
-        return;
-      }
-
-      try {
-        setRetryPanelOpen(true);
-        setRetryPanelScope(scope);
-        setGuideRecorderScope(scope);
-        setGuideRecorderOpen(true);
-        setGuideRecorderError(null);
-        setGuideCameraReady(false);
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: true,
-        });
-        guideStreamRef.current = stream;
-        if (guideLiveVideoRef.current) {
-          guideLiveVideoRef.current.srcObject = stream;
-        }
-        setGuideCameraReady(true);
-      } catch (error) {
-        console.error(error);
-        setGuideRecorderError("Camera or microphone access was blocked. Please allow access and try again.");
-      }
-    },
-    [getRetryScopeWindow],
-  );
-
-  const startGuidedRetryRecording = useCallback(() => {
-    if (!activeGuideWindow || !guideStreamRef.current || !guideReferenceVideoRef.current) {
-      setGuideRecorderError("Guide recorder is not ready yet.");
-      return;
-    }
-    guideRecordedChunksRef.current = [];
-    setGuideCountdownValue(3);
-    const tick = (nextValue: number) => {
-      if (nextValue <= 0) {
-        setGuideCountdownValue(null);
-        const mimeType = typeof MediaRecorder === "undefined" ? null : "";
-        if (mimeType === null) {
-          setGuideRecorderError("Recording is not supported in this browser.");
-          return;
-        }
-        const recorder = new MediaRecorder(guideStreamRef.current!);
-        guideMediaRecorderRef.current = recorder;
-        recorder.ondataavailable = (event) => {
-          if (event.data.size > 0) {
-            guideRecordedChunksRef.current.push(event.data);
-          }
-        };
-        recorder.onstop = () => {
-          const blobType = recorder.mimeType || "video/webm";
-          const extension = blobType.includes("mp4") ? "mp4" : "webm";
-          const retryFile = new File(
-            [new Blob(guideRecordedChunksRef.current, { type: blobType })],
-            `${activeGuideWindow.title.toLowerCase().replace(/[^a-z0-9]+/gi, "-")}-retry.${extension}`,
-            { type: blobType },
-          );
-          setGuideRecording(false);
-          if (guideRecordingTimerRef.current != null) {
-            window.clearInterval(guideRecordingTimerRef.current);
-            guideRecordingTimerRef.current = null;
-          }
-          void launchRetryAnalysis(activeGuideWindow.scope, retryFile);
-        };
-        recorder.start();
-        setGuideRecording(true);
-        setGuideRecordingSeconds(0);
-        guideRecordingTimerRef.current = window.setInterval(() => {
-          setGuideRecordingSeconds((value) => value + 1);
-        }, 1000);
-
-        const referenceVideo = guideReferenceVideoRef.current!;
-        referenceVideo.currentTime = activeGuideWindow.referenceStartSec;
-        referenceVideo.muted = !guideReferenceAudioEnabled;
-        const stopAt = activeGuideWindow.referenceEndSec;
-        const handleTimeUpdate = () => {
-          if (referenceVideo.currentTime >= stopAt) {
-            referenceVideo.pause();
-            referenceVideo.removeEventListener("timeupdate", handleTimeUpdate);
-            if (guideMediaRecorderRef.current?.state === "recording") {
-              guideMediaRecorderRef.current.stop();
-            }
-          }
-        };
-        referenceVideo.addEventListener("timeupdate", handleTimeUpdate);
-        void referenceVideo.play().catch((error) => {
-          console.error(error);
-          setGuideRecorderError("Could not play the guide clip. Try again.");
-        });
-        return;
-      }
-      guideCountdownTimeoutRef.current = window.setTimeout(() => {
-        setGuideCountdownValue(nextValue);
-        tick(nextValue - 1);
-      }, 1000);
-    };
-    tick(2);
-  }, [activeGuideWindow, guideReferenceAudioEnabled, launchRetryAnalysis]);
-
-  useEffect(() => {
-    if (!guideRecorderOpen || !activeGuideWindow || !guideReferenceVideoRef.current) return;
-    guideReferenceVideoRef.current.currentTime = activeGuideWindow.referenceStartSec;
-    guideReferenceVideoRef.current.muted = !guideReferenceAudioEnabled;
-  }, [activeGuideWindow, guideRecorderOpen, guideReferenceAudioEnabled]);
-
-  useEffect(() => {
-    if (!guideRecorderOpen || !guideCameraReady || !guideLiveVideoRef.current || !guideStreamRef.current) return;
-    const liveVideo = guideLiveVideoRef.current;
-    liveVideo.srcObject = guideStreamRef.current;
-    liveVideo.muted = true;
-    const playPromise = liveVideo.play();
-    if (playPromise && typeof playPromise.catch === "function") {
-      playPromise.catch((error) => {
-        console.error(error);
-        setGuideRecorderError("Camera preview could not start. Please try reopening guide record.");
-      });
-    }
-  }, [guideCameraReady, guideRecorderOpen]);
   const activeReferenceArtifact = overlayDetector === "yolo" ? refYoloArtifact : refBodyPixArtifact;
   const activeUserArtifact = overlayDetector === "yolo" ? userYoloArtifact : userBodyPixArtifact;
   const overlaySegmentPlans = useMemo(
@@ -1934,44 +1548,26 @@ export function FeedbackViewer(props: EbsViewerProps) {
       return refReady.has(index) && userReady.has(index) ? count + 1 : count;
     }, 0);
   }, [state.segments, visualReferenceSamples, visualUserSamples]);
-  const centerDebugItems = useMemo(() => {
-    const totalSegments = state.segments.length;
-    const aiTotal = geminiPipelineProgress.total || totalSegments;
-    const aiDone = Math.min(geminiPipelineProgress.done, aiTotal);
-    const buildProgressState = (done: number, total: number) => {
-      if (total <= 0) return { progress: 0, status: "Idle", tone: "idle" as const };
-      if (done >= total) return { progress: 1, status: "Done", tone: "complete" as const };
-      if (done <= 0) return { progress: 0, status: "Starting", tone: "working" as const };
-      return { progress: done / total, status: "Processing", tone: "working" as const };
-    };
-
-    return [
+  const centerDebugItems = useMemo(
+    () => [
       {
         key: "seg",
-        label: "Segments",
-        value: `${activeMoveReadiness.readySegments}/${totalSegments}`,
-        ...buildProgressState(activeMoveReadiness.readySegments, totalSegments),
+        label: "Seg",
+        value: `${activeMoveReadiness.readySegments}/${state.segments.length}`,
       },
       {
         key: "visual",
-        label: "Angle Feedback",
-        value: `${visualFeedbackReadySegments}/${totalSegments}`,
-        ...buildProgressState(visualFeedbackReadySegments, totalSegments),
+        label: "Visual",
+        value: `${visualFeedbackReadySegments}/${state.segments.length}`,
       },
       {
-        key: "ai",
-        label: "Micro Timing",
-        value: `${aiDone}/${aiTotal}`,
-        ...buildProgressState(aiDone, aiTotal),
+        key: "gemini",
+        label: "Gemini",
+        value: `${Math.min(geminiPipelineProgress.done, geminiPipelineProgress.total || state.segments.length)}/${geminiPipelineProgress.total || state.segments.length}`,
       },
-    ];
-  }, [
-    activeMoveReadiness.readySegments,
-    geminiPipelineProgress.done,
-    geminiPipelineProgress.total,
-    state.segments.length,
-    visualFeedbackReadySegments,
-  ]);
+    ],
+    [activeMoveReadiness.readySegments, geminiPipelineProgress.done, geminiPipelineProgress.total, state.segments.length, visualFeedbackReadySegments],
+  );
 
   const timelineFeedbackMarkers = useMemo<TimelineFeedbackMarker[]>(() => {
     const visualMarkers = !showAngleFeedback
@@ -2050,8 +1646,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
               time: start,
               kind: "gemini",
               seriousness: getGeminiMarkerSeriousness(move.micro_timing_label),
-              label: "AI cue",
-              title: move.coaching_note || move.micro_timing_evidence || "AI feedback",
+              label: "Gemini cue",
+              title: move.coaching_note || move.micro_timing_evidence || "Gemini feedback",
             };
           });
 
@@ -2731,18 +2327,9 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 {sessionMode ? (
                   <div className="viewer-debug-status" aria-live="polite">
                     {centerDebugItems.map((item) => (
-                      <div key={item.key} className={`viewer-debug-pill ${item.tone}`}>
-                        <div className="viewer-debug-pill-head">
-                          <span className="viewer-debug-label">{item.label}</span>
-                          <span className="viewer-debug-meta">{item.status}</span>
-                        </div>
+                      <div key={item.key} className="viewer-debug-pill">
+                        <span className="viewer-debug-label">{item.label}</span>
                         <span className="viewer-debug-value">{item.value}</span>
-                        <div className="viewer-debug-rail" aria-hidden="true">
-                          <div
-                            className="viewer-debug-fill"
-                            style={{ width: `${Math.max(0, Math.min(100, item.progress * 100))}%` }}
-                          />
-                        </div>
                       </div>
                     ))}
                   </div>
@@ -3228,14 +2815,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
 
           {state.practice.enabled && (
             <div className="practice-panel visible">
-              <input
-                ref={retryFileInputRef}
-                type="file"
-                accept="video/*"
-                data-testid="retry-take-input"
-                onChange={handleRetryFileSelected}
-                style={{ display: "none" }}
-              />
               <div className="practice-header practice-header-compact">
                 <div className="practice-header-actions">
                   <button className="ebs-back-btn" onClick={closePracticeMode}>
@@ -3336,206 +2915,8 @@ export function FeedbackViewer(props: EbsViewerProps) {
                 <div className="practice-shortcut-note">Space plays or pauses. Repeat controls stay active until you switch them off.</div>
               </div>
 
-              {sessionMode && currentPracticeSegment && retryPanelOpen ? (
-                <div className="practice-retry-panel">
-                  <div className="practice-retry-header">
-                    <div className="practice-retry-copy">
-                      <div className="practice-retry-label">Retry Tools</div>
-                      <h3>Swap in a cleaner take</h3>
-                      <p>Replace only this section or move inside the full practice video, then rerun the analysis.</p>
-                    </div>
-                    <button type="button" className="practice-retry-btn" onClick={() => setRetryPanelOpen(false)}>
-                      Hide
-                    </button>
-                  </div>
-                  <div className="practice-retry-summary-row">
-                    {retryPanelScope === "segment" ? (
-                      <div className="practice-retry-summary-pill">
-                        <span className="practice-retry-summary-label">Section</span>
-                        <strong>Section {state.practice.segmentIndex + 1}</strong>
-                        <span>
-                          {fmtTime(currentPracticeSegment.shared_start_sec)} - {fmtTime(currentPracticeSegment.shared_end_sec)}
-                        </span>
-                      </div>
-                    ) : null}
-                    {retryPanelScope === "move" && currentPracticeMove ? (
-                      <div className="practice-retry-summary-pill">
-                        <span className="practice-retry-summary-label">Move</span>
-                        <strong>
-                          Move {currentPracticeMove.num}{currentPracticeMove.isTransition ? " (Transition)" : ""}
-                        </strong>
-                        <span>
-                          {fmtTime(currentPracticeMove.startSec)} - {fmtTime(currentPracticeMove.endSec)}
-                        </span>
-                      </div>
-                    ) : null}
-                  </div>
-                      <div className="practice-retry-actions">
-                        {retryPanelScope === "segment" ? (
-                          <div className="practice-retry-card">
-                            <div className="practice-retry-card-head">
-                              <span className="practice-retry-badge">Section</span>
-                              <span className="practice-retry-range">
-                                {fmtTime(currentPracticeSegment.shared_start_sec)} - {fmtTime(currentPracticeSegment.shared_end_sec)}
-                              </span>
-                            </div>
-                            <div className="practice-retry-title">Section {state.practice.segmentIndex + 1}</div>
-                            <div className="practice-retry-meta">Replace this full section inside your current practice take.</div>
-                            <div className="practice-retry-button-row">
-                              <button
-                                type="button"
-                                className="practice-retry-btn primary"
-                                onClick={() => openRetryUpload("segment")}
-                                disabled={retryLaunching}
-                              >
-                                Upload Section Take
-                              </button>
-                              <button
-                                type="button"
-                                className="practice-retry-btn"
-                                onClick={() => void openGuideRecorder("segment")}
-                                disabled={retryLaunching}
-                              >
-                                Guide Record Section
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {retryPanelScope === "move" && currentPracticeMove ? (
-                          <div className="practice-retry-card">
-                            <div className="practice-retry-card-head">
-                              <span className="practice-retry-badge">Move</span>
-                              <span className="practice-retry-range">
-                                {fmtTime(currentPracticeMove.startSec)} - {fmtTime(currentPracticeMove.endSec)}
-                              </span>
-                            </div>
-                            <div className="practice-retry-title">
-                              Move {currentPracticeMove.num}{currentPracticeMove.isTransition ? " (Transition)" : ""}
-                            </div>
-                            <div className="practice-retry-meta">Replace just this move while keeping the rest of the take untouched.</div>
-                            <div className="practice-retry-button-row">
-                              <button
-                                type="button"
-                                className="practice-retry-btn primary"
-                                onClick={() => openRetryUpload("move")}
-                                disabled={retryLaunching}
-                              >
-                                Upload Move Take
-                              </button>
-                              <button
-                                type="button"
-                                className="practice-retry-btn"
-                                onClick={() => void openGuideRecorder("move")}
-                                disabled={retryLaunching}
-                              >
-                                Guide Record Move
-                              </button>
-                            </div>
-                          </div>
-                        ) : null}
-                      </div>
-                      {retryStatus ? (
-                        <div className={`practice-retry-status ${retryStatus.type}`}>{retryStatus.message}</div>
-                      ) : null}
-                      {guideRecorderOpen && activeGuideWindow ? (
-                        <div className="practice-retry-preview">
-                          <div className="practice-retry-preview-head">
-                            <div>
-                              <div className="practice-retry-label">Guide Recorder</div>
-                              <div className="practice-retry-title">{activeGuideWindow.title}</div>
-                            </div>
-                            <div className="practice-retry-button-row">
-                              <button
-                                type="button"
-                                className={`practice-retry-btn ${guideReferenceAudioEnabled ? "primary" : ""}`}
-                                onClick={() => setGuideReferenceAudioEnabled((value) => !value)}
-                              >
-                                Audio {guideReferenceAudioEnabled ? "On" : "Off"}
-                              </button>
-                              <button type="button" className="practice-retry-btn" onClick={closeGuideRecorder}>
-                                Close
-                              </button>
-                            </div>
-                          </div>
-                          <div className="practice-guide-grid">
-                            <div className="practice-guide-pane">
-                              <div className="practice-retry-label">Reference</div>
-                              <div className="practice-retry-meta">
-                                {fmtTime(activeGuideWindow.sharedStartSec)} - {fmtTime(activeGuideWindow.sharedEndSec)}
-                              </div>
-                              <div className="practice-guide-video-shell">
-                                <video
-                                  ref={guideReferenceVideoRef}
-                                  src={activeReferenceVideoUrl ?? undefined}
-                                  className="practice-retry-video"
-                                  playsInline
-                                  preload="auto"
-                                  muted={!guideReferenceAudioEnabled}
-                                  onLoadedMetadata={() => {
-                                    if (guideReferenceVideoRef.current) {
-                                      guideReferenceVideoRef.current.currentTime = activeGuideWindow.referenceStartSec;
-                                    }
-                                  }}
-                                />
-                                {guideCountdownValue != null ? (
-                                  <div className="practice-guide-countdown">{guideCountdownValue}</div>
-                                ) : null}
-                              </div>
-                            </div>
-                            <div className="practice-guide-pane">
-                              <div className="practice-retry-label">Camera</div>
-                              <div className="practice-retry-meta">
-                                {guideRecording ? `Recording... ${guideRecordingSeconds}s` : "Camera ready for guided retry capture"}
-                              </div>
-                              <div className="practice-guide-video-shell">
-                                {guideCameraReady ? (
-                                  <video
-                                    ref={guideLiveVideoRef}
-                                    className="practice-retry-video"
-                                    autoPlay
-                                    muted
-                                    playsInline
-                                  />
-                                ) : (
-                                  <div className="practice-guide-empty">
-                                    {guideRecorderError ?? "Requesting camera access..."}
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="practice-retry-button-row">
-                            {!guideRecording ? (
-                              <button
-                                type="button"
-                                className="practice-retry-btn primary"
-                                onClick={startGuidedRetryRecording}
-                                disabled={!guideCameraReady || retryLaunching || guideCountdownValue != null}
-                              >
-                                {guideCountdownValue != null ? `Starting in ${guideCountdownValue}` : "Start 3, 2, 1 Recording"}
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
-                      ) : null}
-                </div>
-              ) : null}
-
               <div className="move-timeline">
-                <div className="move-timeline-head">
-                  <div className="move-tl-label">Moves</div>
-                  <button
-                    type="button"
-                    className="practice-inline-retry-btn"
-                    onClick={() => {
-                      setRetryPanelScope("segment");
-                      setRetryPanelOpen(true);
-                    }}
-                  >
-                    Retry This Segment
-                  </button>
-                </div>
+                <div className="move-tl-label">Moves</div>
                 <div
                   className="move-tl-track"
                   ref={moveTimelineTrackRef}
@@ -3648,19 +3029,6 @@ export function FeedbackViewer(props: EbsViewerProps) {
                       {moveReady ? "Ready" : "Processing"}
                     </div>
                     {move.isTransition && <div className="mv-cl">Transition</div>}
-                    {index === state.practice.currentMoveIndex ? (
-                      <button
-                        type="button"
-                        className="practice-inline-retry-btn practice-inline-retry-btn-move"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          setRetryPanelScope("move");
-                          setRetryPanelOpen(true);
-                        }}
-                      >
-                        Retry This Move
-                      </button>
-                    ) : null}
                   </div>
                   );
                 })}

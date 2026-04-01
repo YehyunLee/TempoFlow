@@ -255,16 +255,6 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
     [flatMoves, feedbackDifficulty],
   );
 
-  const completedSegments = useMemo(() => {
-    const validSet = new Set(validIndices);
-    return results.reduce((count, row) => {
-      return validSet.has(row.segment_index) ? count + 1 : count;
-    }, 0);
-  }, [results, validIndices]);
-
-  const effectiveSegmentsTotal = validIndices.length;
-  const effectiveSegmentsDone = Math.max(segmentsDone, completedSegments);
-
   const filtered = useMemo(() => {
     if (filterLabel === "all") return difficultyFilteredMoves;
     return difficultyFilteredMoves.filter((m) => m.micro_timing_label === filterLabel);
@@ -470,8 +460,8 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         const ord = validIndices.indexOf(segIndex) + 1;
         setPipelineHint(
           ord > 0
-            ? `AI feedback: segment ${segIndex + 1} (${ord}/${validIndices.length})`
-            : `AI feedback: segment ${segIndex + 1}`,
+            ? `Gemini: segment ${segIndex + 1} (${ord}/${validIndices.length})`
+            : `Gemini: segment ${segIndex + 1}`,
         );
         try {
           const data = await fetchSegmentWithRetries(segIndex);
@@ -494,8 +484,8 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
               rateLimitResumeAtRef.current = null;
               void drainQueue();
             }, rateLimit.retryAfterMs);
-            setError(`AI feedback is rate limited. Retrying in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s.`);
-            setPipelineHint(`AI feedback paused after rate limit. Visual processing can keep going while feedback waits.`);
+            setError(`Gemini rate limited. Retrying in ${Math.ceil(rateLimit.retryAfterMs / 1000)}s.`);
+            setPipelineHint(`Gemini paused after rate limit. YOLO can keep processing while feedback waits.`);
             break;
           }
           setResults((prev) => {
@@ -527,10 +517,10 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
       if (queueRef.current.includes(segmentIndex)) return;
       queueRef.current.push(segmentIndex);
       if (rateLimitResumeAtRef.current && Date.now() < rateLimitResumeAtRef.current) {
-        setPipelineHint(`Queued segment ${segmentIndex + 1} for AI feedback after rate limit backoff…`);
+        setPipelineHint(`Queued segment ${segmentIndex + 1} for Gemini after rate limit backoff…`);
         return;
       }
-      setPipelineHint(`Queued segment ${segmentIndex + 1} for AI feedback…`);
+      setPipelineHint(`Queued segment ${segmentIndex + 1} for Gemini…`);
       void drainQueue();
     },
     [sessionId, validIndices],
@@ -543,11 +533,11 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
   }, [difficultyFilteredMoves, onFeedbackReady]);
 
   const progressPercent =
-    effectiveSegmentsTotal > 0 ? Math.round((effectiveSegmentsDone / effectiveSegmentsTotal) * 100) : 0;
+    segmentsTotal > 0 ? Math.round((segmentsDone / segmentsTotal) * 100) : 0;
 
   useEffect(() => {
-    onPipelineProgress?.({ done: effectiveSegmentsDone, total: effectiveSegmentsTotal });
-  }, [effectiveSegmentsDone, effectiveSegmentsTotal, onPipelineProgress]);
+    onPipelineProgress?.({ done: segmentsDone, total: segmentsTotal });
+  }, [onPipelineProgress, segmentsDone, segmentsTotal]);
 
   const labelCounts = useMemo(() => {
     const counts: Record<string, number> = {};
@@ -572,8 +562,8 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
         <div className="border-b border-sky-100 bg-sky-50/70 px-4 py-2.5">
           <div className="flex items-center justify-between text-xs text-slate-600 mb-1.5">
             <span>
-              {effectiveSegmentsDone < effectiveSegmentsTotal
-                ? `Completed ${effectiveSegmentsDone} of ${effectiveSegmentsTotal} segments (sequential)…`
+              {segmentsDone < segmentsTotal
+                ? `Completed ${segmentsDone} of ${segmentsTotal} segments (sequential)…`
                 : "Finishing up…"}
             </span>
             <span>{progressPercent}%</span>
@@ -744,19 +734,19 @@ export const GeminiFeedbackPanel = forwardRef<GeminiFeedbackPanelHandle, GeminiF
           </div>
           <p className="text-sm font-medium text-slate-700">Waiting for motion feedback</p>
           <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto">
-            Feedback starts automatically when each segment&apos;s YOLO segment data is ready. AI feedback runs one segment at
+            Feedback starts automatically when each segment&apos;s YOLO segment data is ready. Gemini runs one segment at
             a time on the server and receives the segment videos plus YOLO pose and segmentation summaries as context.
             Results are cached in the browser (IndexedDB) per session and analysis, so revisits skip duplicate calls.
           </p>
           <p className="text-[10px] text-slate-400 mt-3">
-            Requires an AI API key on the Python backend
+            Requires GEMINI_API_KEY on the Python backend
           </p>
         </div>
       )}
 
       {!running && flatMoves.length > 0 && difficultyFilteredMoves.length === 0 && !error && (
         <div className="px-5 py-8 text-center text-sm text-slate-500">
-          No AI feedback items are severe enough for the current difficulty setting.
+          No Gemini moves are severe enough for the current difficulty setting.
         </div>
       )}
     </div>

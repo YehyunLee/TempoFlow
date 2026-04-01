@@ -218,34 +218,6 @@ function getCueAnchor(
   }
 }
 
-function isAnchorFinite(anchor: Point2d | null): anchor is Point2d {
-  return !!anchor && Number.isFinite(anchor.x) && Number.isFinite(anchor.y);
-}
-
-function stabilizeAnchorWithinBounds(
-  anchor: Point2d | null,
-  bounds: OverlayPersonSummary,
-  fallbackAnchor: Point2d,
-) {
-  if (!isAnchorFinite(anchor)) return fallbackAnchor;
-
-  const marginX = Math.max(0.06, bounds.width * 0.28);
-  const marginY = Math.max(0.06, bounds.height * 0.22);
-  const minX = Math.max(0.02, bounds.min_x - marginX);
-  const maxX = Math.min(0.98, bounds.max_x + marginX);
-  const minY = Math.max(0.02, bounds.min_y - marginY);
-  const maxY = Math.min(0.98, bounds.max_y + marginY);
-
-  if (anchor.x < minX || anchor.x > maxX || anchor.y < minY || anchor.y > maxY) {
-    return fallbackAnchor;
-  }
-
-  return {
-    x: clamp(anchor.x, minX, maxX),
-    y: clamp(anchor.y, minY, maxY),
-  };
-}
-
 function averagePoint(points: Point2d[]) {
   if (!points.length) return null;
   return {
@@ -581,8 +553,7 @@ export function buildOverlayVisualCue(params: {
   const referenceSegment = getOverlaySegmentByIndex(referenceArtifact, feedback.segmentIndex);
   const bounds = getSegmentBounds(practiceSegment) ?? getSegmentBounds(referenceSegment) ?? DEFAULT_BOUNDS;
   const sampleAnchor = getSampleCueAnchor(feedback, practiceSample, referenceSample);
-  const fallbackAnchor = getCueAnchor(feedback.bodyRegion, bounds);
-  const anchor = stabilizeAnchorWithinBounds(sampleAnchor, bounds, fallbackAnchor);
+  const anchor = sampleAnchor ?? getCueAnchor(feedback.bodyRegion, bounds);
 
   return {
     id: `${feedback.segmentIndex}:${feedback.featureFamily ?? "generic"}:${feedback.jointName ?? "generic"}:${feedback.timestamp.toFixed(3)}`,
