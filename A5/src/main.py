@@ -1,6 +1,15 @@
 from __future__ import annotations
+import asyncio
+import os
+import time
 
 from pathlib import Path
+
+try:
+    import torch
+    torch.set_num_threads(1)
+except ImportError:
+    pass
 
 try:
     from dotenv import load_dotenv
@@ -11,7 +20,6 @@ except ModuleNotFoundError:
 # Load A5/.env before any code that reads os.environ (e.g. eval config, Gemini).
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-import asyncio
 import json
 import threading
 import uuid
@@ -181,12 +189,6 @@ async def startup_event():
                         except Exception:
                             pass
 
-    try:
-        import torch
-        torch.set_num_threads(1)
-    except ImportError:
-        pass
-        
     asyncio.create_task(stale_state_monitor())
 
 @app.get("/")
