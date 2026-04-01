@@ -124,11 +124,12 @@ def probe_video_metadata(video_path: str) -> dict[str, Any]:
     return {"fps": fps, "duration_sec": duration_sec, "frame_count": frame_count}
 
 
+def _auto_align(ref_audio: np.ndarray, user_audio: np.ndarray, sr: int) -> dict[str, Any]:
     # Choose adaptive SR/Hop
     ref_dur = len(ref_audio) / sr
     eff_sr = sr
     eff_hop = CHROMA_HOP_LENGTH
-    
+
     if ref_dur > LONG_SESSION_THRESHOLD_SEC:
         eff_sr = LOWER_SAMPLE_RATE
         eff_hop = LARGER_HOP_LENGTH
@@ -157,13 +158,13 @@ def probe_video_metadata(video_path: str) -> dict[str, Any]:
     start_time_b = float(librosa.frames_to_time(start_b, sr=eff_sr, hop_length=eff_hop))
     end_time_b = float(librosa.frames_to_time(end_b, sr=eff_sr, hop_length=eff_hop))
 
-    ref_dur = len(ref_audio) / sr
-    usr_dur = len(user_audio) / sr
-    c1_start = float(np.clip(start_time_a, 0.0, ref_dur))
-    c2_start = float(np.clip(start_time_b, 0.0, usr_dur))
-    len1 = max(0.0, min(end_time_a, ref_dur) - c1_start)
-    len2 = max(0.0, min(end_time_b, usr_dur) - c2_start)
-    shared_len = max(0.0, min(len1, len2, ref_dur - c1_start, usr_dur - c2_start))
+    ref_dur_final = len(ref_audio) / eff_sr
+    usr_dur_final = len(user_audio) / eff_sr
+    c1_start = float(np.clip(start_time_a, 0.0, ref_dur_final))
+    c2_start = float(np.clip(start_time_b, 0.0, usr_dur_final))
+    len1 = max(0.0, min(end_time_a, ref_dur_final) - c1_start)
+    len2 = max(0.0, min(end_time_b, usr_dur_final) - c2_start)
+    shared_len = max(0.0, min(len1, len2, ref_dur_final - c1_start, usr_dur_final - c2_start))
     if shared_len <= 0:
         raise ValueError("Unable to compute shared alignment window.")
 
@@ -239,12 +240,17 @@ def process_uploads(ref_video: UploadFile, user_video: UploadFile) -> dict[str, 
     ref_wav = None
     user_wav = None
     try:
-        # Adaptive loading for RAM efficiency
-        meta = probe_video_metadata(ref_tmp)
+        # Determine sample rate for efficiency
+        meta_ref = probe_video_metadata(ref_tmp)
         load_sr = SAMPLE_RATE
-        if meta["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
+        if meta_ref["duration_sec"] > LONG_SESSION_THRESHOLD_SEC:
             load_sr = LOWER_SAMPLE_RATE
 
+        # Run extraction
+        ref_wav = extract_audio_from_video(ref_tmp, sr=load_sr)
+        user_wav = extract_audio_from_video(user_tmp, sr=load_sr)
+
+        # Load into memory
         ref_audio, _ = librosa.load(ref_wav, sr=load_sr, mono=True)
         user_audio, _ = librosa.load(user_wav, sr=load_sr, mono=True)
 
