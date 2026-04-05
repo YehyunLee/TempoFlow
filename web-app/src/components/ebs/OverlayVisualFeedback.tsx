@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { OverlayVisualCue } from "./overlayFeedbackCue";
 
@@ -169,7 +169,7 @@ export function OverlayVisualFeedback(props: {
     cardTopPx: 0,
   });
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const stage = stageRef.current;
     const media = mediaRef?.current ?? null;
     if (!stage || !media) {
@@ -196,40 +196,69 @@ export function OverlayVisualFeedback(props: {
       );
     };
 
-    update();
     let rafId = 0;
     let settleTimeout = 0;
-    const scheduleSettledUpdate = () => {
+    let settlePasses = 0;
+    const cancelScheduledUpdate = () => {
       if (rafId) {
         window.cancelAnimationFrame(rafId);
-      }
-      rafId = window.requestAnimationFrame(() => {
-        update();
-      });
-    };
-
-    scheduleSettledUpdate();
-    settleTimeout = window.setTimeout(update, 120);
-    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
-    resizeObserver?.observe(stage);
-    resizeObserver?.observe(media);
-    media.addEventListener("loadedmetadata", update);
-    media.addEventListener("loadeddata", update);
-    media.addEventListener("canplay", update);
-    media.addEventListener("seeked", scheduleSettledUpdate);
-    window.addEventListener("resize", update);
-
-    return () => {
-      if (rafId) {
-        window.cancelAnimationFrame(rafId);
+        rafId = 0;
       }
       window.clearTimeout(settleTimeout);
+      settleTimeout = 0;
+      settlePasses = 0;
+    };
+
+    const runSettledUpdate = () => {
+      update();
+      if (settlePasses >= 4) {
+        rafId = 0;
+        return;
+      }
+      settlePasses += 1;
+      rafId = window.requestAnimationFrame(runSettledUpdate);
+    };
+
+    const scheduleSettledUpdate = () => {
+      cancelScheduledUpdate();
+      rafId = window.requestAnimationFrame(runSettledUpdate);
+      settleTimeout = window.setTimeout(() => {
+        cancelScheduledUpdate();
+        update();
+      }, 220);
+    };
+
+    update();
+    scheduleSettledUpdate();
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        scheduleSettledUpdate();
+      }
+    };
+    const resizeObserver =
+      typeof ResizeObserver !== "undefined" ? new ResizeObserver(() => scheduleSettledUpdate()) : null;
+    resizeObserver?.observe(stage);
+    resizeObserver?.observe(media);
+    media.addEventListener("loadedmetadata", scheduleSettledUpdate);
+    media.addEventListener("loadeddata", scheduleSettledUpdate);
+    media.addEventListener("canplay", scheduleSettledUpdate);
+    media.addEventListener("seeked", scheduleSettledUpdate);
+    media.addEventListener("playing", scheduleSettledUpdate);
+    window.addEventListener("resize", scheduleSettledUpdate);
+    window.addEventListener("pageshow", scheduleSettledUpdate);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      cancelScheduledUpdate();
       resizeObserver?.disconnect();
-      media.removeEventListener("loadedmetadata", update);
-      media.removeEventListener("loadeddata", update);
-      media.removeEventListener("canplay", update);
+      media.removeEventListener("loadedmetadata", scheduleSettledUpdate);
+      media.removeEventListener("loadeddata", scheduleSettledUpdate);
+      media.removeEventListener("canplay", scheduleSettledUpdate);
       media.removeEventListener("seeked", scheduleSettledUpdate);
-      window.removeEventListener("resize", update);
+      media.removeEventListener("playing", scheduleSettledUpdate);
+      window.removeEventListener("resize", scheduleSettledUpdate);
+      window.removeEventListener("pageshow", scheduleSettledUpdate);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [cue.id, intrinsicHeight, intrinsicWidth, mediaRef, mediaRef?.current]);
 
